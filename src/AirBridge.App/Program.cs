@@ -98,6 +98,21 @@ internal static class Program
             settings.Close();
             return;
         }
+        if (args.Length >= 2 && args[0] == "--snapshot-hud")
+        {
+            var hudPath = args[1];
+            var theme = args.Length >= 3 && Enum.TryParse<AppThemeMode>(args[2], true, out var parsedTheme) ? parsedTheme : AppThemeMode.Dark;
+            using var hud = new VoiceHudForm(ThemePalette.Current(theme));
+            hud.SetInitialPosition(null, null);
+            hud.ShowListening(() => 0.42f, holdHint: false);
+            for (var frame = 0; frame < 4; frame++) Application.DoEvents();
+            using var bitmap = new Bitmap(hud.Width, hud.Height);
+            hud.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(hudPath))!);
+            bitmap.Save(hudPath, System.Drawing.Imaging.ImageFormat.Png);
+            hud.Close();
+            return;
+        }
         if (args.Length >= 1 && args[0] == "--stress-flyout")
         {
             var cycles = args.Length >= 2 && int.TryParse(args[1], out var parsedCycles)
