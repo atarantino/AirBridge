@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\AirBridge.Core\AirBridge.Core.csproj" />
+    <PackageReference Include="NAudio" Version="3.0.0-preview.18" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="..\AirBridge.RaopHost\**\*.py" Link="RaopHost\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\AirBridge.RaopHost\requirements.txt" Link="RaopHost\requirements.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

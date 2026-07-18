@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirBridge picture delay</title>
+  <style>
+    body { width: 280px; margin: 0; padding: 16px; font: 14px "Segoe UI", sans-serif; color: #f5f7fa; background: #20242a; }
+    h1 { margin: 0 0 12px; font-size: 18px; }
+    label { display: block; margin: 12px 0 5px; }
+    .toggle { display: flex; gap: 8px; align-items: center; }
+    input[type=number] { box-sizing: border-box; width: 100%; padding: 7px; }
+    button { width: 100%; margin-top: 14px; padding: 8px; color: white; background: #0877c9; border: 0; }
+    small { display: block; margin-top: 7px; color: #bdc7d2; line-height: 1.35; }
+    #site { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #bdc7d2; }
+    #status { min-height: 18px; color: #64d891; }
+  </style>
+</head>
+<body>
+  <h1>AirBridge picture delay</h1>
+  <div id="site"></div>
+  <label class="toggle"><input id="enabled" type="checkbox"> Enable on this site</label>
+  <label for="delay">Picture delay (milliseconds)</label>
+  <input id="delay" type="number" min="0" max="5000" step="10" value="2000">
+  <small>Audio keeps playing normally. Only captured video frames are delayed. Buffering is capped at 4000 ms.</small>
+  <button id="save" type="button">Apply</button>
+  <div id="status" role="status"></div>
+  <script src="sync-core.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

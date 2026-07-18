@@ -1,0 +1,37 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.12.35527.113
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirBridge.Core", "src\AirBridge.Core\AirBridge.Core.csproj", "{D59D1D94-A4F1-43D3-80E3-1C893BA5E7AA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirBridge.App", "src\AirBridge.App\AirBridge.App.csproj", "{5B519F4A-407A-49C3-A94B-A7930DBDA3C8}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirBridge.NativeMessaging", "src\AirBridge.NativeMessaging\AirBridge.NativeMessaging.csproj", "{2A16844C-E3FB-4BE9-A303-4A175B3B4678}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AirBridge.Tests", "tests\AirBridge.Tests\AirBridge.Tests.csproj", "{7321C98A-6CBB-44AF-A063-D4B66199B6AE}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{D59D1D94-A4F1-43D3-80E3-1C893BA5E7AA}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D59D1D94-A4F1-43D3-80E3-1C893BA5E7AA}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D59D1D94-A4F1-43D3-80E3-1C893BA5E7AA}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D59D1D94-A4F1-43D3-80E3-1C893BA5E7AA}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5B519F4A-407A-49C3-A94B-A7930DBDA3C8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5B519F4A-407A-49C3-A94B-A7930DBDA3C8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5B519F4A-407A-49C3-A94B-A7930DBDA3C8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5B519F4A-407A-49C3-A94B-A7930DBDA3C8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2A16844C-E3FB-4BE9-A303-4A175B3B4678}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2A16844C-E3FB-4BE9-A303-4A175B3B4678}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2A16844C-E3FB-4BE9-A303-4A175B3B4678}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2A16844C-E3FB-4BE9-A303-4A175B3B4678}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7321C98A-6CBB-44AF-A063-D4B66199B6AE}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7321C98A-6CBB-44AF-A063-D4B66199B6AE}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7321C98A-6CBB-44AF-A063-D4B66199B6AE}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7321C98A-6CBB-44AF-A063-D4B66199B6AE}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
+

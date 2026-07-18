@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "AirBridge Video Sync",
+  "version": "0.2.0",
+  "description": "Delays HTML5 video pictures to align them with AirPlay audio routed by AirBridge.",
+  "permissions": ["activeTab", "nativeMessaging", "storage"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["<all_urls>"], "js": ["sync-core.js", "content.js"], "run_at": "document_idle" }],
+  "action": { "default_title": "AirBridge picture delay", "default_popup": "popup.html" }
+}

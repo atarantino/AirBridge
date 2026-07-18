@@ -1,0 +1,11 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="0.1.0" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E">
+    <MajorUpgrade DowngradeErrorMessage="A newer AirBridge version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="AirBridge">
+        <Files Include="$(sys.CURRENTDIR)\artifacts\publish\**" />
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

@@ -1,0 +1,13 @@
+bin/
+obj/
+.venv/
+.vs/
+*.user
+*.suo
+artifacts/
+publish/
+*.msi
+*.msix
+TestResults/
+src/AirBridge.RaopHost/__pycache__/
+*.pyc
