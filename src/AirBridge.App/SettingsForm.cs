@@ -1,4 +1,5 @@
 using AirBridge.Core;
+using System.Runtime.InteropServices;
 
 namespace AirBridge.App;
 
@@ -7,12 +8,17 @@ internal sealed class SettingsForm : Form
     private readonly ComboBox _theme = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _capture = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _standby = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly TextBox _pushToTalkShortcut = new() { Dock = DockStyle.Fill, ReadOnly = true, ShortcutsEnabled = false };
+    private readonly Label _pushToTalkError = new() { AutoSize = true };
+    private readonly NumericUpDown _holdThreshold = new() { Minimum = 100, Maximum = 1000, Increment = 50, Dock = DockStyle.Left, Width = 110 };
     private readonly CheckBox _aiEnabled = new() { Text = "Enable the AirBridge assistant when an API key is available", AutoSize = true };
     private readonly TextBox _apiKey = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly Button _removeApiKey = new() { Text = "Remove", AutoSize = true };
     private readonly Label _apiKeyStatus = new() { AutoSize = true };
     private readonly Dictionary<string, NumericUpDown> _alignmentTrims = new(StringComparer.Ordinal);
     private bool _removeApiKeyRequested;
+    private string _shortcutBeforeCapture = HotkeyGesture.Default.ToString();
+    private HotkeyGesture _capturedShortcut = HotkeyGesture.Default;
 
     public SettingsForm(
         AirBridgeSettings settings,
@@ -50,8 +56,17 @@ internal sealed class SettingsForm : Form
         tabs.TabPages.Add(BuildAssistantPage(palette));
         tabs.TabPages.Add(BuildAdvancedPage(palette));
 
-        var save = new Button { Text = "Save", DialogResult = DialogResult.OK, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
+        var save = new Button { Text = "Save", AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
+        save.Click += (_, _) =>
+        {
+            if (!_capturedShortcut.IsValid)
+            {
+                _pushToTalkShortcut.Focus();
+                return;
+            }
+            DialogResult = DialogResult.OK;
+        };
         AcceptButton = save;
         CancelButton = cancel;
 
@@ -76,6 +91,8 @@ internal sealed class SettingsForm : Form
     public CaptureMode DefaultCaptureMode => _capture.SelectedIndex == 1 ? CaptureMode.ProcessTreeInclude : CaptureMode.SystemMix;
     public bool SilenceStandbyEnabled => _standby.SelectedIndex > 0;
     public int SilenceStandbySeconds => _standby.SelectedIndex switch { 1 => 10, 2 => 30, 3 => 60, 4 => 120, 5 => 300, 6 => 600, _ => 60 };
+    public string PushToTalkShortcut => _capturedShortcut.ToString();
+    public int PushToTalkHoldThresholdMs => (int)_holdThreshold.Value;
     public bool AiEnabled => _aiEnabled.Checked;
     public string? ReplacementApiKey => string.IsNullOrWhiteSpace(_apiKey.Text) ? null : _apiKey.Text.Trim();
     public bool RemoveApiKeyRequested => _removeApiKeyRequested && ReplacementApiKey is null;
@@ -94,6 +111,17 @@ internal sealed class SettingsForm : Form
         _standby.Items.AddRange(["Off", "After 10 seconds", "After 30 seconds", "After 60 seconds", "After 2 minutes", "After 5 minutes", "After 10 minutes"]);
         _standby.SelectedIndex = settings.SilenceStandbyEnabled ? SecondsToIndex(settings.SilenceStandbySeconds) : 0;
         _standby.AccessibleName = "Silence standby";
+
+        _capturedShortcut = HotkeyGesture.TryParse(settings.PushToTalkShortcut, out var shortcut) ? shortcut : HotkeyGesture.Default;
+        _pushToTalkShortcut.Text = _capturedShortcut.ToString();
+        _shortcutBeforeCapture = _pushToTalkShortcut.Text;
+        _pushToTalkShortcut.AccessibleName = "Push-to-talk shortcut";
+        _pushToTalkShortcut.AccessibleDescription = "Focus this field and press a key combination to change the global shortcut.";
+        _pushToTalkShortcut.Enter += (_, _) => _shortcutBeforeCapture = _pushToTalkShortcut.Text;
+        _pushToTalkShortcut.KeyDown += CapturePushToTalkShortcut;
+        _pushToTalkError.ForeColor = palette.Error;
+        _holdThreshold.Value = Math.Clamp(settings.PushToTalkHoldThresholdMs, 100, 1000);
+        _holdThreshold.AccessibleName = "Push-to-talk hold threshold in milliseconds";
 
         _aiEnabled.Checked = settings.AiEnabled;
         _aiEnabled.AccessibleDescription = "The assistant also requires a saved or environment-provided OpenAI API key.";
@@ -125,12 +153,32 @@ internal sealed class SettingsForm : Form
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var row = 0; row < 3; row++) fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
+        fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 70));
+        fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
         AddField(fields, 0, "Appearance", _theme);
         AddField(fields, 1, "Default audio source", _capture);
         AddField(fields, 2, "Silence standby", _standby);
-        fields.Controls.Add(SecondaryText("Daily speaker selection and volume controls live in the tray flyout.", palette), 0, 3);
-        fields.SetColumnSpan(fields.GetControlFromPosition(0, 3)!, 2);
+
+        var shortcutArea = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, Margin = Padding.Empty };
+        shortcutArea.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        shortcutArea.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        shortcutArea.RowStyles.Add(new RowStyle(SizeType.Absolute, 38));
+        shortcutArea.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        var resetShortcut = new Button { Text = "Reset", AutoSize = true, Margin = new Padding(8, 4, 0, 4) };
+        resetShortcut.Click += (_, _) => SetCapturedShortcut(HotkeyGesture.Default);
+        shortcutArea.Controls.Add(_pushToTalkShortcut, 0, 0);
+        shortcutArea.Controls.Add(resetShortcut, 1, 0);
+        shortcutArea.Controls.Add(_pushToTalkError, 0, 1);
+        shortcutArea.SetColumnSpan(_pushToTalkError, 2);
+        AddField(fields, 3, "Push-to-talk shortcut", shortcutArea);
+
+        var thresholdArea = new FlowLayoutPanel { Dock = DockStyle.Fill, WrapContents = false, Margin = Padding.Empty };
+        thresholdArea.Controls.Add(_holdThreshold);
+        thresholdArea.Controls.Add(new Label { Text = "ms", AutoSize = true, Margin = new Padding(5, 10, 0, 0) });
+        AddField(fields, 4, "Hold threshold (ms)", thresholdArea);
+        fields.Controls.Add(SecondaryText("Daily speaker selection and volume controls live in the tray flyout.", palette), 0, 5);
+        fields.SetColumnSpan(fields.GetControlFromPosition(0, 5)!, 2);
         page.Controls.Add(fields);
         return page;
     }
@@ -275,4 +323,38 @@ internal sealed class SettingsForm : Form
         if (root is TabPage) root.BackColor = palette.Window;
         foreach (Control child in root.Controls) ApplyColors(child, palette);
     }
+
+    private void CapturePushToTalkShortcut(object? sender, KeyEventArgs args)
+    {
+        args.SuppressKeyPress = true;
+        args.Handled = true;
+        if (args.KeyCode == Keys.Escape)
+        {
+            if (HotkeyGesture.TryParse(_shortcutBeforeCapture, out var previous)) SetCapturedShortcut(previous);
+            return;
+        }
+        if (args.KeyCode is Keys.ControlKey or Keys.LControlKey or Keys.RControlKey or Keys.Menu or Keys.LMenu or Keys.RMenu or
+            Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey or Keys.LWin or Keys.RWin) return;
+
+        var win = (GetKeyState((int)Keys.LWin) & 0x8000) != 0 || (GetKeyState((int)Keys.RWin) & 0x8000) != 0;
+        var gesture = new HotkeyGesture(
+            args.Control,
+            args.Alt,
+            args.Shift,
+            win,
+            (int)args.KeyCode);
+        _capturedShortcut = gesture;
+        _pushToTalkShortcut.Text = gesture.ToString();
+        _pushToTalkError.Text = gesture.IsValid ? string.Empty : "Use at least one modifier, or choose F13–F24.";
+    }
+
+    private void SetCapturedShortcut(HotkeyGesture gesture)
+    {
+        _capturedShortcut = gesture;
+        _pushToTalkShortcut.Text = gesture.ToString();
+        _pushToTalkError.Text = string.Empty;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern short GetKeyState(int virtualKey);
 }

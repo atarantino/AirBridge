@@ -115,6 +115,9 @@ public sealed record AirBridgeSettings
     public bool AiEnabled { get; init; } = true;
     public bool RestorePreviousRoute { get; init; }
     public string PushToTalkShortcut { get; init; } = "Ctrl+Alt+Space";
+    public int PushToTalkHoldThresholdMs { get; init; } = 250;
+    public int? VoiceHudX { get; init; }
+    public int? VoiceHudY { get; init; }
     public int EstimatedAudioDelayMilliseconds { get; init; } = 2000;
     public IReadOnlyList<string> SelectedReceiverIds { get; init; } = [];
     public Dictionary<string, int> ReceiverVolumes { get; init; } = new(StringComparer.Ordinal);

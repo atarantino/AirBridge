@@ -44,7 +44,9 @@ public sealed class MainForm : Form
     private readonly NotifyIcon _tray = new() { Text = "AirBridge — idle" };
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly TrayFlyoutForm _trayFlyout;
+    private readonly VoiceHudForm _voiceHud;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _hotkeyPollTimer = new() { Interval = 30 };
     private readonly ShutdownCoordinator _shutdown;
     private AirBridgeSettings _settings;
     private ThemePalette _palette;
@@ -61,6 +63,10 @@ public sealed class MainForm : Form
     private Control? _telemetryDetails;
     private System.Threading.Timer? _shutdownWatchdog;
     private readonly bool _previewMode;
+    private HotkeyGesture _hotkeyGesture;
+    private long _hotkeyPressedAt;
+    private bool _hotkeyWaitingForRelease;
+    private CancellationTokenSource? _transcriptionCancellation;
 
     public MainForm(bool previewMode = false, AppThemeMode? previewTheme = null, bool previewStreaming = true)
     {
@@ -73,6 +79,10 @@ public sealed class MainForm : Form
         var themeMode = previewTheme ?? ParseTheme(_settings.ThemeMode);
         _palette = ThemePalette.Current(themeMode);
         _trayFlyout = new(themeMode);
+        _voiceHud = new(_palette);
+        if (!_voiceHud.SetInitialPosition(_settings.VoiceHudX, _settings.VoiceHudY))
+            _settings = _settings with { VoiceHudX = null, VoiceHudY = null };
+        _hotkeyGesture = HotkeyGesture.TryParse(_settings.PushToTalkShortcut, out var gesture) ? gesture : HotkeyGesture.Default;
         _shutdown = new(_controller.ShutdownAsync, _controller.ForceCleanup, TimeSpan.FromSeconds(8));
 
         Text = "AirBridge for Windows";
@@ -97,7 +107,12 @@ public sealed class MainForm : Form
             await InitializeAsync();
         };
         FormClosing += OnFormClosing;
-        if (!previewMode) RegisterHotKey(Handle, HotkeyId, 0x0001 | 0x0002, (uint)Keys.Space);
+        if (!previewMode)
+        {
+            var (modifiers, virtualKey) = _hotkeyGesture.ToRegisterHotKeyArgs();
+            if (!RegisterHotKey(Handle, HotkeyId, modifiers, virtualKey))
+                AppendConversation("System", $"Could not register push-to-talk shortcut {_hotkeyGesture}; another app may be using it.");
+        }
     }
 
     private void WireEvents()
@@ -109,10 +124,13 @@ public sealed class MainForm : Form
         _controller.TelemetryEvent += (_, message) => SafeBeginInvoke(() => AppendConversation("Timing", message));
         _timer.Tick += (_, _) => UpdateTelemetry();
         _timer.Start();
+        _hotkeyPollTimer.Tick += (_, _) => PollHotkeyGesture();
         _tray.MouseClick += (_, args) => { if (args.Button == MouseButtons.Left) ToggleTrayFlyout(); };
         _trayMenu.Opening += (_, _) => RebuildTrayMenu();
-        _pushToTalk.MouseDown += (_, _) => StartRecording();
+        _pushToTalk.MouseDown += (_, _) => StartRecording(true);
         _pushToTalk.MouseUp += async (_, _) => await StopRecordingAndAskAsync();
+        _voiceHud.CancelRequested += (_, _) => CancelVoiceCommand();
+        _voiceHud.PositionCommitted += (_, _) => PersistVoiceHudPosition();
         _receiverPanel.ClientSizeChanged += (_, _) => ResizeReceiverRows();
         _receiverPanel.Layout += (_, _) => ResizeReceiverRows();
 
@@ -692,21 +710,118 @@ public sealed class MainForm : Form
         });
     }
 
-    private void StartRecording()
+    private bool StartRecording(bool holdHint)
     {
-        try { _recorder.Start(); _pushToTalk.Text = "Listening…"; }
-        catch (Exception ex) { AppendConversation("System", $"Microphone unavailable: {ex.Message}"); }
+        if (_transcriptionCancellation is not null) return false;
+        try
+        {
+            _recorder.Start();
+            _pushToTalk.Text = "Listening…";
+            if (!_previewMode) _voiceHud.ShowListening(() => _recorder.PeakLevel, holdHint);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppendConversation("System", $"Microphone unavailable: {ex.Message}");
+            if (!_previewMode) _voiceHud.ShowError(ex.Message);
+            return false;
+        }
     }
 
     private async Task StopRecordingAndAskAsync()
     {
         if (!_recorder.IsRecording) return;
+        StopHotkeyPolling();
         _pushToTalk.Text = "Transcribing…";
         var wav = _recorder.Stop();
         var apiKey = ResolveOpenAiApiKey();
-        if (string.IsNullOrWhiteSpace(apiKey)) { _pushToTalk.Text = "Hold to talk"; AppendConversation("System", "An OpenAI API key is required for transcription."); return; }
-        await RunUiActionAsync(async () => await AskAsync(await PushToTalkRecorder.TranscribeAsync(wav, apiKey)));
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _pushToTalk.Text = "Hold to talk";
+            AppendConversation("System", "An OpenAI API key is required for transcription.");
+            if (!_previewMode) _voiceHud.ShowError("An OpenAI API key is required.");
+            return;
+        }
+
+        _transcriptionCancellation = new CancellationTokenSource();
+        var cancellation = _transcriptionCancellation;
+        if (!_previewMode) _voiceHud.ShowTranscribing();
+        try
+        {
+            var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token);
+            if (!_previewMode) _voiceHud.HideHud();
+            await AskAsync(text);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!_previewMode) _voiceHud.HideHud();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("push-to-talk", "Voice transcription failed.", ex);
+            AppendConversation("System", ex.Message);
+            if (!_previewMode) _voiceHud.ShowError(ex.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(_transcriptionCancellation, cancellation)) _transcriptionCancellation = null;
+            cancellation.Dispose();
+            _pushToTalk.Text = "Hold to talk";
+        }
+    }
+
+    private void BeginHotkeyGesture()
+    {
+        if (_recorder.IsRecording)
+        {
+            _ = StopRecordingAndAskAsync();
+            return;
+        }
+        if (!StartRecording(true)) return;
+        _hotkeyPressedAt = Environment.TickCount64;
+        _hotkeyWaitingForRelease = true;
+        _hotkeyPollTimer.Start();
+    }
+
+    private void PollHotkeyGesture()
+    {
+        if (!_recorder.IsRecording)
+        {
+            StopHotkeyPolling();
+            return;
+        }
+
+        // Escape is observed, not swallowed; the foreground application still receives it.
+        if ((GetAsyncKeyState((int)Keys.Escape) & 0x8000) != 0)
+        {
+            CancelVoiceCommand();
+            return;
+        }
+        if (!_hotkeyWaitingForRelease || (GetAsyncKeyState(_hotkeyGesture.VirtualKey) & 0x8000) != 0) return;
+
+        _hotkeyWaitingForRelease = false;
+        var elapsed = Environment.TickCount64 - _hotkeyPressedAt;
+        if (elapsed < _settings.PushToTalkHoldThresholdMs)
+        {
+            _voiceHud.SetToggleHint();
+            return;
+        }
+        _ = StopRecordingAndAskAsync();
+    }
+
+    private void StopHotkeyPolling()
+    {
+        _hotkeyPollTimer.Stop();
+        _hotkeyWaitingForRelease = false;
+    }
+
+    private void CancelVoiceCommand()
+    {
+        StopHotkeyPolling();
+        if (_recorder.IsRecording) _recorder.Cancel();
+        _transcriptionCancellation?.Cancel();
         _pushToTalk.Text = "Hold to talk";
+        if (!_previewMode) _voiceHud.HideHud();
     }
 
     private async Task MeasureSelectedDelayAsync()
@@ -777,6 +892,21 @@ public sealed class MainForm : Form
         catch (Exception ex) { AppLog.Error("settings", "Could not save settings.", ex); AppendConversation("System", $"Could not save settings: {ex.Message}"); }
     }
 
+    private void PersistVoiceHudPosition()
+    {
+        if (_previewMode) return;
+        try
+        {
+            _settings = _settings with { VoiceHudX = _voiceHud.Left, VoiceHudY = _voiceHud.Top };
+            _settingsStore.Save(_settings);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("settings", "Could not save the voice HUD position.", ex);
+            AppendConversation("System", $"Could not save the voice HUD position: {ex.Message}");
+        }
+    }
+
     private void PersistAlignmentTrim(string receiverId, int milliseconds)
     {
         try
@@ -832,6 +962,7 @@ public sealed class MainForm : Form
         _root.BackColor = _palette.Window;
         ApplyThemedControls(_root);
         _trayFlyout.ApplyTheme(_palette);
+        _voiceHud.ApplyTheme(_palette);
         foreach (var row in _receiverRows.Values) row.ApplyTheme(_palette);
         _conversation.BackColor = _palette.Surface;
         _conversation.ForeColor = _palette.Text;
@@ -879,9 +1010,33 @@ public sealed class MainForm : Form
             DefaultCaptureMode = dialog.DefaultCaptureMode,
             SilenceStandbyEnabled = dialog.SilenceStandbyEnabled,
             SilenceStandbySeconds = dialog.SilenceStandbySeconds,
+            PushToTalkShortcut = dialog.PushToTalkShortcut,
+            PushToTalkHoldThresholdMs = dialog.PushToTalkHoldThresholdMs,
             ReceiverAlignmentTrimMs = alignmentTrims,
             AiEnabled = dialog.AiEnabled
         };
+        var previousGesture = _hotkeyGesture;
+        var candidateGesture = HotkeyGesture.TryParse(next.PushToTalkShortcut, out var parsedGesture) ? parsedGesture : HotkeyGesture.Default;
+        if (!_previewMode)
+        {
+            UnregisterHotKey(Handle, HotkeyId);
+            var (modifiers, virtualKey) = candidateGesture.ToRegisterHotKeyArgs();
+            if (RegisterHotKey(Handle, HotkeyId, modifiers, virtualKey))
+            {
+                _hotkeyGesture = candidateGesture;
+            }
+            else
+            {
+                var (previousModifiers, previousVirtualKey) = previousGesture.ToRegisterHotKeyArgs();
+                var restored = RegisterHotKey(Handle, HotkeyId, previousModifiers, previousVirtualKey);
+                next = next with { PushToTalkShortcut = previousGesture.ToString() };
+                AppendConversation("System", $"Could not use push-to-talk shortcut {candidateGesture} because another app is using it. The previous shortcut was restored{(restored ? "." : ", but Windows could not re-register it.")}");
+            }
+        }
+        else
+        {
+            _hotkeyGesture = candidateGesture;
+        }
         _settings = next;
         _settingsStore.Save(_settings);
         _controller.ConfigureSettings(_settings);
@@ -1073,7 +1228,7 @@ public sealed class MainForm : Form
     {
         if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId)
         {
-            if (_recorder.IsRecording) _ = StopRecordingAndAskAsync(); else StartRecording();
+            BeginHotkeyGesture();
         }
         base.WndProc(ref m);
     }
@@ -1108,9 +1263,11 @@ public sealed class MainForm : Form
         AppLog.Info("lifecycle", "Quit requested; beginning bounded shutdown.");
         _shutdownStarted = true;
         UnregisterHotKey(Handle, HotkeyId);
+        CancelVoiceCommand();
         _timer.Stop();
         _tray.Visible = false;
         _trayFlyout.Hide();
+        _voiceHud.HideHud();
         _shutdownWatchdog = new System.Threading.Timer(_ =>
         {
             AppLog.Warning("lifecycle", "Shutdown watchdog expired; forcing cleanup.");
@@ -1136,9 +1293,12 @@ public sealed class MainForm : Form
         _shutdownWatchdog?.Dispose();
         _shutdownWatchdog = null;
         _timer.Stop();
+        _hotkeyPollTimer.Stop();
         _tray.Visible = false;
         _trayFlyout.Close();
         _trayFlyout.Dispose();
+        _voiceHud.Close();
+        _voiceHud.Dispose();
         _ownedTrayIcon?.Dispose();
         _ownedTrayIcon = null;
         _tray.Dispose();
@@ -1147,8 +1307,13 @@ public sealed class MainForm : Form
         _diagnosticsMenu.Dispose();
         _receiverLoading.Dispose();
         _recorder.Dispose();
+        _hotkeyPollTimer.Dispose();
+        _transcriptionCancellation?.Cancel();
+        _transcriptionCancellation?.Dispose();
+        _transcriptionCancellation = null;
     }
 
     [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
 }
