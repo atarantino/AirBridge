@@ -71,6 +71,33 @@ internal static class Program
             flyout.Close();
             return;
         }
+        if (args.Length >= 2 && args[0] == "--snapshot-settings")
+        {
+            var settingsPath = args[1];
+            var theme = args.Length >= 3 && Enum.TryParse<AppThemeMode>(args[2], true, out var parsedTheme) ? parsedTheme : AppThemeMode.System;
+            var now = DateTimeOffset.UtcNow;
+            var previewReceivers = new[]
+            {
+                new AirBridge.Core.ReceiverInfo("output-a", "Desk Speaker", "small-speaker", false, now),
+                new AirBridge.Core.ReceiverInfo("output-b", "Media Room", "smart-speaker", false, now),
+                new AirBridge.Core.ReceiverInfo("output-c", "Upstairs Speaker", "smart-speaker", false, now)
+            };
+            var previewSettings = new AirBridge.Core.AirBridgeSettings
+            {
+                ReceiverAlignmentTrimMs = new(StringComparer.Ordinal) { ["output-a"] = 60, ["output-b"] = 20 }
+            };
+            using var settings = new SettingsForm(previewSettings, ThemePalette.Current(theme), storedApiKeyConfigured: true, apiKeyManagedByEnvironment: false, previewReceivers);
+            settings.Show();
+            Application.DoEvents();
+            if (args.Length >= 4 && int.TryParse(args[3], out var tabIndex) && settings.Controls.OfType<TabControl>().FirstOrDefault() is { } tabs)
+                tabs.SelectedIndex = Math.Clamp(tabIndex, 0, tabs.TabCount - 1);
+            using var bitmap = new Bitmap(settings.Width, settings.Height);
+            settings.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(settingsPath))!);
+            bitmap.Save(settingsPath, System.Drawing.Imaging.ImageFormat.Png);
+            settings.Close();
+            return;
+        }
         if (args.Length >= 1 && args[0] == "--stress-flyout")
         {
             var cycles = args.Length >= 2 && int.TryParse(args[1], out var parsedCycles)
@@ -105,21 +132,21 @@ internal static class Program
         var now = DateTimeOffset.UtcNow;
         var receivers = new[]
         {
-            new AirBridge.Core.ReceiverInfo("kitchen", "Kitchen", "small-speaker", false, now),
-            new AirBridge.Core.ReceiverInfo("living", "Living room", "smart-speaker", false, now),
-            new AirBridge.Core.ReceiverInfo("bedroom", "Bedroom", "speaker", false, now),
-            new AirBridge.Core.ReceiverInfo("office", "Office HomePod", "smart-speaker", false, now),
-            new AirBridge.Core.ReceiverInfo("patio", "Patio TV", "media-box", false, now)
+            new AirBridge.Core.ReceiverInfo("output-a", "Desk Speaker", "small-speaker", false, now),
+            new AirBridge.Core.ReceiverInfo("output-b", "Media Room", "smart-speaker", false, now),
+            new AirBridge.Core.ReceiverInfo("output-c", "Portable Speaker", "speaker", false, now),
+            new AirBridge.Core.ReceiverInfo("output-d", "Upstairs Speaker", "smart-speaker", false, now),
+            new AirBridge.Core.ReceiverInfo("output-e", "TV", "media-box", false, now)
         };
-        flyout.SetReceivers(receivers, new HashSet<string>(["kitchen", "living", "bedroom"]), new Dictionary<string, int>
+        flyout.SetReceivers(receivers, new HashSet<string>(["output-a", "output-b", "output-c"]), new Dictionary<string, int>
         {
-            ["kitchen"] = 30, ["living"] = 42, ["bedroom"] = 36, ["office"] = 55, ["patio"] = 24
-        }, new Dictionary<string, int> { ["kitchen"] = 60, ["living"] = 0, ["bedroom"] = 20 });
-        flyout.UpdateReceiver("kitchen", AirBridge.Core.StreamState.Streaming, 30, true, alignmentTrimMilliseconds: 60);
-        flyout.UpdateReceiver("living", AirBridge.Core.StreamState.Reconnecting, 42, true, "Retrying");
-        flyout.UpdateReceiver("bedroom", AirBridge.Core.StreamState.Failed, 36, true, "Password required");
-        flyout.UpdateReceiver("office", AirBridge.Core.StreamState.Idle, 55, false);
-        flyout.UpdateReceiver("patio", AirBridge.Core.StreamState.Idle, 24, false);
+            ["output-a"] = 30, ["output-b"] = 42, ["output-c"] = 36, ["output-d"] = 55, ["output-e"] = 24
+        }, new Dictionary<string, int> { ["output-a"] = 60, ["output-b"] = 0, ["output-c"] = 20 });
+        flyout.UpdateReceiver("output-a", AirBridge.Core.StreamState.Streaming, 30, true, alignmentTrimMilliseconds: 60);
+        flyout.UpdateReceiver("output-b", AirBridge.Core.StreamState.Reconnecting, 42, true, "Retrying");
+        flyout.UpdateReceiver("output-c", AirBridge.Core.StreamState.Failed, 36, true, "Password required");
+        flyout.UpdateReceiver("output-d", AirBridge.Core.StreamState.Idle, 55, false);
+        flyout.UpdateReceiver("output-e", AirBridge.Core.StreamState.Idle, 24, false);
         flyout.UpdateStatus(AirBridge.Core.StreamState.Degraded, "Streaming to 2 speakers · 12:48", string.Empty);
     }
 }

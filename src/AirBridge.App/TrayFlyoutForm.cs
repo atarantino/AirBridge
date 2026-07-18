@@ -15,7 +15,6 @@ public sealed class TrayFlyoutForm : Form
     private readonly PillButton _toggle = new() { Text = "Start", Primary = true, Width = 92, Height = 36 };
     private readonly PillButton _refresh = new() { IconGlyph = "\uE72C", Quiet = true, Width = 36, Height = 36 };
     private readonly PillButton _settings = new() { IconGlyph = "\uE713", Quiet = true, Width = 36, Height = 36 };
-    private readonly PillButton _dashboard = new() { IconGlyph = "\uE740", Quiet = true, Width = 36, Height = 36 };
     private readonly PillButton _quit = new() { IconGlyph = "\uE7E8", Quiet = true, Width = 36, Height = 36 };
     private readonly ToolTip _toolTip = new();
     private readonly Dictionary<string, ReceiverRowControl> _rows = new(StringComparer.Ordinal);
@@ -50,17 +49,14 @@ public sealed class TrayFlyoutForm : Form
         _toggle.AccessibleName = "Start selected speakers";
         _refresh.AccessibleName = "Refresh speakers";
         _settings.AccessibleName = "Open settings";
-        _dashboard.AccessibleName = "Open dashboard";
         _quit.AccessibleName = "Quit AirBridge";
         _quit.AccessibleDescription = "Stop AirBridge and close the application.";
         _toolTip.SetToolTip(_refresh, "Refresh speakers");
         _toolTip.SetToolTip(_settings, "Settings");
-        _toolTip.SetToolTip(_dashboard, "Open dashboard");
         _toolTip.SetToolTip(_quit, "Quit AirBridge");
         _toggle.GrayscaleText = true;
         _refresh.GrayscaleText = true;
         _settings.GrayscaleText = true;
-        _dashboard.GrayscaleText = true;
         _quit.GrayscaleText = true;
         _outputLabel.AccessibleName = "Audio outputs";
 
@@ -75,7 +71,7 @@ public sealed class TrayFlyoutForm : Form
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var quiet = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty };
-        quiet.Controls.AddRange([_refresh, _settings, _dashboard, _quit]);
+        quiet.Controls.AddRange([_refresh, _settings, _quit]);
         actions.Controls.Add(_toggle, 0, 0);
         actions.Controls.Add(quiet, 2, 0);
 
@@ -97,7 +93,6 @@ public sealed class TrayFlyoutForm : Form
         };
         _refresh.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
         _settings.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-        _dashboard.Click += (_, _) => OpenDashboardRequested?.Invoke(this, EventArgs.Empty);
         _quit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         KeyDown += (_, args) => { if (args.KeyCode == Keys.Escape) Hide(); };
         Deactivate += (_, _) => { if (AutoHide) Hide(); };
@@ -112,7 +107,6 @@ public sealed class TrayFlyoutForm : Form
     public event EventHandler? StopRequested;
     public event EventHandler? RefreshRequested;
     public event EventHandler? SettingsRequested;
-    public event EventHandler? OpenDashboardRequested;
     public event EventHandler? QuitRequested;
     public event EventHandler<ReceiverSelectionChangedEventArgs>? ReceiverSelectionChanged;
     public event EventHandler<ReceiverVolumeChangedEventArgs>? ReceiverVolumeCommitted;
@@ -212,7 +206,6 @@ public sealed class TrayFlyoutForm : Form
         _toggle.ApplyTheme(_palette);
         _refresh.ApplyTheme(_palette);
         _settings.ApplyTheme(_palette);
-        _dashboard.ApplyTheme(_palette);
         _quit.ApplyTheme(_palette);
         _wordmark.ApplyTheme(_palette);
         _outputLabel.ApplyTheme(_palette);

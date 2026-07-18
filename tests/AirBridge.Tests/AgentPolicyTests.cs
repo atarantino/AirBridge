@@ -26,7 +26,7 @@ public sealed class AgentPolicyTests
     [Fact]
     public void AcousticMeasurementRequiresExplicitConfirmation()
     {
-        using var args = JsonDocument.Parse("{\"receiver_id\":\"kitchen\"}");
+        using var args = JsonDocument.Parse("{\"receiver_id\":\"speakerA\"}");
         Assert.True(_policy.Evaluate("measure_acoustic_delay", args.RootElement).RequiresConfirmation);
         Assert.True(_policy.Evaluate("measure_acoustic_delay", args.RootElement, userConfirmed: true).Allowed);
     }
@@ -34,7 +34,7 @@ public sealed class AgentPolicyTests
     [Fact]
     public void AlignGroupRequiresAnExplicitlyAuthorizedMicrophoneAction()
     {
-        using var args = JsonDocument.Parse("{\"receiver_ids\":[\"kitchen\",\"beam\"]}");
+        using var args = JsonDocument.Parse("{\"receiver_ids\":[\"speakerA\",\"beam\"]}");
         Assert.True(_policy.Evaluate("align_group", args.RootElement).RequiresConfirmation);
         Assert.True(_policy.Evaluate("align_group", args.RootElement, userConfirmed: true).Allowed);
     }
@@ -55,7 +55,7 @@ public sealed class AgentPolicyTests
 
     [Theory]
     [InlineData("align the speaker group", true)]
-    [InlineData("please align the speakers in Kitchen", true)]
+    [InlineData("please align the speakers in Speaker A", true)]
     [InlineData("don't align the speakers", false)]
     [InlineData("tell me whether we should align the speakers", false)]
     public void DirectMicrophoneAuthorizationRequiresClearNonNegatedImperativeAndIsOneShot(string text, bool allowed)
@@ -85,7 +85,7 @@ public sealed class AgentPolicyTests
     [InlineData(500)]
     public void ReceiverAlignmentTrimAllowsDocumentedRange(int delayMs)
     {
-        using var args = JsonDocument.Parse($$"""{"receiver_id":"kitchen","trim_ms":{{delayMs}}}""");
+        using var args = JsonDocument.Parse($$"""{"receiver_id":"speakerA","trim_ms":{{delayMs}}}""");
         Assert.True(_policy.Evaluate("set_alignment_trim", args.RootElement).Allowed);
     }
 
@@ -94,7 +94,7 @@ public sealed class AgentPolicyTests
     [InlineData(501)]
     public void ReceiverAlignmentTrimRejectsValuesOutsideDocumentedRange(int delayMs)
     {
-        using var args = JsonDocument.Parse($$"""{"receiver_id":"kitchen","trim_ms":{{delayMs}}}""");
+        using var args = JsonDocument.Parse($$"""{"receiver_id":"speakerA","trim_ms":{{delayMs}}}""");
         Assert.False(_policy.Evaluate("set_alignment_trim", args.RootElement).Allowed);
     }
 

@@ -10,8 +10,10 @@ public sealed class PushToTalkRecorder : IDisposable
     private WaveIn? _input;
     private WaveFileWriter? _writer;
     private MemoryStream? _audio;
+    private volatile float _peakLevel;
 
     public bool IsRecording => _input is not null;
+    public float PeakLevel => _peakLevel;
 
     public void Start()
     {
@@ -21,7 +23,15 @@ public sealed class PushToTalkRecorder : IDisposable
             _audio = new MemoryStream();
             _input = new WaveIn { WaveFormat = new WaveFormat(16000, 16, 1), BufferMilliseconds = 50 };
             _writer = new WaveFileWriter(new NonClosingStream(_audio), _input.WaveFormat);
-            _input.DataAvailable += (_, args) => _writer?.Write(args.Buffer, 0, args.BytesRecorded);
+            _input.DataAvailable += (_, args) =>
+            {
+                var peak = 0;
+                for (var offset = 0; offset + 1 < args.BytesRecorded; offset += 2)
+                    peak = Math.Max(peak, Math.Abs((int)BitConverter.ToInt16(args.Buffer, offset)));
+                _peakLevel = Math.Clamp(peak / 32768f, 0f, 1f);
+                _writer?.Write(args.Buffer, 0, args.BytesRecorded);
+            };
+            _peakLevel = 0;
             _input.StartRecording();
         }
     }
@@ -34,12 +44,31 @@ public sealed class PushToTalkRecorder : IDisposable
             _input.StopRecording();
             _input.Dispose();
             _input = null;
+            _peakLevel = 0;
             _writer?.Dispose();
             _writer = null;
             var bytes = _audio.ToArray();
             _audio.Dispose();
             _audio = null;
             return bytes;
+        }
+    }
+
+    public void Cancel()
+    {
+        lock (_gate)
+        {
+            if (_input is not null)
+            {
+                _input.StopRecording();
+                _input.Dispose();
+                _input = null;
+            }
+            _writer?.Dispose();
+            _writer = null;
+            _audio?.Dispose();
+            _audio = null;
+            _peakLevel = 0;
         }
     }
 
@@ -63,7 +92,7 @@ public sealed class PushToTalkRecorder : IDisposable
 
     public void Dispose()
     {
-        if (IsRecording) Stop();
+        Cancel();
     }
 
     private sealed class NonClosingStream(Stream inner) : Stream

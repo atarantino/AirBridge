@@ -5,14 +5,14 @@ namespace AirBridge.Tests;
 
 public sealed class MultiReceiverTests
 {
-    private static readonly ReceiverInfo Kitchen = new("kitchen", "Kitchen", "local", false, DateTimeOffset.UtcNow);
+    private static readonly ReceiverInfo SpeakerA = new("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
     private static readonly ReceiverInfo Office = new("office", "Office", "local", false, DateTimeOffset.UtcNow);
 
     [Fact]
     public void FanoutDeliversIdenticalOrderedPcmToEveryReceiver()
     {
         var hub = new PcmBroadcastHub();
-        var kitchen = hub.Subscribe(Kitchen.Id);
+        var speakerA = hub.Subscribe(SpeakerA.Id);
         var office = hub.Subscribe(Office.Id);
         var first = Enumerable.Range(0, 3528).Select(index => (byte)(index % 251)).ToArray();
         var second = Enumerable.Range(0, 3528).Select(index => (byte)((index + 37) % 251)).ToArray();
@@ -20,19 +20,19 @@ public sealed class MultiReceiverTests
         hub.Write(first);
         hub.Write(second);
 
-        var kitchenResult = new byte[first.Length + second.Length];
-        var officeResult = new byte[kitchenResult.Length];
-        Assert.Equal(kitchenResult.Length, kitchen.Read(kitchenResult, false));
+        var speakerAResult = new byte[first.Length + second.Length];
+        var officeResult = new byte[speakerAResult.Length];
+        Assert.Equal(speakerAResult.Length, speakerA.Read(speakerAResult, false));
         Assert.Equal(officeResult.Length, office.Read(officeResult, false));
-        Assert.Equal(first.Concat(second), kitchenResult);
-        Assert.Equal(kitchenResult, officeResult);
+        Assert.Equal(first.Concat(second), speakerAResult);
+        Assert.Equal(speakerAResult, officeResult);
     }
 
     [Fact]
     public void StalledReceiverOverrunDoesNotAffectHealthyReceiver()
     {
         var hub = new PcmBroadcastHub();
-        var stalled = hub.Subscribe(Kitchen.Id);
+        var stalled = hub.Subscribe(SpeakerA.Id);
         var healthy = hub.Subscribe(Office.Id);
         var block = new byte[3528];
         var healthyRead = new byte[block.Length];
@@ -54,7 +54,7 @@ public sealed class MultiReceiverTests
     public async Task CalibrationIsMixedIntoSharedCaptureFanoutForEveryLeg()
     {
         var hub = new PcmBroadcastHub();
-        var kitchen = hub.Subscribe(Kitchen.Id);
+        var speakerA = hub.Subscribe(SpeakerA.Id);
         var office = hub.Subscribe(Office.Id);
         short[] samples = [120, -120, 240, -240];
         var pcm = new byte[samples.Length * sizeof(short)];
@@ -65,11 +65,11 @@ public sealed class MultiReceiverTests
         hub.AdvanceCalibration(pcm.Length);
         var emissions = await calibration;
 
-        var kitchenResult = new byte[pcm.Length];
+        var speakerAResult = new byte[pcm.Length];
         var officeResult = new byte[pcm.Length];
-        Assert.Equal(pcm.Length, kitchen.Read(kitchenResult, false));
+        Assert.Equal(pcm.Length, speakerA.Read(speakerAResult, false));
         Assert.Equal(pcm.Length, office.Read(officeResult, false));
-        Assert.Equal(pcm, kitchenResult);
+        Assert.Equal(pcm, speakerAResult);
         Assert.Equal(pcm, officeResult);
         Assert.Equal(2, emissions.Count);
         Assert.True(emissions[1] >= emissions[0]);
@@ -79,7 +79,7 @@ public sealed class MultiReceiverTests
     public async Task CalibrationAdvancesFromSharedPumpClockWithoutCaptureCallbacks()
     {
         var hub = new PcmBroadcastHub();
-        var receiver = hub.Subscribe(Kitchen.Id);
+        var receiver = hub.Subscribe(SpeakerA.Id);
         var pcm = Enumerable.Repeat((byte)0x2A, SharedAudioPump.BlockBytes * 2).ToArray();
         var sequence = new ChirpSequence(pcm, [0, SharedAudioPump.BlockBytes], SharedAudioPump.SampleRate, SharedAudioPump.Channels);
         var pump = new SharedAudioPump(
@@ -102,21 +102,21 @@ public sealed class MultiReceiverTests
     {
         var buffer = new BoundedPcmBuffer(176400);
         var coordinator = new StreamCoordinator(buffer);
-        coordinator.Begin(Kitchen.Id, Kitchen.Name, CaptureMode.SystemMix, null);
+        coordinator.Begin(SpeakerA.Id, SpeakerA.Name, CaptureMode.SystemMix, null);
         coordinator.UpdateDestinations([
-            new(Kitchen, StreamState.Streaming, 30, DateTimeOffset.UtcNow, null),
+            new(SpeakerA, StreamState.Streaming, 30, DateTimeOffset.UtcNow, null),
             new(Office, StreamState.Streaming, 40, DateTimeOffset.UtcNow, null)
         ]);
         Assert.Equal(StreamState.Streaming, coordinator.Route.State);
 
         coordinator.UpdateDestinations([
-            new(Kitchen, StreamState.Streaming, 30, DateTimeOffset.UtcNow, null),
+            new(SpeakerA, StreamState.Streaming, 30, DateTimeOffset.UtcNow, null),
             new(Office, StreamState.Failed, 40, DateTimeOffset.UtcNow, "offline")
         ]);
 
         Assert.Equal(StreamState.Degraded, coordinator.Route.State);
         Assert.Equal(2, coordinator.Route.Destinations.Count);
-        Assert.Equal("Kitchen + 1", coordinator.Route.ReceiverName);
+        Assert.Equal("Speaker A + 1", coordinator.Route.ReceiverName);
     }
 
     [Fact]
@@ -129,19 +129,19 @@ public sealed class MultiReceiverTests
             var store = new SettingsStore(path);
             store.Save(new AirBridgeSettings
             {
-                SelectedReceiverIds = [Kitchen.Id, Office.Id],
-                ReceiverVolumes = new() { [Kitchen.Id] = 30, [Office.Id] = 42 },
-                ReceiverAlignmentTrimMs = new() { [Kitchen.Id] = 120, [Office.Id] = 0 },
+                SelectedReceiverIds = [SpeakerA.Id, Office.Id],
+                ReceiverVolumes = new() { [SpeakerA.Id] = 30, [Office.Id] = 42 },
+                ReceiverAlignmentTrimMs = new() { [SpeakerA.Id] = 120, [Office.Id] = 0 },
                 SilenceStandbyEnabled = true,
                 SilenceStandbySeconds = 120,
-                SpeakerGroups = [new("downstairs", "Downstairs", [Kitchen.Id, Office.Id])],
+                SpeakerGroups = [new("downstairs", "Downstairs", [SpeakerA.Id, Office.Id])],
                 ThemeMode = "dark"
             });
 
             var restored = store.Load();
-            Assert.Equal([Kitchen.Id, Office.Id], restored.SelectedReceiverIds);
+            Assert.Equal([SpeakerA.Id, Office.Id], restored.SelectedReceiverIds);
             Assert.Equal(42, restored.ReceiverVolumes[Office.Id]);
-            Assert.Equal(120, restored.ReceiverAlignmentTrimMs[Kitchen.Id]);
+            Assert.Equal(120, restored.ReceiverAlignmentTrimMs[SpeakerA.Id]);
             Assert.Equal(0, restored.ReceiverAlignmentTrimMs[Office.Id]);
             Assert.True(restored.SilenceStandbyEnabled);
             Assert.Equal(120, restored.SilenceStandbySeconds);

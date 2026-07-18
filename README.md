@@ -1,8 +1,8 @@
 # AirBridge for Windows
 
-AirBridge sends live Windows audio to AirPlay speakers. It can capture the complete Windows system mix or one application's process tree, normalize the stream to 44.1 kHz signed 16-bit stereo PCM, and route it to one or more independently controlled receivers. The default receiver is **Kitchen**.
+AirBridge sends live Windows audio to AirPlay speakers. It can capture the complete Windows system mix or one application's process tree, normalize the stream to 44.1 kHz signed 16-bit stereo PCM, and route it to one or more independently controlled receivers. AirBridge discovers receivers on the local network and does not assume a default speaker.
 
-The Windows 10/11 tray app provides a receiver-first dashboard, a left-click quick flyout, saved speaker groups, independent speaker volume, live buffer health, acoustic delay measurement, measured speaker alignment, silence standby, and optional GPT-5.6 control. Group playback is measured alignment of independent RAOP sessions: AirBridge anchor-aligns their sender input and corrects constant receiver latency with acoustic per-speaker trims. It is not AirPlay 2 buffered-mode multi-room synchronization and does not use a shared PTP clock or anchor-time playback.
+The Windows 10/11 tray app uses one receiver-first flyout for daily controls, plus an expanded Settings window for audio defaults, speaker synchronization, troubleshooting, and the optional assistant. It supports multi-speaker selection, independent speaker volume, acoustic delay measurement, per-speaker alignment trims, and silence standby. Group playback uses independent RAOP sessions: AirBridge anchor-aligns their sender input and can correct constant receiver latency with manual per-speaker trims. It is not AirPlay 2 buffered-mode multi-room synchronization and does not use a shared PTP clock or anchor-time playback.
 
 ## How it works
 
@@ -32,17 +32,17 @@ py -3.12 -m venv .venv
 dotnet run --project src\AirBridge.App\AirBridge.App.csproj
 ```
 
-On first launch, refresh speakers, select **Kitchen**, and choose **Start selected**. New receivers default to 30% volume, applied only after the RAOP RECORD transition. Select multiple receivers and use **Save group** for a reusable group.
+On first launch, refresh the output list, select one or more of your discovered speakers, and choose **Start**. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
 
-Open **Settings** from the gear in either the dashboard header or the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, silence standby, and the optional assistant can be changed there.
+Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there.
 
-For a group, open diagnostics and choose **Align selected group**. AirBridge measures one receiver at a time, temporarily floors the other receiver volumes, restores every prior volume, and proposes a 0–500 ms trim for each faster speaker. Confirm to save the proposal. The −/+ controls on each receiver row nudge its trim by 10 ms, including while streaming. Re-run alignment after changing the group or moving receivers; a receiver added to an already-playing group joins at the live edge and should be re-aligned.
+To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge.
 
 The five chirps enter in memory through the normalized capture fanout on the same 20 ms sender clock, so their measured medians include the bounded rings, alignment trim, named pipe, RAOP session, receiver latency, and room acoustic return. While measuring, synthetic chirp blocks temporarily replace concurrent capture blocks at one-times rate and can advance even when a silent endpoint emits no callback. No calibration or microphone media file is created.
 
-Silence standby is enabled by default after 60 seconds and is configurable from diagnostics (10–600 seconds or off) or the GPT tools. It releases all RAOP sessions so other senders can use the speakers while Windows capture stays ready. When real audio returns, AirBridge clears old queued PCM, restarts the same group through the shared gate, and reapplies saved trims and volumes. The reconnect handshake takes roughly 1–3 seconds and audio during that interval is intentionally not replayed.
+Silence standby is enabled by default after 60 seconds and is configurable from Settings (10–600 seconds or off) or the GPT tools. It releases all RAOP sessions so other senders can use the speakers while Windows capture stays ready. When real audio returns, AirBridge clears old queued PCM, restarts the same group through the shared gate, and reapplies saved trims and volumes. The reconnect handshake takes roughly 1–3 seconds and audio during that interval is intentionally not replayed.
 
-`OPENAI_API_KEY` is optional. Set it in the environment before launch to enable GPT-5.6 routing/diagnostic commands and `gpt-4o-transcribe` push-to-talk transcription:
+An OpenAI API key is optional. Paste it into **Settings** to save it for the current Windows user in Windows Credential Manager; the app never displays a saved key. `OPENAI_API_KEY` remains available as a managed override and takes precedence when set:
 
 ```powershell
 $env:OPENAI_API_KEY = "your-key"
@@ -59,7 +59,7 @@ The extension leaves the real `<video>` playing so its audio continues into WASA
 
 ## Runtime logs
 
-AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`. Open them from the dashboard diagnostics menu with **Open logs folder**. The logs include receiver state changes, RAOP subprocess stderr, and exception stack traces. Network addresses, hardware addresses, and pipe identifiers are redacted, and audio is never logged.
+AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`. Open them from **Settings → Advanced → Open logs folder**. The logs include receiver state changes, RAOP subprocess stderr, and exception stack traces. Network addresses, hardware addresses, and pipe identifiers are redacted, and audio is never logged.
 
 ## Verify and package
 

@@ -27,7 +27,8 @@ public sealed class SettingsStore
                     ? new(StringComparer.Ordinal)
                     : settings.ReceiverAlignmentTrimMs.ToDictionary(pair => pair.Key, pair => Math.Clamp(pair.Value, 0, 500), StringComparer.Ordinal),
                 SpeakerGroups = settings.SpeakerGroups ?? [],
-                SilenceStandbySeconds = Math.Clamp(settings.SilenceStandbySeconds, 10, 600)
+                SilenceStandbySeconds = Math.Clamp(settings.SilenceStandbySeconds, 10, 600),
+                PushToTalkHoldThresholdMs = Math.Clamp(settings.PushToTalkHoldThresholdMs, 100, 1000)
             };
         }
         catch (JsonException) { return new(); }

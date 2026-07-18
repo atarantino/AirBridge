@@ -257,7 +257,7 @@ async def main() -> None:
             elif command == "set_volume":
                 result = await host.set_volume(int(request["percent"]), request.get("receiver_id"))
             elif command == "diagnostic_tone":
-                result = await host.diagnostic_tone(request.get("receiver_name", "Kitchen"), float(request.get("seconds", 4)))
+                result = await host.diagnostic_tone(request["receiver_name"], float(request.get("seconds", 4)))
             elif command == "ping":
                 result = {"ok": True, "pyatv": pyatv.__version__ if hasattr(pyatv, "__version__") else "0.18.0"}
             else:

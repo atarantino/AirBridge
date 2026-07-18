@@ -10,6 +10,7 @@ public sealed class MainForm : Form
     private readonly AirBridgeController _controller = new();
     private readonly PushToTalkRecorder _recorder = new();
     private readonly SettingsStore _settingsStore = new();
+    private readonly IOpenAiCredentialStore _openAiCredentials = new WindowsOpenAiCredentialStore();
     private readonly SegmentedControl _sourceMode = new() { Width = 156, Height = 36 };
     private readonly ComboBox _sessions = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
     private readonly ComboBox _groups = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
@@ -43,7 +44,9 @@ public sealed class MainForm : Form
     private readonly NotifyIcon _tray = new() { Text = "AirBridge — idle" };
     private readonly ContextMenuStrip _trayMenu = new();
     private readonly TrayFlyoutForm _trayFlyout;
+    private readonly VoiceHudForm _voiceHud;
     private readonly System.Windows.Forms.Timer _timer = new() { Interval = 1000 };
+    private readonly System.Windows.Forms.Timer _hotkeyPollTimer = new() { Interval = 30 };
     private readonly ShutdownCoordinator _shutdown;
     private AirBridgeSettings _settings;
     private ThemePalette _palette;
@@ -60,6 +63,10 @@ public sealed class MainForm : Form
     private Control? _telemetryDetails;
     private System.Threading.Timer? _shutdownWatchdog;
     private readonly bool _previewMode;
+    private HotkeyGesture _hotkeyGesture;
+    private long _hotkeyPressedAt;
+    private bool _hotkeyWaitingForRelease;
+    private CancellationTokenSource? _transcriptionCancellation;
 
     public MainForm(bool previewMode = false, AppThemeMode? previewTheme = null, bool previewStreaming = true)
     {
@@ -72,6 +79,10 @@ public sealed class MainForm : Form
         var themeMode = previewTheme ?? ParseTheme(_settings.ThemeMode);
         _palette = ThemePalette.Current(themeMode);
         _trayFlyout = new(themeMode);
+        _voiceHud = new(_palette);
+        if (!_voiceHud.SetInitialPosition(_settings.VoiceHudX, _settings.VoiceHudY))
+            _settings = _settings with { VoiceHudX = null, VoiceHudY = null };
+        _hotkeyGesture = HotkeyGesture.TryParse(_settings.PushToTalkShortcut, out var gesture) ? gesture : HotkeyGesture.Default;
         _shutdown = new(_controller.ShutdownAsync, _controller.ForceCleanup, TimeSpan.FromSeconds(8));
 
         Text = "AirBridge for Windows";
@@ -79,17 +90,29 @@ public sealed class MainForm : Form
         ClientSize = new Size(920, 860);
         MinimumSize = new Size(720, 650);
         StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = previewMode;
+        Opacity = previewMode ? 1D : 0D;
         BuildLayout();
         BuildTraySurface();
         _tray.Visible = !previewMode;
         WireEvents();
         ApplyTheme();
         UpdateTelemetry();
-        Load += (_, _) => ApplyInitialDashboardBounds();
+        if (previewMode) Load += (_, _) => ApplyInitialPreviewBounds();
         if (previewMode) PopulatePreviewData(previewStreaming);
-        if (!previewMode) Shown += async (_, _) => await InitializeAsync();
+        if (!previewMode) Shown += async (_, _) =>
+        {
+            Hide();
+            _trayFlyout.ShowNearTrayIcon();
+            await InitializeAsync();
+        };
         FormClosing += OnFormClosing;
-        if (!previewMode) RegisterHotKey(Handle, HotkeyId, 0x0001 | 0x0002, (uint)Keys.Space);
+        if (!previewMode)
+        {
+            var (modifiers, virtualKey) = _hotkeyGesture.ToRegisterHotKeyArgs();
+            if (!RegisterHotKey(Handle, HotkeyId, modifiers, virtualKey))
+                AppendConversation("System", $"Could not register push-to-talk shortcut {_hotkeyGesture}; another app may be using it.");
+        }
     }
 
     private void WireEvents()
@@ -101,11 +124,13 @@ public sealed class MainForm : Form
         _controller.TelemetryEvent += (_, message) => SafeBeginInvoke(() => AppendConversation("Timing", message));
         _timer.Tick += (_, _) => UpdateTelemetry();
         _timer.Start();
+        _hotkeyPollTimer.Tick += (_, _) => PollHotkeyGesture();
         _tray.MouseClick += (_, args) => { if (args.Button == MouseButtons.Left) ToggleTrayFlyout(); };
-        _tray.DoubleClick += (_, _) => ShowDashboard();
         _trayMenu.Opening += (_, _) => RebuildTrayMenu();
-        _pushToTalk.MouseDown += (_, _) => StartRecording();
+        _pushToTalk.MouseDown += (_, _) => StartRecording(true);
         _pushToTalk.MouseUp += async (_, _) => await StopRecordingAndAskAsync();
+        _voiceHud.CancelRequested += (_, _) => CancelVoiceCommand();
+        _voiceHud.PositionCommitted += (_, _) => PersistVoiceHudPosition();
         _receiverPanel.ClientSizeChanged += (_, _) => ResizeReceiverRows();
         _receiverPanel.Layout += (_, _) => ResizeReceiverRows();
 
@@ -113,7 +138,6 @@ public sealed class MainForm : Form
         _trayFlyout.StopRequested += async (_, _) => await RunUiActionAsync(() => _controller.StopAsync());
         _trayFlyout.RefreshRequested += async (_, _) => await RunUiActionAsync(RefreshReceiversAsync);
         _trayFlyout.SettingsRequested += (_, _) => ShowSettingsDialog();
-        _trayFlyout.OpenDashboardRequested += (_, _) => ShowDashboard();
         _trayFlyout.QuitRequested += (_, _) => RequestQuit();
         _trayFlyout.ReceiverSelectionChanged += (_, args) => SetReceiverSelected(args.ReceiverId, args.Selected);
         _trayFlyout.ReceiverVolumeCommitted += async (_, args) => await ChangeReceiverVolumeAsync(args.ReceiverId, args.Volume);
@@ -301,6 +325,10 @@ public sealed class MainForm : Form
 
     private void BuildTraySurface()
     {
+        // NotifyIcon may not display a ContextMenuStrip that is empty when the
+        // first right-click begins. Seed it before attaching; Opening still
+        // rebuilds it so subsequent invocations reflect the current state.
+        RebuildTrayMenu();
         _tray.ContextMenuStrip = _trayMenu;
         ReplaceTrayIcon(StreamState.Idle);
     }
@@ -313,9 +341,9 @@ public sealed class MainForm : Form
             await RefreshReceiversAsync();
             RefreshSessions();
             RefreshGroups();
-            var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            var apiKey = ResolveOpenAiApiKey();
             if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller);
-            else AppendConversation("System", "Set OPENAI_API_KEY to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
+            else AppendConversation("System", "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
         });
     }
 
@@ -598,11 +626,8 @@ public sealed class MainForm : Form
         if (applications.DropDownItems.Count == 0) applications.DropDownItems.Add(new ToolStripMenuItem("No active audio applications") { Enabled = false });
         _trayMenu.Items.Add(applications);
         _trayMenu.Items.Add(new ToolStripSeparator());
-        _trayMenu.Items.Add("Analyze stream", null, async (_, _) => { ShowDashboard(); await AskAsync("Analyze the current stream health and recommend any action."); });
         _trayMenu.Items.Add("Measure delay", null, async (_, _) => await MeasureSelectedDelayAsync());
-        _trayMenu.Items.Add("Ask AirBridge…", null, (_, _) => { ShowDashboard(); _command.Focus(); });
         _trayMenu.Items.Add("Refresh speakers", null, async (_, _) => await RunUiActionAsync(RefreshReceiversAsync));
-        _trayMenu.Items.Add("Open dashboard", null, (_, _) => ShowDashboard());
         _trayMenu.Items.Add("Settings", null, (_, _) => ShowSettingsDialog());
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add("Quit", null, (_, _) => RequestQuit());
@@ -677,7 +702,7 @@ public sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(text)) return;
         AppendConversation("You", text);
         _command.Clear();
-        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because OPENAI_API_KEY is not set."); return; }
+        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because an OpenAI API key is not configured."); return; }
         await RunUiActionAsync(async () =>
         {
             var diagnostic = text.Contains("why", StringComparison.OrdinalIgnoreCase) || text.Contains("fix", StringComparison.OrdinalIgnoreCase) || text.Contains("analy", StringComparison.OrdinalIgnoreCase);
@@ -685,21 +710,118 @@ public sealed class MainForm : Form
         });
     }
 
-    private void StartRecording()
+    private bool StartRecording(bool holdHint)
     {
-        try { _recorder.Start(); _pushToTalk.Text = "Listening…"; }
-        catch (Exception ex) { AppendConversation("System", $"Microphone unavailable: {ex.Message}"); }
+        if (_transcriptionCancellation is not null) return false;
+        try
+        {
+            _recorder.Start();
+            _pushToTalk.Text = "Listening…";
+            if (!_previewMode) _voiceHud.ShowListening(() => _recorder.PeakLevel, holdHint);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppendConversation("System", $"Microphone unavailable: {ex.Message}");
+            if (!_previewMode) _voiceHud.ShowError(ex.Message);
+            return false;
+        }
     }
 
     private async Task StopRecordingAndAskAsync()
     {
         if (!_recorder.IsRecording) return;
+        StopHotkeyPolling();
         _pushToTalk.Text = "Transcribing…";
         var wav = _recorder.Stop();
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey)) { _pushToTalk.Text = "Hold to talk"; AppendConversation("System", "OPENAI_API_KEY is required for transcription."); return; }
-        await RunUiActionAsync(async () => await AskAsync(await PushToTalkRecorder.TranscribeAsync(wav, apiKey)));
+        var apiKey = ResolveOpenAiApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            _pushToTalk.Text = "Hold to talk";
+            AppendConversation("System", "An OpenAI API key is required for transcription.");
+            if (!_previewMode) _voiceHud.ShowError("An OpenAI API key is required.");
+            return;
+        }
+
+        _transcriptionCancellation = new CancellationTokenSource();
+        var cancellation = _transcriptionCancellation;
+        if (!_previewMode) _voiceHud.ShowTranscribing();
+        try
+        {
+            var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token);
+            if (!_previewMode) _voiceHud.HideHud();
+            await AskAsync(text);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+        {
+            if (!_previewMode) _voiceHud.HideHud();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("push-to-talk", "Voice transcription failed.", ex);
+            AppendConversation("System", ex.Message);
+            if (!_previewMode) _voiceHud.ShowError(ex.Message);
+        }
+        finally
+        {
+            if (ReferenceEquals(_transcriptionCancellation, cancellation)) _transcriptionCancellation = null;
+            cancellation.Dispose();
+            _pushToTalk.Text = "Hold to talk";
+        }
+    }
+
+    private void BeginHotkeyGesture()
+    {
+        if (_recorder.IsRecording)
+        {
+            _ = StopRecordingAndAskAsync();
+            return;
+        }
+        if (!StartRecording(true)) return;
+        _hotkeyPressedAt = Environment.TickCount64;
+        _hotkeyWaitingForRelease = true;
+        _hotkeyPollTimer.Start();
+    }
+
+    private void PollHotkeyGesture()
+    {
+        if (!_recorder.IsRecording)
+        {
+            StopHotkeyPolling();
+            return;
+        }
+
+        // Escape is observed, not swallowed; the foreground application still receives it.
+        if ((GetAsyncKeyState((int)Keys.Escape) & 0x8000) != 0)
+        {
+            CancelVoiceCommand();
+            return;
+        }
+        if (!_hotkeyWaitingForRelease || (GetAsyncKeyState(_hotkeyGesture.VirtualKey) & 0x8000) != 0) return;
+
+        _hotkeyWaitingForRelease = false;
+        var elapsed = Environment.TickCount64 - _hotkeyPressedAt;
+        if (elapsed < _settings.PushToTalkHoldThresholdMs)
+        {
+            _voiceHud.SetToggleHint();
+            return;
+        }
+        _ = StopRecordingAndAskAsync();
+    }
+
+    private void StopHotkeyPolling()
+    {
+        _hotkeyPollTimer.Stop();
+        _hotkeyWaitingForRelease = false;
+    }
+
+    private void CancelVoiceCommand()
+    {
+        StopHotkeyPolling();
+        if (_recorder.IsRecording) _recorder.Cancel();
+        _transcriptionCancellation?.Cancel();
         _pushToTalk.Text = "Hold to talk";
+        if (!_previewMode) _voiceHud.HideHud();
     }
 
     private async Task MeasureSelectedDelayAsync()
@@ -710,7 +832,6 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select exactly one currently streaming speaker before measuring delay.");
             return;
         }
-        ShowDashboard();
         AppendConversation("System", $"Measuring {active[0].Receiver.Name}; five short chirps will play and microphone audio stays in memory.");
         await RunUiActionAsync(async () =>
         {
@@ -721,6 +842,7 @@ public sealed class MainForm : Form
             UpdateMetricsSummary();
             _recommendation.Text = $"Measured {result.MedianMilliseconds} ms. Use this value in the browser extension.";
             AppendConversation("Delay", $"Median {result.MedianMilliseconds} ms ({string.Join(", ", result.DelaysMilliseconds)} ms). Use this value in the browser extension.");
+            MessageBox.Show($"Measured delay for {active[0].Receiver.Name}: {result.MedianMilliseconds} ms.\n\nUse this value in the browser extension.", "AirBridge delay measurement", MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
     }
 
@@ -732,7 +854,6 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select at least two currently streaming speakers before aligning the group.");
             return;
         }
-        ShowDashboard();
         AppendConversation("System", "Measuring speakers one at a time; non-target speakers will be temporarily muted and all volumes will be restored.");
         await RunUiActionAsync(async () =>
         {
@@ -769,6 +890,21 @@ public sealed class MainForm : Form
             _settingsStore.Save(_settings);
         }
         catch (Exception ex) { AppLog.Error("settings", "Could not save settings.", ex); AppendConversation("System", $"Could not save settings: {ex.Message}"); }
+    }
+
+    private void PersistVoiceHudPosition()
+    {
+        if (_previewMode) return;
+        try
+        {
+            _settings = _settings with { VoiceHudX = _voiceHud.Left, VoiceHudY = _voiceHud.Top };
+            _settingsStore.Save(_settings);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("settings", "Could not save the voice HUD position.", ex);
+            AppendConversation("System", $"Could not save the voice HUD position: {ex.Message}");
+        }
     }
 
     private void PersistAlignmentTrim(string receiverId, int milliseconds)
@@ -826,6 +962,7 @@ public sealed class MainForm : Form
         _root.BackColor = _palette.Window;
         ApplyThemedControls(_root);
         _trayFlyout.ApplyTheme(_palette);
+        _voiceHud.ApplyTheme(_palette);
         foreach (var row in _receiverRows.Values) row.ApplyTheme(_palette);
         _conversation.BackColor = _palette.Surface;
         _conversation.ForeColor = _palette.Text;
@@ -838,19 +975,68 @@ public sealed class MainForm : Form
     private void ShowSettingsDialog()
     {
         _trayFlyout.Hide();
-        using var dialog = new SettingsForm(_settings, _palette);
+        var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        bool storedApiKeyConfigured;
+        try { storedApiKeyConfigured = _openAiCredentials.IsConfigured; }
+        catch (Exception ex)
+        {
+            AppLog.Error("credentials", "Could not check OpenAI credential status.", ex);
+            MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers);
+        dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
         var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
         if (result != DialogResult.OK) return;
 
+        try
+        {
+            if (dialog.ReplacementApiKey is { } replacement) _openAiCredentials.Write(replacement);
+            else if (dialog.RemoveApiKeyRequested) _openAiCredentials.Delete();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("credentials", "Could not update the saved OpenAI credential.", ex);
+            MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        var alignmentTrims = new Dictionary<string, int>(_settings.ReceiverAlignmentTrimMs, StringComparer.Ordinal);
+        foreach (var pair in dialog.ReceiverAlignmentTrims) alignmentTrims[pair.Key] = pair.Value;
         var next = _settings with
         {
             ThemeMode = dialog.ThemeMode.ToString().ToLowerInvariant(),
             DefaultCaptureMode = dialog.DefaultCaptureMode,
             SilenceStandbyEnabled = dialog.SilenceStandbyEnabled,
             SilenceStandbySeconds = dialog.SilenceStandbySeconds,
+            PushToTalkShortcut = dialog.PushToTalkShortcut,
+            PushToTalkHoldThresholdMs = dialog.PushToTalkHoldThresholdMs,
+            ReceiverAlignmentTrimMs = alignmentTrims,
             AiEnabled = dialog.AiEnabled
         };
+        var previousGesture = _hotkeyGesture;
+        var candidateGesture = HotkeyGesture.TryParse(next.PushToTalkShortcut, out var parsedGesture) ? parsedGesture : HotkeyGesture.Default;
+        if (!_previewMode)
+        {
+            UnregisterHotKey(Handle, HotkeyId);
+            var (modifiers, virtualKey) = candidateGesture.ToRegisterHotKeyArgs();
+            if (RegisterHotKey(Handle, HotkeyId, modifiers, virtualKey))
+            {
+                _hotkeyGesture = candidateGesture;
+            }
+            else
+            {
+                var (previousModifiers, previousVirtualKey) = previousGesture.ToRegisterHotKeyArgs();
+                var restored = RegisterHotKey(Handle, HotkeyId, previousModifiers, previousVirtualKey);
+                next = next with { PushToTalkShortcut = previousGesture.ToString() };
+                AppendConversation("System", $"Could not use push-to-talk shortcut {candidateGesture} because another app is using it. The previous shortcut was restored{(restored ? "." : ", but Windows could not re-register it.")}");
+            }
+        }
+        else
+        {
+            _hotkeyGesture = candidateGesture;
+        }
         _settings = next;
         _settingsStore.Save(_settings);
         _controller.ConfigureSettings(_settings);
@@ -861,11 +1047,17 @@ public sealed class MainForm : Form
         _trayFlyout.SetThemeMode(themeMode);
         ApplyTheme();
 
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var apiKey = ResolveOpenAiApiKey();
         _agent = _settings.AiEnabled && !string.IsNullOrWhiteSpace(apiKey)
             ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller)
             : null;
         UpdateTelemetry();
+    }
+
+    private string? ResolveOpenAiApiKey()
+    {
+        var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        return !string.IsNullOrWhiteSpace(environmentApiKey) ? environmentApiKey.Trim() : _openAiCredentials.Read();
     }
 
     private void ToggleTrayFlyout()
@@ -909,9 +1101,7 @@ public sealed class MainForm : Form
         _conversation.AppendText(text + Environment.NewLine);
         _conversation.ScrollToCaret();
     }
-    private void ShowDashboard() { Show(); WindowState = FormWindowState.Normal; Activate(); }
-
-    private void ApplyInitialDashboardBounds()
+    private void ApplyInitialPreviewBounds()
     {
         var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
         var margin = UiGeometry.Scale(this, 24);
@@ -994,9 +1184,9 @@ public sealed class MainForm : Form
         var now = DateTimeOffset.UtcNow;
         var preview = new[]
         {
-            new ReceiverInfo("preview-kitchen", "Kitchen", "local-network-receiver", false, now),
-            new ReceiverInfo("preview-living", "Living room", "local-network-receiver", false, now),
-            new ReceiverInfo("preview-office", "Office HomePod", "local-network-receiver", false, now)
+            new ReceiverInfo("preview-a", "Desk Speaker", "local-network-receiver", false, now),
+            new ReceiverInfo("preview-b", "Media Room", "local-network-receiver", false, now),
+            new ReceiverInfo("preview-c", "Upstairs Speaker", "local-network-receiver", false, now)
         };
         _selectedReceiverIds.Add(preview[0].Id);
         if (streaming) _selectedReceiverIds.Add(preview[1].Id);
@@ -1014,12 +1204,12 @@ public sealed class MainForm : Form
             _trayFlyout.UpdateStatus(StreamState.Degraded, "Streaming to 2 speakers · 12:48", string.Empty);
             _state.Text = "Streaming to 2 speakers · 44.1 kHz";
             _state.ForeColor = _palette.Warning;
-            _route.Text = "Route: Kitchen +1";
+            _route.Text = "Route: Desk Speaker +1";
             _duration.Text = "Time: 12:48";
             _transport.Text = "Speakers: 1/2";
             UpdateMetricsSummary();
-            _recommendation.Text = "Recommended: retry Living room; Kitchen will keep playing.";
-            AppendConversation("AirBridge", "Kitchen is still streaming. Retry Living room when it becomes available.");
+            _recommendation.Text = "Recommended: retry Media Room; Desk Speaker will keep playing.";
+            AppendConversation("AirBridge", "Desk Speaker is still streaming. Retry Media Room when it becomes available.");
         }
         else
         {
@@ -1038,7 +1228,7 @@ public sealed class MainForm : Form
     {
         if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId)
         {
-            if (_recorder.IsRecording) _ = StopRecordingAndAskAsync(); else StartRecording();
+            BeginHotkeyGesture();
         }
         base.WndProc(ref m);
     }
@@ -1073,9 +1263,11 @@ public sealed class MainForm : Form
         AppLog.Info("lifecycle", "Quit requested; beginning bounded shutdown.");
         _shutdownStarted = true;
         UnregisterHotKey(Handle, HotkeyId);
+        CancelVoiceCommand();
         _timer.Stop();
         _tray.Visible = false;
         _trayFlyout.Hide();
+        _voiceHud.HideHud();
         _shutdownWatchdog = new System.Threading.Timer(_ =>
         {
             AppLog.Warning("lifecycle", "Shutdown watchdog expired; forcing cleanup.");
@@ -1101,9 +1293,12 @@ public sealed class MainForm : Form
         _shutdownWatchdog?.Dispose();
         _shutdownWatchdog = null;
         _timer.Stop();
+        _hotkeyPollTimer.Stop();
         _tray.Visible = false;
         _trayFlyout.Close();
         _trayFlyout.Dispose();
+        _voiceHud.Close();
+        _voiceHud.Dispose();
         _ownedTrayIcon?.Dispose();
         _ownedTrayIcon = null;
         _tray.Dispose();
@@ -1112,8 +1307,13 @@ public sealed class MainForm : Form
         _diagnosticsMenu.Dispose();
         _receiverLoading.Dispose();
         _recorder.Dispose();
+        _hotkeyPollTimer.Dispose();
+        _transcriptionCancellation?.Cancel();
+        _transcriptionCancellation?.Dispose();
+        _transcriptionCancellation = null;
     }
 
     [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);
     [DllImport("user32.dll")] private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+    [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int virtualKey);
 }

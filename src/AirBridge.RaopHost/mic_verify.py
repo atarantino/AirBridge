@@ -1,4 +1,4 @@
-"""Verify a Kitchen test tone acoustically using an explicitly selected microphone."""
+"""Verify a receiver test tone acoustically using an explicitly selected microphone."""
 from __future__ import annotations
 
 import argparse
@@ -124,7 +124,7 @@ async def baseline(device: str, seconds: int) -> dict:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", required=True)
-    parser.add_argument("--target", default="Kitchen")
+    parser.add_argument("--target", required=True)
     parser.add_argument("--seconds", type=int, default=8)
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--builtin", action="store_true")

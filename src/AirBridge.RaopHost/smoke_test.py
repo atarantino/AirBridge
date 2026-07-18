@@ -79,7 +79,7 @@ async def main(name: str, seconds: float, builtin: bool = False, airplay1: bool 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--target", default="Kitchen")
+    parser.add_argument("--target", required=True)
     parser.add_argument("--seconds", type=float, default=2.0)
     parser.add_argument("--builtin", action="store_true")
     parser.add_argument("--airplay1", action="store_true")

@@ -94,11 +94,11 @@ public sealed class SilenceStandbyTests
     [Fact]
     public void ResumePlanCarriesLastVolumeAndAlignmentTrim()
     {
-        var receiver = new ReceiverInfo("kitchen", "Kitchen", "local", false, DateTimeOffset.UtcNow);
+        var receiver = new ReceiverInfo("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
         var plan = ReceiverResumePlan.Create([new(receiver, StreamState.Standby, 18, DateTimeOffset.UtcNow, null, 60)]);
 
         var setting = Assert.Single(plan);
-        Assert.Equal("kitchen", setting.ReceiverId);
+        Assert.Equal("speakerA", setting.ReceiverId);
         Assert.Equal(18, setting.Volume);
         Assert.Equal(60, setting.AlignmentTrimMilliseconds);
     }
@@ -113,7 +113,7 @@ public sealed class SilenceStandbyTests
 
         ReceiverResumeSetting[] plan =
         [
-            new("kitchen", 18, 60),
+            new("speakerA", 18, 60),
             new("beam", 27, 0)
         ];
         await StandbyRouteTransition.ResumeAsync(
@@ -126,10 +126,10 @@ public sealed class SilenceStandbyTests
         [
             "stop-all",
             "released",
-            "trim:kitchen:60",
+            "trim:speakerA:60",
             "trim:beam:0",
-            "gate:kitchen,beam",
-            "start:kitchen:18",
+            "gate:speakerA,beam",
+            "start:speakerA:18",
             "start:beam:27"
         ], events);
     }
@@ -151,7 +151,7 @@ public sealed class SilenceStandbyTests
         var raop = new FakeRaopClient();
         var capture = new FakeCaptureService();
         await using var controller = new AirBridgeController(raop, capture);
-        var receiver = new ReceiverInfo("private-kitchen-id", "Kitchen", "local", false, DateTimeOffset.UtcNow);
+        var receiver = new ReceiverInfo("private-speakerA-id", "Speaker A", "local", false, DateTimeOffset.UtcNow);
         controller.ConfigureSettings(new AirBridgeSettings
         {
             ReceiverAlignmentTrimMs = new(StringComparer.Ordinal) { [receiver.Id] = 60 },

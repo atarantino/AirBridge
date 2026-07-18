@@ -210,6 +210,7 @@ public sealed class ReceiverRowControl : UserControl
         BackColor = palette.Surface;
         ForeColor = palette.Text;
         _volume.ApplyTheme(palette);
+        _volume.BackColor = Color.Transparent;
         _trimDown.ApplyTheme(palette);
         _trimUp.ApplyTheme(palette);
         _trimDown.BackColor = Color.Transparent;

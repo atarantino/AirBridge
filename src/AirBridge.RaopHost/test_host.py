@@ -57,7 +57,7 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.host = host_module.Host()
         self.host.devices = {
-            "kitchen": FakeConfig("config-kitchen", "Kitchen"),
+            "speakerA": FakeConfig("config-speakerA", "Speaker A"),
             "office": FakeConfig("config-office", "Office"),
         }
         self.atvs = [FakeAtv(), FakeAtv()]
@@ -77,7 +77,7 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_sessions_start_and_stop_independently(self):
         await asyncio.gather(
-            self.host.start("kitchen", None, "pipe-kitchen"),
+            self.host.start("speakerA", None, "pipe-speakerA"),
             self.host.start("office", None, "pipe-office"),
         )
         await asyncio.gather(*(
@@ -86,24 +86,24 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
         ))
         await asyncio.sleep(0)
 
-        self.assertEqual({"kitchen", "office"}, set(self.host.sessions))
+        self.assertEqual({"speakerA", "office"}, set(self.host.sessions))
         state_events = [call.args[0] for call in self.emit.await_args_list if call.args[0].get("event") == "state"]
-        self.assertTrue(any(event["receiver_id"] == "kitchen" and event["state"] == "streaming" for event in state_events))
+        self.assertTrue(any(event["receiver_id"] == "speakerA" and event["state"] == "streaming" for event in state_events))
         self.assertTrue(any(event["receiver_id"] == "office" and event["state"] == "streaming" for event in state_events))
 
-        result = await self.host.stop("kitchen")
+        result = await self.host.stop("speakerA")
 
         self.assertTrue(result["was_active"])
         self.assertEqual({"office"}, set(self.host.sessions))
         self.assertTrue(self.atvs[0].closed)
         self.assertFalse(self.atvs[1].closed)
         self.assertTrue(any(
-            call.args[0].get("receiver_id") == "kitchen" and call.args[0].get("state") == "idle"
+            call.args[0].get("receiver_id") == "speakerA" and call.args[0].get("state") == "idle"
             for call in self.emit.await_args_list
         ))
 
     async def test_volume_is_receiver_scoped(self):
-        await self.host.start("kitchen", None, "pipe-kitchen")
+        await self.host.start("speakerA", None, "pipe-speakerA")
         await self.host.start("office", None, "pipe-office")
 
         result = await self.host.set_volume(37, "office")
@@ -115,12 +115,12 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
             await self.host.set_volume(50)
 
     async def test_initial_volume_is_applied_only_after_record(self):
-        await self.host.start("kitchen", None, "pipe-kitchen", initial_volume=30)
-        await asyncio.wait_for(self.host.sessions["kitchen"].stream_ready.wait(), timeout=1)
+        await self.host.start("speakerA", None, "pipe-speakerA", initial_volume=30)
+        await asyncio.wait_for(self.host.sessions["speakerA"].stream_ready.wait(), timeout=1)
 
         self.assertEqual(["RECORD", ("SET_VOLUME", 30.0)], self.atvs[0].events)
         self.assertEqual([], self.atvs[0].audio.volumes)
-        self.assertEqual(30, self.host.sessions["kitchen"].desired_volume)
+        self.assertEqual(30, self.host.sessions["speakerA"].desired_volume)
 
     async def test_early_live_volume_waits_for_record_readiness(self):
         release_record = asyncio.Event()
@@ -131,8 +131,8 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
             await asyncio.Future()
 
         with patch.object(host_module, "stream_with_initial_volume", new=delayed_stream):
-            await self.host.start("kitchen", None, "pipe-kitchen", initial_volume=14)
-            volume_change = asyncio.create_task(self.host.set_volume(10, "kitchen"))
+            await self.host.start("speakerA", None, "pipe-speakerA", initial_volume=14)
+            volume_change = asyncio.create_task(self.host.set_volume(10, "speakerA"))
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
@@ -150,7 +150,7 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
                     break
                 await asyncio.sleep(0)
 
-            self.assertEqual({"receiver_id": "kitchen", "volume": 10}, result)
+            self.assertEqual({"receiver_id": "speakerA", "volume": 10}, result)
             self.assertEqual([10.0], self.atvs[0].audio.volumes)
             self.assertTrue(any(
                 call.args[0].get("state") == "streaming"
@@ -158,13 +158,13 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
             ))
 
     async def test_legacy_untargeted_commands_work_for_single_session(self):
-        await self.host.start("kitchen", None, "pipe-kitchen")
+        await self.host.start("speakerA", None, "pipe-speakerA")
 
         await self.host.set_volume(64)
         result = await self.host.stop()
 
         self.assertEqual([64.0], self.atvs[0].audio.volumes)
-        self.assertEqual(["kitchen"], result["receiver_ids"])
+        self.assertEqual(["speakerA"], result["receiver_ids"])
         self.assertEqual({}, self.host.sessions)
 
 
