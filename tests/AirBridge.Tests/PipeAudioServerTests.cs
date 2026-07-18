@@ -87,35 +87,35 @@ public sealed class PipeAudioServerTests
     [Fact]
     public async Task TwoActualPipeClientsReceiveSilenceThenSameFirstLiveGateIteration()
     {
-        await using var kitchenServer = new PipeAudioServer();
+        await using var speakerAServer = new PipeAudioServer();
         await using var beamServer = new PipeAudioServer();
-        kitchenServer.Start();
+        speakerAServer.Start();
         beamServer.Start();
-        await using var kitchenClient = await ConnectAsync(kitchenServer);
+        await using var speakerAClient = await ConnectAsync(speakerAServer);
         await using var beamClient = await ConnectAsync(beamServer);
-        var kitchenBuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4);
+        var speakerABuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4);
         var beamBuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4);
         var live = Enumerable.Repeat((byte)0x5A, SharedAudioPump.BlockBytes).ToArray();
-        kitchenBuffer.Write(live);
+        speakerABuffer.Write(live);
         beamBuffer.Write(live);
         var pump = new SharedAudioPump();
-        pump.AddLeg("kitchen", kitchenBuffer, kitchenServer, 0);
+        pump.AddLeg("speakerA", speakerABuffer, speakerAServer, 0);
         pump.AddLeg("beam", beamBuffer, beamServer, 0);
-        pump.BeginGroup(["kitchen", "beam"]);
+        pump.BeginGroup(["speakerA", "beam"]);
 
-        pump.MarkReady("kitchen");
+        pump.MarkReady("speakerA");
         await pump.PumpOnceAsync();
-        var gatedKitchen = await ReadBlockAsync(kitchenClient);
+        var gatedSpeakerA = await ReadBlockAsync(speakerAClient);
         var gatedBeam = await ReadBlockAsync(beamClient);
-        Assert.All(gatedKitchen, value => Assert.Equal(0, value));
+        Assert.All(gatedSpeakerA, value => Assert.Equal(0, value));
         Assert.All(gatedBeam, value => Assert.Equal(0, value));
 
         pump.MarkReady("beam");
         await pump.PumpOnceAsync();
-        var firstLiveKitchen = await ReadBlockAsync(kitchenClient);
+        var firstLiveSpeakerA = await ReadBlockAsync(speakerAClient);
         var firstLiveBeam = await ReadBlockAsync(beamClient);
-        Assert.Equal(live, firstLiveKitchen);
-        Assert.Equal(firstLiveKitchen, firstLiveBeam);
+        Assert.Equal(live, firstLiveSpeakerA);
+        Assert.Equal(firstLiveSpeakerA, firstLiveBeam);
     }
 
     private static async Task<NamedPipeClientStream> ConnectAsync(PipeAudioServer server)

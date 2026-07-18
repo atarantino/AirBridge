@@ -107,7 +107,7 @@ public sealed record StreamHealth(
 
 public sealed record AirBridgeSettings
 {
-    public string DefaultReceiverName { get; init; } = "Kitchen";
+    public string DefaultReceiverName { get; init; } = string.Empty;
     public string? DefaultReceiverId { get; init; }
     public CaptureMode DefaultCaptureMode { get; init; } = CaptureMode.SystemMix;
     public QualityProfile QualityProfile { get; init; } = QualityProfile.Balanced;

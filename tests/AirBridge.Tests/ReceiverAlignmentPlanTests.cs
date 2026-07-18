@@ -22,12 +22,12 @@ public sealed class ReceiverAlignmentPlanTests
     {
         var proposal = ReceiverAlignmentPlan.ProposeTrims(new Dictionary<string, int>
         {
-            ["kitchen"] = 1813,
+            ["speakerA"] = 1813,
             ["office"] = 1958,
             ["bedroom"] = 1931
         });
 
-        Assert.Equal(150, proposal["kitchen"]); // 1958 - 1813 = 145, midpoint rounds away from zero.
+        Assert.Equal(150, proposal["speakerA"]); // 1958 - 1813 = 145, midpoint rounds away from zero.
         Assert.Equal(0, proposal["office"]);
         Assert.Equal(30, proposal["bedroom"]); // 27 ms rounds to 30 ms.
     }
@@ -59,14 +59,14 @@ public sealed class ReceiverAlignmentPlanTests
     [Fact]
     public void MeasurementIsolationFloorsOnlyNonTargetReceiversAndOriginalPlanIsRestorable()
     {
-        var original = new Dictionary<string, int> { ["kitchen"] = 18, ["beam"] = 8, ["office"] = 42 };
+        var original = new Dictionary<string, int> { ["speakerA"] = 18, ["beam"] = 8, ["office"] = 42 };
 
         var isolated = ReceiverAlignmentPlan.MeasurementVolumePlan("beam", original);
 
-        Assert.Equal(0, isolated["kitchen"]);
+        Assert.Equal(0, isolated["speakerA"]);
         Assert.Equal(8, isolated["beam"]);
         Assert.Equal(0, isolated["office"]);
-        Assert.Equal(18, original["kitchen"]);
+        Assert.Equal(18, original["speakerA"]);
         Assert.Equal(42, original["office"]);
     }
 
@@ -75,13 +75,13 @@ public sealed class ReceiverAlignmentPlanTests
     {
         var skews = ReceiverAlignmentPlan.PairwiseSkews(new Dictionary<string, int>
         {
-            ["kitchen"] = 1840,
+            ["speakerA"] = 1840,
             ["beam"] = 1912
         });
 
         var skew = Assert.Single(skews);
         Assert.Equal(72, skew.SkewMilliseconds);
-        Assert.Equal("kitchen", skew.EarlyReceiverId);
+        Assert.Equal("speakerA", skew.EarlyReceiverId);
     }
 
     [Fact]
@@ -89,7 +89,7 @@ public sealed class ReceiverAlignmentPlanTests
     {
         var proposal = ReceiverAlignmentPlan.ProposeTrims(new Dictionary<string, int>
         {
-            ["kitchen"] = 1900,
+            ["speakerA"] = 1900,
             ["beam"] = 1900,
             ["office"] = 1900
         });
@@ -99,36 +99,36 @@ public sealed class ReceiverAlignmentPlanTests
     [Fact]
     public void ExistingTrimIsRemovedBeforeComputingAbsoluteReplacementProposal()
     {
-        var measured = new Dictionary<string, int> { ["kitchen"] = 1900, ["beam"] = 1900 };
-        var current = new Dictionary<string, int> { ["kitchen"] = 100, ["beam"] = 0 };
+        var measured = new Dictionary<string, int> { ["speakerA"] = 1900, ["beam"] = 1900 };
+        var current = new Dictionary<string, int> { ["speakerA"] = 100, ["beam"] = 0 };
 
         var untrimmed = ReceiverAlignmentPlan.RemoveAppliedTrims(measured, current);
         var proposal = ReceiverAlignmentPlan.ProposeTrims(untrimmed);
 
-        Assert.Equal(1800, untrimmed["kitchen"]);
+        Assert.Equal(1800, untrimmed["speakerA"]);
         Assert.Equal(1900, untrimmed["beam"]);
-        Assert.Equal(100, proposal["kitchen"]);
+        Assert.Equal(100, proposal["speakerA"]);
         Assert.Equal(0, proposal["beam"]);
     }
 
     [Fact]
     public void AlignmentProposalRejectsChangedRouteMembershipOrTrimSnapshot()
     {
-        var result = new GroupAlignmentResult([], [], new Dictionary<string, int> { ["kitchen"] = 60 }, false)
+        var result = new GroupAlignmentResult([], [], new Dictionary<string, int> { ["speakerA"] = 60 }, false)
         {
             RouteStreamId = "route-a",
-            RouteReceiverIds = ["kitchen", "beam"],
-            BaselineTrimMilliseconds = new Dictionary<string, int> { ["kitchen"] = 20, ["beam"] = 0 }
+            RouteReceiverIds = ["speakerA", "beam"],
+            BaselineTrimMilliseconds = new Dictionary<string, int> { ["speakerA"] = 20, ["beam"] = 0 }
         };
-        var trims = new Dictionary<string, int> { ["kitchen"] = 20, ["beam"] = 0 };
+        var trims = new Dictionary<string, int> { ["speakerA"] = 20, ["beam"] = 0 };
 
-        GroupAlignmentApplicability.Validate(result, "route-a", ["beam", "kitchen"], trims);
-        Assert.Throws<InvalidOperationException>(() => GroupAlignmentApplicability.Validate(result, "route-b", ["beam", "kitchen"], trims));
-        Assert.Throws<InvalidOperationException>(() => GroupAlignmentApplicability.Validate(result, "route-a", ["kitchen"], trims));
+        GroupAlignmentApplicability.Validate(result, "route-a", ["beam", "speakerA"], trims);
+        Assert.Throws<InvalidOperationException>(() => GroupAlignmentApplicability.Validate(result, "route-b", ["beam", "speakerA"], trims));
+        Assert.Throws<InvalidOperationException>(() => GroupAlignmentApplicability.Validate(result, "route-a", ["speakerA"], trims));
         Assert.Throws<InvalidOperationException>(() => GroupAlignmentApplicability.Validate(
             result,
             "route-a",
-            ["beam", "kitchen"],
-            new Dictionary<string, int> { ["kitchen"] = 30, ["beam"] = 0 }));
+            ["beam", "speakerA"],
+            new Dictionary<string, int> { ["speakerA"] = 30, ["beam"] = 0 }));
     }
 }

@@ -10,6 +10,7 @@ public sealed class MainForm : Form
     private readonly AirBridgeController _controller = new();
     private readonly PushToTalkRecorder _recorder = new();
     private readonly SettingsStore _settingsStore = new();
+    private readonly IOpenAiCredentialStore _openAiCredentials = new WindowsOpenAiCredentialStore();
     private readonly SegmentedControl _sourceMode = new() { Width = 156, Height = 36 };
     private readonly ComboBox _sessions = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
     private readonly ComboBox _groups = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
@@ -79,15 +80,22 @@ public sealed class MainForm : Form
         ClientSize = new Size(920, 860);
         MinimumSize = new Size(720, 650);
         StartPosition = FormStartPosition.Manual;
+        ShowInTaskbar = previewMode;
+        Opacity = previewMode ? 1D : 0D;
         BuildLayout();
         BuildTraySurface();
         _tray.Visible = !previewMode;
         WireEvents();
         ApplyTheme();
         UpdateTelemetry();
-        Load += (_, _) => ApplyInitialDashboardBounds();
+        if (previewMode) Load += (_, _) => ApplyInitialPreviewBounds();
         if (previewMode) PopulatePreviewData(previewStreaming);
-        if (!previewMode) Shown += async (_, _) => await InitializeAsync();
+        if (!previewMode) Shown += async (_, _) =>
+        {
+            Hide();
+            _trayFlyout.ShowNearTrayIcon();
+            await InitializeAsync();
+        };
         FormClosing += OnFormClosing;
         if (!previewMode) RegisterHotKey(Handle, HotkeyId, 0x0001 | 0x0002, (uint)Keys.Space);
     }
@@ -102,7 +110,6 @@ public sealed class MainForm : Form
         _timer.Tick += (_, _) => UpdateTelemetry();
         _timer.Start();
         _tray.MouseClick += (_, args) => { if (args.Button == MouseButtons.Left) ToggleTrayFlyout(); };
-        _tray.DoubleClick += (_, _) => ShowDashboard();
         _trayMenu.Opening += (_, _) => RebuildTrayMenu();
         _pushToTalk.MouseDown += (_, _) => StartRecording();
         _pushToTalk.MouseUp += async (_, _) => await StopRecordingAndAskAsync();
@@ -113,7 +120,6 @@ public sealed class MainForm : Form
         _trayFlyout.StopRequested += async (_, _) => await RunUiActionAsync(() => _controller.StopAsync());
         _trayFlyout.RefreshRequested += async (_, _) => await RunUiActionAsync(RefreshReceiversAsync);
         _trayFlyout.SettingsRequested += (_, _) => ShowSettingsDialog();
-        _trayFlyout.OpenDashboardRequested += (_, _) => ShowDashboard();
         _trayFlyout.QuitRequested += (_, _) => RequestQuit();
         _trayFlyout.ReceiverSelectionChanged += (_, args) => SetReceiverSelected(args.ReceiverId, args.Selected);
         _trayFlyout.ReceiverVolumeCommitted += async (_, args) => await ChangeReceiverVolumeAsync(args.ReceiverId, args.Volume);
@@ -301,6 +307,10 @@ public sealed class MainForm : Form
 
     private void BuildTraySurface()
     {
+        // NotifyIcon may not display a ContextMenuStrip that is empty when the
+        // first right-click begins. Seed it before attaching; Opening still
+        // rebuilds it so subsequent invocations reflect the current state.
+        RebuildTrayMenu();
         _tray.ContextMenuStrip = _trayMenu;
         ReplaceTrayIcon(StreamState.Idle);
     }
@@ -313,9 +323,9 @@ public sealed class MainForm : Form
             await RefreshReceiversAsync();
             RefreshSessions();
             RefreshGroups();
-            var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+            var apiKey = ResolveOpenAiApiKey();
             if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller);
-            else AppendConversation("System", "Set OPENAI_API_KEY to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
+            else AppendConversation("System", "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
         });
     }
 
@@ -598,11 +608,8 @@ public sealed class MainForm : Form
         if (applications.DropDownItems.Count == 0) applications.DropDownItems.Add(new ToolStripMenuItem("No active audio applications") { Enabled = false });
         _trayMenu.Items.Add(applications);
         _trayMenu.Items.Add(new ToolStripSeparator());
-        _trayMenu.Items.Add("Analyze stream", null, async (_, _) => { ShowDashboard(); await AskAsync("Analyze the current stream health and recommend any action."); });
         _trayMenu.Items.Add("Measure delay", null, async (_, _) => await MeasureSelectedDelayAsync());
-        _trayMenu.Items.Add("Ask AirBridge…", null, (_, _) => { ShowDashboard(); _command.Focus(); });
         _trayMenu.Items.Add("Refresh speakers", null, async (_, _) => await RunUiActionAsync(RefreshReceiversAsync));
-        _trayMenu.Items.Add("Open dashboard", null, (_, _) => ShowDashboard());
         _trayMenu.Items.Add("Settings", null, (_, _) => ShowSettingsDialog());
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add("Quit", null, (_, _) => RequestQuit());
@@ -677,7 +684,7 @@ public sealed class MainForm : Form
         if (string.IsNullOrWhiteSpace(text)) return;
         AppendConversation("You", text);
         _command.Clear();
-        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because OPENAI_API_KEY is not set."); return; }
+        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because an OpenAI API key is not configured."); return; }
         await RunUiActionAsync(async () =>
         {
             var diagnostic = text.Contains("why", StringComparison.OrdinalIgnoreCase) || text.Contains("fix", StringComparison.OrdinalIgnoreCase) || text.Contains("analy", StringComparison.OrdinalIgnoreCase);
@@ -696,8 +703,8 @@ public sealed class MainForm : Form
         if (!_recorder.IsRecording) return;
         _pushToTalk.Text = "Transcribing…";
         var wav = _recorder.Stop();
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey)) { _pushToTalk.Text = "Hold to talk"; AppendConversation("System", "OPENAI_API_KEY is required for transcription."); return; }
+        var apiKey = ResolveOpenAiApiKey();
+        if (string.IsNullOrWhiteSpace(apiKey)) { _pushToTalk.Text = "Hold to talk"; AppendConversation("System", "An OpenAI API key is required for transcription."); return; }
         await RunUiActionAsync(async () => await AskAsync(await PushToTalkRecorder.TranscribeAsync(wav, apiKey)));
         _pushToTalk.Text = "Hold to talk";
     }
@@ -710,7 +717,6 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select exactly one currently streaming speaker before measuring delay.");
             return;
         }
-        ShowDashboard();
         AppendConversation("System", $"Measuring {active[0].Receiver.Name}; five short chirps will play and microphone audio stays in memory.");
         await RunUiActionAsync(async () =>
         {
@@ -721,6 +727,7 @@ public sealed class MainForm : Form
             UpdateMetricsSummary();
             _recommendation.Text = $"Measured {result.MedianMilliseconds} ms. Use this value in the browser extension.";
             AppendConversation("Delay", $"Median {result.MedianMilliseconds} ms ({string.Join(", ", result.DelaysMilliseconds)} ms). Use this value in the browser extension.");
+            MessageBox.Show($"Measured delay for {active[0].Receiver.Name}: {result.MedianMilliseconds} ms.\n\nUse this value in the browser extension.", "AirBridge delay measurement", MessageBoxButtons.OK, MessageBoxIcon.Information);
         });
     }
 
@@ -732,7 +739,6 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select at least two currently streaming speakers before aligning the group.");
             return;
         }
-        ShowDashboard();
         AppendConversation("System", "Measuring speakers one at a time; non-target speakers will be temporarily muted and all volumes will be restored.");
         await RunUiActionAsync(async () =>
         {
@@ -838,17 +844,42 @@ public sealed class MainForm : Form
     private void ShowSettingsDialog()
     {
         _trayFlyout.Hide();
-        using var dialog = new SettingsForm(_settings, _palette);
+        var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        bool storedApiKeyConfigured;
+        try { storedApiKeyConfigured = _openAiCredentials.IsConfigured; }
+        catch (Exception ex)
+        {
+            AppLog.Error("credentials", "Could not check OpenAI credential status.", ex);
+            MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers);
+        dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
         var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
         if (result != DialogResult.OK) return;
 
+        try
+        {
+            if (dialog.ReplacementApiKey is { } replacement) _openAiCredentials.Write(replacement);
+            else if (dialog.RemoveApiKeyRequested) _openAiCredentials.Delete();
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("credentials", "Could not update the saved OpenAI credential.", ex);
+            MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+
+        var alignmentTrims = new Dictionary<string, int>(_settings.ReceiverAlignmentTrimMs, StringComparer.Ordinal);
+        foreach (var pair in dialog.ReceiverAlignmentTrims) alignmentTrims[pair.Key] = pair.Value;
         var next = _settings with
         {
             ThemeMode = dialog.ThemeMode.ToString().ToLowerInvariant(),
             DefaultCaptureMode = dialog.DefaultCaptureMode,
             SilenceStandbyEnabled = dialog.SilenceStandbyEnabled,
             SilenceStandbySeconds = dialog.SilenceStandbySeconds,
+            ReceiverAlignmentTrimMs = alignmentTrims,
             AiEnabled = dialog.AiEnabled
         };
         _settings = next;
@@ -861,11 +892,17 @@ public sealed class MainForm : Form
         _trayFlyout.SetThemeMode(themeMode);
         ApplyTheme();
 
-        var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var apiKey = ResolveOpenAiApiKey();
         _agent = _settings.AiEnabled && !string.IsNullOrWhiteSpace(apiKey)
             ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller)
             : null;
         UpdateTelemetry();
+    }
+
+    private string? ResolveOpenAiApiKey()
+    {
+        var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        return !string.IsNullOrWhiteSpace(environmentApiKey) ? environmentApiKey.Trim() : _openAiCredentials.Read();
     }
 
     private void ToggleTrayFlyout()
@@ -909,9 +946,7 @@ public sealed class MainForm : Form
         _conversation.AppendText(text + Environment.NewLine);
         _conversation.ScrollToCaret();
     }
-    private void ShowDashboard() { Show(); WindowState = FormWindowState.Normal; Activate(); }
-
-    private void ApplyInitialDashboardBounds()
+    private void ApplyInitialPreviewBounds()
     {
         var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
         var margin = UiGeometry.Scale(this, 24);
@@ -994,9 +1029,9 @@ public sealed class MainForm : Form
         var now = DateTimeOffset.UtcNow;
         var preview = new[]
         {
-            new ReceiverInfo("preview-kitchen", "Kitchen", "local-network-receiver", false, now),
-            new ReceiverInfo("preview-living", "Living room", "local-network-receiver", false, now),
-            new ReceiverInfo("preview-office", "Office HomePod", "local-network-receiver", false, now)
+            new ReceiverInfo("preview-a", "Desk Speaker", "local-network-receiver", false, now),
+            new ReceiverInfo("preview-b", "Media Room", "local-network-receiver", false, now),
+            new ReceiverInfo("preview-c", "Upstairs Speaker", "local-network-receiver", false, now)
         };
         _selectedReceiverIds.Add(preview[0].Id);
         if (streaming) _selectedReceiverIds.Add(preview[1].Id);
@@ -1014,12 +1049,12 @@ public sealed class MainForm : Form
             _trayFlyout.UpdateStatus(StreamState.Degraded, "Streaming to 2 speakers · 12:48", string.Empty);
             _state.Text = "Streaming to 2 speakers · 44.1 kHz";
             _state.ForeColor = _palette.Warning;
-            _route.Text = "Route: Kitchen +1";
+            _route.Text = "Route: Desk Speaker +1";
             _duration.Text = "Time: 12:48";
             _transport.Text = "Speakers: 1/2";
             UpdateMetricsSummary();
-            _recommendation.Text = "Recommended: retry Living room; Kitchen will keep playing.";
-            AppendConversation("AirBridge", "Kitchen is still streaming. Retry Living room when it becomes available.");
+            _recommendation.Text = "Recommended: retry Media Room; Desk Speaker will keep playing.";
+            AppendConversation("AirBridge", "Desk Speaker is still streaming. Retry Media Room when it becomes available.");
         }
         else
         {

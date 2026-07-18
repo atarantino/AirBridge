@@ -15,7 +15,9 @@ if (args.Length > 0 && args[0] == "--devices")
 }
 
 var command = args.FirstOrDefault() ?? "--full-pipeline";
-var target = command.StartsWith("--", StringComparison.Ordinal) ? args.ElementAtOrDefault(1) ?? "Kitchen" : command;
+var target = command.StartsWith("--", StringComparison.Ordinal) ? args.ElementAtOrDefault(1) : command;
+if (string.IsNullOrWhiteSpace(target))
+    throw new ArgumentException("Specify the discovered receiver name after the command.");
 await using var controller = new AirBridgeController();
 await controller.InitializeAsync();
 var receivers = await controller.DiscoverAsync();
