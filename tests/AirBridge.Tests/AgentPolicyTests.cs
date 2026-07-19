@@ -45,17 +45,22 @@ public sealed class AgentPolicyTests
         var store = new ToolConfirmationStore();
         using var requested = JsonDocument.Parse("{\"receiver_ids\":[\"receiver-1\",\"receiver-2\"],\"mode\":\"group\"}");
         using var reordered = JsonDocument.Parse("{\"mode\":\"group\",\"receiver_ids\":[\"receiver-1\",\"receiver-2\"]}");
+        using var receiversReordered = JsonDocument.Parse("{\"mode\":\"group\",\"receiver_ids\":[\"receiver-2\",\"receiver-1\"]}");
         using var changed = JsonDocument.Parse("{\"mode\":\"group\",\"receiver_ids\":[\"receiver-1\",\"receiver-3\"]}");
 
         store.Request("align_group", requested.RootElement);
         Assert.False(store.TryConsume("align_group", changed.RootElement));
-        Assert.True(store.TryConsume("align_group", reordered.RootElement));
+        Assert.True(store.TryConsume("align_group", receiversReordered.RootElement));
         Assert.False(store.TryConsume("align_group", reordered.RootElement));
     }
 
     [Theory]
     [InlineData("align the speaker group", true)]
     [InlineData("please align the speakers in Speaker A", true)]
+    [InlineData("I explicitly allow you to align the speakers", true)]
+    [InlineData("I approve this alignment", true)]
+    [InlineData("let's align the kitchen and office", true)]
+    [InlineData("you have my permission to align the speaker group", true)]
     [InlineData("don't align the speakers", false)]
     [InlineData("tell me whether we should align the speakers", false)]
     public void DirectMicrophoneAuthorizationRequiresClearNonNegatedImperativeAndIsOneShot(string text, bool allowed)
@@ -83,6 +88,7 @@ public sealed class AgentPolicyTests
     [InlineData(0)]
     [InlineData(60)]
     [InlineData(500)]
+    [InlineData(2000)]
     public void ReceiverAlignmentTrimAllowsDocumentedRange(int delayMs)
     {
         using var args = JsonDocument.Parse($$"""{"receiver_id":"speakerA","trim_ms":{{delayMs}}}""");
@@ -91,7 +97,7 @@ public sealed class AgentPolicyTests
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(501)]
+    [InlineData(2001)]
     public void ReceiverAlignmentTrimRejectsValuesOutsideDocumentedRange(int delayMs)
     {
         using var args = JsonDocument.Parse($$"""{"receiver_id":"speakerA","trim_ms":{{delayMs}}}""");

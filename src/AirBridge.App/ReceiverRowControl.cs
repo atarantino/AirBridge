@@ -577,11 +577,11 @@ public sealed class ReceiverRowControl : UserControl
 
     private void SetAlignmentTrimCore(int milliseconds)
     {
-        _alignmentTrimMilliseconds = Math.Clamp(milliseconds, 0, 500);
+        _alignmentTrimMilliseconds = Math.Clamp(milliseconds, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds);
         _trimValue.Text = $"Sync {_alignmentTrimMilliseconds} ms";
         _trimValue.AccessibleDescription = $"Additional alignment delay is {_alignmentTrimMilliseconds} milliseconds.";
         _trimDown.Enabled = _alignmentTrimMilliseconds > 0;
-        _trimUp.Enabled = _alignmentTrimMilliseconds < 500;
+        _trimUp.Enabled = _alignmentTrimMilliseconds < ReceiverAlignmentPlan.MaximumTrimMilliseconds;
         UpdateAccessibility();
     }
 

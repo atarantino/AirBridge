@@ -10,11 +10,14 @@ internal sealed class AgentActivityStore : IAgentActivitySink
     private readonly object _gate = new();
     private readonly Queue<AgentActivityEvent> _events = new();
     private readonly int _capacity;
+    private readonly PersistentAgentActivityLog? _persistentLog;
 
-    internal AgentActivityStore(int capacity = DefaultCapacity)
+    internal AgentActivityStore(int capacity = DefaultCapacity, bool persistToDisk = false, string? logPath = null)
     {
         if (capacity is < 10 or > 5000) throw new ArgumentOutOfRangeException(nameof(capacity));
         _capacity = capacity;
+        if (persistToDisk)
+            _persistentLog = new(logPath ?? System.IO.Path.Combine(AppLog.DirectoryPath, "ai-activity.jsonl"));
     }
 
     internal event Action<AgentActivityEvent>? ActivityPublished;
@@ -33,8 +36,20 @@ internal sealed class AgentActivityStore : IAgentActivitySink
             _events.Enqueue(sanitized);
             while (_events.Count > _capacity) _events.Dequeue();
         }
+        if (ShouldPersist(sanitized.Kind))
+        {
+            try { _persistentLog?.Write(sanitized); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                AppLog.Warning("ai-activity", $"Could not persist sanitized AI activity: {ex.Message}");
+            }
+        }
         ActivityPublished?.Invoke(sanitized);
     }
+
+    private static bool ShouldPersist(AgentActivityKind kind) =>
+        kind is AgentActivityKind.ApiRequest or AgentActivityKind.ApiResponse or AgentActivityKind.ToolCall or
+            AgentActivityKind.Policy or AgentActivityKind.ToolResult or AgentActivityKind.Error;
 
     internal IReadOnlyList<AgentActivityEvent> Snapshot()
     {
@@ -45,6 +60,56 @@ internal sealed class AgentActivityStore : IAgentActivitySink
     {
         lock (_gate) _events.Clear();
         Cleared?.Invoke(this, EventArgs.Empty);
+    }
+}
+
+internal sealed class PersistentAgentActivityLog
+{
+    private const long MaximumBytes = 2 * 1024 * 1024;
+    private const int RetainedFiles = 4;
+    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    private readonly object _gate = new();
+    private readonly string _path;
+
+    internal PersistentAgentActivityLog(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        _path = System.IO.Path.GetFullPath(path);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+    }
+
+    internal void Write(AgentActivityEvent activity)
+    {
+        var payload = new
+        {
+            timestamp = activity.Timestamp,
+            type = activity.Kind.ToString(),
+            activity.Title,
+            activity.Summary,
+            activity.Details,
+            duration_ms = activity.DurationMilliseconds,
+            tone = activity.Tone.ToString()
+        };
+        var line = JsonSerializer.Serialize(payload, JsonOptions) + Environment.NewLine;
+        lock (_gate)
+        {
+            RotateIfNeeded(System.Text.Encoding.UTF8.GetByteCount(line));
+            File.AppendAllText(_path, line, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+    }
+
+    private void RotateIfNeeded(int incomingBytes)
+    {
+        var length = File.Exists(_path) ? new FileInfo(_path).Length : 0;
+        if (length + incomingBytes <= MaximumBytes) return;
+        var oldest = $"{_path}.{RetainedFiles}";
+        if (File.Exists(oldest)) File.Delete(oldest);
+        for (var index = RetainedFiles - 1; index >= 1; index--)
+        {
+            var source = $"{_path}.{index}";
+            if (File.Exists(source)) File.Move(source, $"{_path}.{index + 1}");
+        }
+        if (File.Exists(_path)) File.Move(_path, $"{_path}.1");
     }
 }
 

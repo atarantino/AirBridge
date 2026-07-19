@@ -109,7 +109,12 @@ internal static class Program
             var theme = args.Length >= 3 && Enum.TryParse<AppThemeMode>(args[2], true, out var parsedTheme) ? parsedTheme : AppThemeMode.Dark;
             using var hud = new VoiceHudForm(ThemePalette.Current(theme));
             hud.SetInitialPosition(null, null);
-            hud.ShowListening(() => 0.42f, holdHint: false);
+            if (args.Length >= 4 && args[3].Equals("confirmation", StringComparison.OrdinalIgnoreCase))
+                _ = hud.ShowConfirmation("Allow speaker alignment?", "AirBridge will play calibration chirps, briefly mute non-target speakers, capture the selected microphone in memory, and apply bounded timing trims. Microphone audio is discarded locally.", CancellationToken.None);
+            else if (args.Length >= 4 && args[3].Equals("thinking", StringComparison.OrdinalIgnoreCase))
+                hud.ShowThinking();
+            else
+                hud.ShowListening(() => 0.42f, holdHint: false);
             for (var frame = 0; frame < 4; frame++) Application.DoEvents();
             using var bitmap = new Bitmap(hud.Width, hud.Height);
             hud.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));

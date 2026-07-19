@@ -50,8 +50,9 @@ public sealed class AgentPolicy
             return new(false, false, "Buffer target must be between 100 and 5000 milliseconds.");
         if (toolName == "set_receiver_volume" && arguments.TryGetProperty("percent", out var volume) && volume.GetInt32() is < 0 or > 100)
             return new(false, false, "Volume must be between 0 and 100 percent.");
-        if (toolName == "set_alignment_trim" && arguments.TryGetProperty("trim_ms", out var delay) && delay.GetInt32() is < 0 or > 500)
-            return new(false, false, "Receiver alignment delay must be between 0 and 500 milliseconds.");
+        if (toolName == "set_alignment_trim" && arguments.TryGetProperty("trim_ms", out var delay) &&
+            delay.GetInt32() is < ReceiverAlignmentPlan.MinimumTrimMilliseconds or > ReceiverAlignmentPlan.MaximumTrimMilliseconds)
+            return new(false, false, $"Receiver alignment delay must be between {ReceiverAlignmentPlan.MinimumTrimMilliseconds} and {ReceiverAlignmentPlan.MaximumTrimMilliseconds} milliseconds.");
         if (toolName == "set_standby" && arguments.TryGetProperty("after_seconds", out var standbySeconds) && standbySeconds.GetInt32() is < 10 or > 600)
             return new(false, false, "Silence standby must be between 10 and 600 seconds.");
         return new(true, false, "Allowed.");
@@ -63,23 +64,23 @@ public sealed class ToolConfirmationStore
 {
     private readonly Dictionary<string, string> _pending = new(StringComparer.Ordinal);
 
-    public void Request(string toolName, JsonElement arguments) => _pending[toolName] = Canonicalize(arguments);
+    public void Request(string toolName, JsonElement arguments) => _pending[toolName] = Canonicalize(toolName, arguments);
 
     public bool TryConsume(string toolName, JsonElement arguments)
     {
-        if (!_pending.TryGetValue(toolName, out var expected) || expected != Canonicalize(arguments)) return false;
+        if (!_pending.TryGetValue(toolName, out var expected) || expected != Canonicalize(toolName, arguments)) return false;
         _pending.Remove(toolName);
         return true;
     }
 
-    private static string Canonicalize(JsonElement value)
+    private static string Canonicalize(string toolName, JsonElement value)
     {
         using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream)) WriteCanonical(writer, value);
+        using (var writer = new Utf8JsonWriter(stream)) WriteCanonical(writer, value, toolName, null);
         return System.Text.Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value)
+    private static void WriteCanonical(Utf8JsonWriter writer, JsonElement value, string toolName, string? propertyName)
     {
         if (value.ValueKind == JsonValueKind.Object)
         {
@@ -87,7 +88,7 @@ public sealed class ToolConfirmationStore
             foreach (var property in value.EnumerateObject().OrderBy(item => item.Name, StringComparer.Ordinal))
             {
                 writer.WritePropertyName(property.Name);
-                WriteCanonical(writer, property.Value);
+                WriteCanonical(writer, property.Value, toolName, property.Name);
             }
             writer.WriteEndObject();
             return;
@@ -95,7 +96,10 @@ public sealed class ToolConfirmationStore
         if (value.ValueKind == JsonValueKind.Array)
         {
             writer.WriteStartArray();
-            foreach (var item in value.EnumerateArray()) WriteCanonical(writer, item);
+            var items = value.EnumerateArray().ToArray();
+            if (toolName == "align_group" && propertyName == "receiver_ids" && items.All(item => item.ValueKind == JsonValueKind.String))
+                items = items.OrderBy(item => item.GetString(), StringComparer.Ordinal).ToArray();
+            foreach (var item in items) WriteCanonical(writer, item, toolName, null);
             writer.WriteEndArray();
             return;
         }
@@ -123,10 +127,13 @@ public sealed class DirectMicrophoneAuthorization
         if (negated) return new(tools);
         if (IsImperative(normalized, "align") &&
             (normalized.Contains("group", StringComparison.Ordinal) || normalized.Contains("speaker", StringComparison.Ordinal) ||
-             normalized.Contains("receiver", StringComparison.Ordinal) || normalized.Contains(" and ", StringComparison.Ordinal)))
+             normalized.Contains("receiver", StringComparison.Ordinal) || normalized.Contains("alignment", StringComparison.Ordinal) ||
+             normalized.Contains(" and ", StringComparison.Ordinal)) ||
+            IsApprovalOf(normalized, "align"))
             tools.Add("align_group");
         if (IsImperative(normalized, "measure") &&
-            (normalized.Contains("delay", StringComparison.Ordinal) || normalized.Contains("latency", StringComparison.Ordinal)))
+            (normalized.Contains("delay", StringComparison.Ordinal) || normalized.Contains("latency", StringComparison.Ordinal)) ||
+            IsApprovalOf(normalized, "measure"))
             tools.Add("measure_acoustic_delay");
         return new(tools);
     }
@@ -138,7 +145,24 @@ public sealed class DirectMicrophoneAuthorization
         text.StartsWith("please " + verb + " ", StringComparison.Ordinal) ||
         text.StartsWith("can you " + verb + " ", StringComparison.Ordinal) ||
         text.StartsWith("could you " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("go ahead and " + verb + " ", StringComparison.Ordinal);
+        text.StartsWith("would you " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("let's " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("go ahead and " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("i want you to " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("i need you to " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("i allow you to " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("i explicitly allow you to " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("i authorize you to " + verb + " ", StringComparison.Ordinal) ||
+        text.StartsWith("you have my permission to " + verb + " ", StringComparison.Ordinal);
+
+    private static bool IsApprovalOf(string text, string action) =>
+        (text.Contains("approve", StringComparison.Ordinal) || text.Contains("allow", StringComparison.Ordinal) ||
+         text.Contains("authorize", StringComparison.Ordinal) || text.Contains("permission", StringComparison.Ordinal) ||
+         text.Contains("go ahead", StringComparison.Ordinal)) &&
+        (action == "align"
+            ? text.Contains("align", StringComparison.Ordinal)
+            : text.Contains("measure", StringComparison.Ordinal) &&
+              (text.Contains("delay", StringComparison.Ordinal) || text.Contains("latency", StringComparison.Ordinal)));
 }
 
 public interface IAgentToolRuntime

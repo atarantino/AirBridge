@@ -13,10 +13,15 @@ internal sealed class SettingsForm : Form
     {
         public override string ToString() => Label;
     }
+    private sealed record MicrophoneChoice(string? DeviceName, string Label)
+    {
+        public override string ToString() => Label;
+    }
 
     private readonly ComboBox _theme = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _capture = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _standby = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox _calibrationMicrophone = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly TextBox _pushToTalkShortcut = new() { Dock = DockStyle.Fill, ReadOnly = true, ShortcutsEnabled = false };
     private readonly Label _pushToTalkError = new() { AutoSize = true };
     private readonly NumericUpDown _holdThreshold = new() { Minimum = 100, Maximum = 1000, Increment = 50, Dock = DockStyle.Left, Width = 110 };
@@ -87,7 +92,7 @@ internal sealed class SettingsForm : Form
         }
 
         var save = new Button { Text = "Save", AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
+        var close = new Button { Text = "Close", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
         save.Click += (_, _) =>
         {
             if (!_capturedShortcut.IsValid)
@@ -96,17 +101,17 @@ internal sealed class SettingsForm : Form
                 return;
             }
             if (!ValidateSpeakerGroups()) return;
-            DialogResult = DialogResult.OK;
+            SaveRequested?.Invoke(this, EventArgs.Empty);
         };
         AcceptButton = save;
-        CancelButton = cancel;
+        CancelButton = close;
 
         _buttonBar.Dock = DockStyle.Bottom;
         _buttonBar.Height = UiGeometry.TextLogical(64);
         _buttonBar.FlowDirection = FlowDirection.RightToLeft;
         _buttonBar.Padding = new Padding(16, 10, 16, 8);
         _buttonBar.WrapContents = false;
-        _buttonBar.Controls.AddRange([save, cancel]);
+        _buttonBar.Controls.AddRange([save, close]);
         Controls.Add(tabs);
         Controls.Add(_buttonBar);
         SystemTextScale.Changed += OnTextScaleChanged;
@@ -123,6 +128,7 @@ internal sealed class SettingsForm : Form
 
     public event EventHandler? OpenLogsRequested;
     public event EventHandler? OpenActivityInspectorRequested;
+    public event EventHandler? SaveRequested;
 
     public AppThemeMode ThemeMode => _theme.SelectedIndex switch { 1 => AppThemeMode.Light, 2 => AppThemeMode.Dark, _ => AppThemeMode.System };
     public CaptureMode DefaultCaptureMode => _capture.SelectedIndex == 1 ? CaptureMode.ProcessTreeInclude : CaptureMode.SystemMix;
@@ -130,6 +136,7 @@ internal sealed class SettingsForm : Form
     public int SilenceStandbySeconds => _standby.SelectedIndex switch { 1 => 10, 2 => 30, 3 => 60, 4 => 120, 5 => 300, 6 => 600, _ => 60 };
     public string PushToTalkShortcut => _capturedShortcut.ToString();
     public int PushToTalkHoldThresholdMs => (int)_holdThreshold.Value;
+    public string? CalibrationMicrophoneName => (_calibrationMicrophone.SelectedItem as MicrophoneChoice)?.DeviceName;
     public bool AiEnabled => _aiEnabled.Checked;
     public string? ReplacementApiKey => string.IsNullOrWhiteSpace(_apiKey.Text) ? null : _apiKey.Text.Trim();
     public bool RemoveApiKeyRequested => _removeApiKeyRequested && ReplacementApiKey is null;
@@ -139,6 +146,23 @@ internal sealed class SettingsForm : Form
         Name = item.Name.Trim(),
         ReceiverIds = item.ReceiverIds.Distinct(StringComparer.Ordinal).ToArray()
     }).ToArray();
+
+    public void MarkSaved()
+    {
+        if (ReplacementApiKey is not null)
+        {
+            _apiKey.Clear();
+            _apiKey.PlaceholderText = "Paste a new key to replace the saved key";
+            _apiKeyStatus.Text = "A key is securely saved for this Windows user";
+            _removeApiKey.Enabled = true;
+        }
+        else if (_removeApiKeyRequested)
+        {
+            _apiKeyStatus.Text = "No key is saved";
+            _removeApiKey.Enabled = false;
+        }
+        _removeApiKeyRequested = false;
+    }
 
     private void InitializeValues(AirBridgeSettings settings, ThemePalette palette, bool storedApiKeyConfigured, bool apiKeyManagedByEnvironment)
     {
@@ -153,6 +177,24 @@ internal sealed class SettingsForm : Form
         _standby.Items.AddRange(["Off", "After 10 seconds", "After 30 seconds", "After 60 seconds", "After 2 minutes", "After 5 minutes", "After 10 minutes"]);
         _standby.SelectedIndex = settings.SilenceStandbyEnabled ? SecondsToIndex(settings.SilenceStandbySeconds) : 0;
         _standby.AccessibleName = "Silence standby";
+
+        var microphones = AcousticDelayMeasurer.GetAvailableMicrophones();
+        foreach (var microphone in microphones) _calibrationMicrophone.Items.Add(new MicrophoneChoice(microphone.Name, microphone.Name));
+        if (!string.IsNullOrWhiteSpace(settings.CalibrationMicrophoneName) &&
+            microphones.All(item => !item.Name.Equals(settings.CalibrationMicrophoneName, StringComparison.OrdinalIgnoreCase)))
+            _calibrationMicrophone.Items.Add(new MicrophoneChoice(settings.CalibrationMicrophoneName, $"Unavailable: {settings.CalibrationMicrophoneName}"));
+        if (_calibrationMicrophone.Items.Count == 0)
+        {
+            _calibrationMicrophone.Items.Add(new MicrophoneChoice(null, "No recording devices available"));
+            _calibrationMicrophone.Enabled = false;
+        }
+        else
+        {
+            _calibrationMicrophone.SelectedIndex = Enumerable.Range(0, _calibrationMicrophone.Items.Count)
+                .FirstOrDefault(index => _calibrationMicrophone.Items[index] is MicrophoneChoice choice &&
+                    string.Equals(choice.DeviceName, settings.CalibrationMicrophoneName, StringComparison.OrdinalIgnoreCase));
+        }
+        _calibrationMicrophone.AccessibleName = "Speaker calibration microphone";
 
         _capturedShortcut = HotkeyGesture.TryParse(settings.PushToTalkShortcut, out var shortcut) ? shortcut : HotkeyGesture.Default;
         _pushToTalkShortcut.Text = _capturedShortcut.ToString();
@@ -230,11 +272,19 @@ internal sealed class SettingsForm : Form
     private TabPage BuildSyncPage(IReadOnlyList<ReceiverInfo> receivers, IReadOnlyDictionary<string, int> trims, ThemePalette palette)
     {
         var page = CreatePage("Speaker sync");
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(24, 20, 24, 16) };
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Padding = new Padding(24, 20, 24, 16) };
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.Controls.Add(SecondaryText("Add a small delay to faster speakers so a group sounds aligned. These values apply the next time you save.", palette), 0, 0);
+
+        var microphoneRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = new Padding(0, 10, 0, 0) };
+        microphoneRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 190));
+        microphoneRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        microphoneRow.Controls.Add(new Label { Text = "Calibration microphone", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft }, 0, 0);
+        microphoneRow.Controls.Add(_calibrationMicrophone, 1, 0);
+        root.Controls.Add(microphoneRow, 0, 1);
 
         var list = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Padding = new Padding(0, 16, 8, 8) };
         list.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -252,9 +302,11 @@ internal sealed class SettingsForm : Form
                 var value = new NumericUpDown
                 {
                     Minimum = 0,
-                    Maximum = 500,
+                    Maximum = ReceiverAlignmentPlan.MaximumTrimMilliseconds,
                     Increment = 10,
-                    Value = trims.TryGetValue(receiver.Id, out var trim) ? Math.Clamp(trim, 0, 500) : 0,
+                    Value = trims.TryGetValue(receiver.Id, out var trim)
+                        ? Math.Clamp(trim, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds)
+                        : ReceiverAlignmentPlan.MinimumTrimMilliseconds,
                     Width = 82,
                     Margin = new Padding(0, 7, 0, 0),
                     AccessibleName = $"{receiver.Name} sync delay in milliseconds"
@@ -273,8 +325,8 @@ internal sealed class SettingsForm : Form
         scroll.Controls.Add(list);
         var reset = new Button { Text = "Reset all to 0 ms", AutoSize = true };
         reset.Click += (_, _) => { foreach (var value in _alignmentTrims.Values) value.Value = 0; };
-        root.Controls.Add(scroll, 0, 1);
-        root.Controls.Add(reset, 0, 2);
+        root.Controls.Add(scroll, 0, 2);
+        root.Controls.Add(reset, 0, 3);
         page.Controls.Add(root);
         return page;
     }

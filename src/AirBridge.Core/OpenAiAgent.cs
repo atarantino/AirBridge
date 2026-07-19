@@ -12,15 +12,20 @@ public sealed class OpenAiAgent
     private readonly AgentPolicy _policy;
     private readonly IAgentToolRuntime _runtime;
     private readonly IAgentActivitySink? _activity;
-    private readonly ToolConfirmationStore _pendingConfirmations = new();
+    private readonly Func<string, CancellationToken, Task<bool>>? _confirmationPrompt;
+    private readonly ToolConfirmationStore _pendingConfirmations;
     private string? _previousResponseId;
 
-    public OpenAiAgent(string apiKey, AgentPolicy policy, IAgentToolRuntime runtime, HttpClient? httpClient = null, IAgentActivitySink? activity = null)
+    public OpenAiAgent(string apiKey, AgentPolicy policy, IAgentToolRuntime runtime, HttpClient? httpClient = null,
+        IAgentActivitySink? activity = null, ToolConfirmationStore? confirmationStore = null,
+        Func<string, CancellationToken, Task<bool>>? confirmationPrompt = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("An OpenAI API key is required.", nameof(apiKey));
         _policy = policy;
         _runtime = runtime;
         _activity = activity;
+        _pendingConfirmations = confirmationStore ?? new();
+        _confirmationPrompt = confirmationPrompt;
         _http = httpClient ?? new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
@@ -78,6 +83,12 @@ public sealed class OpenAiAgent
                 var userConfirmed = directMicrophoneAuthorization.TryConsume(call.Name) ||
                     (confirmsPending && _pendingConfirmations.TryConsume(call.Name, argsDocument.RootElement));
                 var decision = _policy.Evaluate(call.Name, argsDocument.RootElement, userConfirmed);
+                if (decision.RequiresConfirmation && _confirmationPrompt is not null)
+                {
+                    Publish(AgentActivityKind.Policy, call.Name, "Showing local confirmation", decision.Reason, tone: AgentActivityTone.Warning);
+                    if (await _confirmationPrompt(call.Name, cancellationToken).ConfigureAwait(false))
+                        decision = _policy.Evaluate(call.Name, argsDocument.RootElement, userConfirmed: true);
+                }
                 if (decision.RequiresConfirmation) _pendingConfirmations.Request(call.Name, argsDocument.RootElement);
                 Publish(AgentActivityKind.Policy, call.Name,
                     decision.Allowed ? "Allowed by local policy" : decision.RequiresConfirmation ? "Awaiting user confirmation" : "Blocked by local policy",
@@ -94,7 +105,10 @@ public sealed class OpenAiAgent
                 {
                     toolTimer.Stop();
                     Publish(AgentActivityKind.Error, call.Name, "Local tool execution failed", ex.Message, toolTimer.ElapsedMilliseconds, AgentActivityTone.Error);
-                    throw;
+                    // The Responses API requires an output for every function call before
+                    // the conversation can continue. Returning a sanitized failure keeps
+                    // this call chain valid and lets the model explain the local error.
+                    result = new { error = AgentActivitySanitizer.Sanitize(ex.Message), tool_failed = true };
                 }
                 toolTimer.Stop();
                 var serializedResult = JsonSerializer.Serialize(result);
@@ -155,8 +169,32 @@ public sealed class OpenAiAgent
     private static bool IsExplicitConfirmation(string text)
     {
         var normalized = text.Trim().ToLowerInvariant();
-        return normalized is "yes" or "confirm" or "confirmed" or "go ahead" or "do it" or "proceed" ||
-               normalized.StartsWith("yes,", StringComparison.Ordinal) || normalized.StartsWith("confirm ", StringComparison.Ordinal);
+        if (normalized.Contains("don't", StringComparison.Ordinal) ||
+            normalized.Contains("do not", StringComparison.Ordinal) ||
+            normalized.Contains("dont", StringComparison.Ordinal) ||
+            normalized.Contains("not allowed", StringComparison.Ordinal) ||
+            normalized.Contains("not authorized", StringComparison.Ordinal))
+            return false;
+        return normalized is "yes" or "ok" or "okay" or "sure" or "confirm" or "confirmed" or "go ahead" or "do it" or "proceed" or
+               "sounds good" or "allow it" or "allowed" or "approve" or "approved" or "authorize it" or "authorized" ||
+               normalized.StartsWith("yes,", StringComparison.Ordinal) ||
+               normalized.StartsWith("yes ", StringComparison.Ordinal) ||
+               normalized.StartsWith("ok,", StringComparison.Ordinal) ||
+               normalized.StartsWith("okay", StringComparison.Ordinal) ||
+               normalized.StartsWith("sure", StringComparison.Ordinal) ||
+               normalized.StartsWith("go ahead", StringComparison.Ordinal) ||
+               normalized.StartsWith("confirm ", StringComparison.Ordinal) ||
+               IsFirstPersonApproval(normalized) ||
+               normalized.StartsWith("you have my permission", StringComparison.Ordinal) ||
+               normalized.StartsWith("permission granted", StringComparison.Ordinal);
+    }
+
+    private static bool IsFirstPersonApproval(string text)
+    {
+        if (!text.StartsWith("i ", StringComparison.Ordinal)) return false;
+        var words = text.Split([' ', '\t', '\r', '\n', '.', ',', '!', '?', ':', ';'], StringSplitOptions.RemoveEmptyEntries);
+        return words.Any(word => word is "confirm" or "confirmed" or "approve" or "approved" or "allow" or "allowed" or
+            "authorize" or "authorized" or "consent");
     }
 
     private const string Instructions = """
@@ -178,7 +216,7 @@ You are AirBridge's operational agent. Route Windows audio to AirPlay receivers 
         Tool("stop_stream", "Stops one receiver or every active receiver.", new { type = "object", properties = new { receiver_id = NullableString(), all = new { type = "boolean" } }, required = new[] { "receiver_id", "all" }, additionalProperties = false }),
         Tool("move_stream", "Moves the current stream to one or more receivers.", new { type = "object", properties = new { receiver_ids = StringArray() }, required = new[] { "receiver_ids" }, additionalProperties = false }),
         Tool("set_receiver_volume", "Sets one receiver's volume percent.", new { type = "object", properties = new { receiver_id = new { type = "string" }, percent = new { type = "integer", minimum = 0, maximum = 100 } }, required = new[] { "receiver_id", "percent" }, additionalProperties = false }),
-        Tool("set_alignment_trim", "Sets an extra per-receiver delay for speaker alignment. For example, 'delay the faster speaker by 60 ms' sets trim_ms to 60.", new { type = "object", properties = new { receiver_id = new { type = "string" }, trim_ms = new { type = "integer", minimum = 0, maximum = 500 } }, required = new[] { "receiver_id", "trim_ms" }, additionalProperties = false }),
+        Tool("set_alignment_trim", "Sets an extra per-receiver delay for speaker alignment. For example, 'delay the faster speaker by 60 ms' sets trim_ms to 60.", new { type = "object", properties = new { receiver_id = new { type = "string" }, trim_ms = new { type = "integer", minimum = ReceiverAlignmentPlan.MinimumTrimMilliseconds, maximum = ReceiverAlignmentPlan.MaximumTrimMilliseconds } }, required = new[] { "receiver_id", "trim_ms" }, additionalProperties = false }),
         Tool("set_standby", "Enables or disables release of RAOP sessions after sustained silence while capture stays ready. Timeout is 10–600 seconds.", new { type = "object", properties = new { enabled = new { type = "boolean" }, after_seconds = new { type = "integer", minimum = 10, maximum = 600 } }, required = new[] { "enabled", "after_seconds" }, additionalProperties = false }),
         Tool("set_buffer_target", "Sets the temporary buffer target; larger is more stable but adds latency.", new { type = "object", properties = new { stream_id = new { type = "string" }, milliseconds = new { type = "integer", minimum = 100, maximum = 5000 } }, required = new[] { "stream_id", "milliseconds" }, additionalProperties = false }),
         Tool("reconnect_stream", "Reconnects one receiver or every active receiver near the live edge.", new { type = "object", properties = new { receiver_id = NullableString(), all = new { type = "boolean" } }, required = new[] { "receiver_id", "all" }, additionalProperties = false }),

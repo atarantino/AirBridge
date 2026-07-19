@@ -10,7 +10,8 @@ public sealed class MainForm : Form
     private const int WmSettingChange = 0x001A;
     private readonly AirBridgeController _controller = new();
     private readonly PushToTalkRecorder _recorder = new();
-    private readonly AgentActivityStore _activityStore = new();
+    private readonly AgentActivityStore _activityStore;
+    private readonly ToolConfirmationStore _agentConfirmations = new();
     private readonly SettingsStore _settingsStore = new();
     private readonly IOpenAiCredentialStore _openAiCredentials = new WindowsOpenAiCredentialStore();
     private readonly SegmentedControl _sourceMode = new() { Width = 156, Height = 36 };
@@ -74,6 +75,7 @@ public sealed class MainForm : Form
     public MainForm(bool previewMode = false, AppThemeMode? previewTheme = null, bool previewStreaming = true)
     {
         _previewMode = previewMode;
+        _activityStore = new(persistToDisk: !previewMode);
         _previewStreamActive = previewMode && previewStreaming;
         _settings = _settingsStore.Load();
         _controller.ConfigureSettings(_settings);
@@ -128,6 +130,7 @@ public sealed class MainForm : Form
         _controller.ReceiverAlignmentChanged += (_, args) => SafeBeginInvoke(() => PersistAlignmentTrim(args.ReceiverId, args.Milliseconds));
         _controller.SilenceStandbyChanged += (_, args) => SafeBeginInvoke(() => PersistSilenceStandby(args.Enabled, args.Seconds));
         _controller.TelemetryEvent += (_, message) => SafeBeginInvoke(() => AppendConversation("Timing", message));
+        _activityStore.ActivityPublished += OnAgentActivityPublished;
         _timer.Tick += (_, _) => UpdateTelemetry();
         _timer.Start();
         _hotkeyPollTimer.Tick += (_, _) => PollHotkeyGesture();
@@ -351,7 +354,8 @@ public sealed class MainForm : Form
             RefreshSessions();
             RefreshGroups();
             var apiKey = ResolveOpenAiApiKey();
-            if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller, activity: _activityStore);
+            if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller,
+                activity: _activityStore, confirmationStore: _agentConfirmations, confirmationPrompt: ConfirmAgentToolAsync);
             else AppendConversation("System", "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
         });
     }
@@ -732,7 +736,7 @@ public sealed class MainForm : Form
         UpdateDashboardPresentation(active);
     }
 
-    private async Task AskAsync(string text)
+    private async Task AskAsync(string text, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         AppendConversation("You", text);
@@ -741,7 +745,7 @@ public sealed class MainForm : Form
         await RunUiActionAsync(async () =>
         {
             var diagnostic = text.Contains("why", StringComparison.OrdinalIgnoreCase) || text.Contains("fix", StringComparison.OrdinalIgnoreCase) || text.Contains("analy", StringComparison.OrdinalIgnoreCase);
-            AppendConversation("AirBridge", await _agent.AskAsync(text, diagnostic));
+            AppendConversation("AirBridge", await _agent.AskAsync(text, diagnostic, cancellationToken));
         });
     }
 
@@ -784,8 +788,9 @@ public sealed class MainForm : Form
         try
         {
             var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token, _activityStore);
+            if (!_previewMode) _voiceHud.ShowThinking();
+            await AskAsync(text, cancellation.Token);
             if (!_previewMode) _voiceHud.HideHud();
-            await AskAsync(text);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -867,7 +872,8 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select exactly one currently streaming speaker before measuring delay.");
             return;
         }
-        AppendConversation("System", $"Measuring {active[0].Receiver.Name}; five short chirps will play and microphone audio stays in memory.");
+        var microphone = _settings.CalibrationMicrophoneName ?? AcousticDelayMeasurer.GetAvailableMicrophones().FirstOrDefault()?.Name ?? "the default recording device";
+        AppendConversation("System", $"Measuring {active[0].Receiver.Name} with {microphone}; five short chirps will play and microphone audio stays in memory.");
         await RunUiActionAsync(async () =>
         {
             var result = await _controller.MeasureAcousticDelayAsync(active[0].Receiver.Id);
@@ -889,7 +895,8 @@ public sealed class MainForm : Form
             AppendConversation("System", "Select at least two currently streaming speakers before aligning the group.");
             return;
         }
-        AppendConversation("System", "Measuring speakers one at a time; non-target speakers will be temporarily muted and all volumes will be restored.");
+        var microphone = _settings.CalibrationMicrophoneName ?? AcousticDelayMeasurer.GetAvailableMicrophones().FirstOrDefault()?.Name ?? "the default recording device";
+        AppendConversation("System", $"Measuring speakers one at a time with {microphone}; non-target speakers will be temporarily muted and all volumes will be restored.");
         await RunUiActionAsync(async () =>
         {
             var result = await _controller.AlignGroupAsync(active.Select(item => item.Receiver.Id).ToArray(), apply: false);
@@ -1023,10 +1030,70 @@ public sealed class MainForm : Form
         using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers, initialTab);
         dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
         dialog.OpenActivityInspectorRequested += (_, _) => ShowActivityInspector();
+        dialog.SaveRequested += (_, _) => ApplySettings(dialog);
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
-        var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
-        if (result != DialogResult.OK) return;
+        if (Visible) dialog.ShowDialog(this); else dialog.ShowDialog();
+    }
 
+    private void OnAgentActivityPublished(AgentActivityEvent activity)
+    {
+        if (activity.Kind != AgentActivityKind.Error) return;
+        SafeBeginInvoke(() =>
+        {
+            var message = string.IsNullOrWhiteSpace(activity.Details) ? activity.Summary : activity.Details;
+            var title = activity.Title switch
+            {
+                "align_group" => "Speaker alignment failed",
+                "measure_acoustic_delay" => "Delay measurement failed",
+                _ => activity.Title
+            };
+            AppendConversation("System", $"{title}: {message}");
+            _recommendation.Text = $"{title}: {message}";
+            if (!_previewMode && _tray.Visible)
+                _tray.ShowBalloonTip(8000, title, message, ToolTipIcon.Error);
+        });
+    }
+
+    private Task<bool> ConfirmAgentToolAsync(string toolName, CancellationToken cancellationToken)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        void ShowPrompt()
+        {
+            if (cancellationToken.IsCancellationRequested || IsDisposed)
+            {
+                completion.TrySetResult(false);
+                return;
+            }
+            var (title, message) = toolName switch
+            {
+                "align_group" => ("Allow speaker alignment?",
+                    "AirBridge will play calibration chirps, briefly mute non-target speakers, capture the selected microphone in memory, and apply bounded timing trims. Microphone audio is discarded locally."),
+                "measure_acoustic_delay" => ("Allow delay measurement?",
+                    "AirBridge will play five calibration chirps and capture the selected microphone in memory. Microphone audio is discarded locally."),
+                "save_routing_rule" => ("Save routing rule?", "Allow AirBridge to save this routing rule?"),
+                "change_startup_behavior" => ("Change startup behavior?", "Allow AirBridge to change its startup behavior?"),
+                "enable_microphone_calibration" => ("Enable microphone calibration?", "Allow AirBridge to enable microphone calibration?"),
+                _ => ("Allow AirBridge action?", $"Allow the requested {toolName.Replace('_', ' ')} action once?")
+            };
+            CompleteFromHudAsync();
+
+            async void CompleteFromHudAsync()
+            {
+                try { completion.TrySetResult(await _voiceHud.ShowConfirmation(title, message, cancellationToken)); }
+                catch (Exception ex)
+                {
+                    AppLog.Error("agent-confirmation", "Could not show the confirmation prompt.", ex);
+                    completion.TrySetResult(false);
+                }
+            }
+        }
+
+        if (InvokeRequired) BeginInvoke(ShowPrompt); else ShowPrompt();
+        return completion.Task;
+    }
+
+    private void ApplySettings(SettingsForm dialog)
+    {
         try
         {
             if (dialog.ReplacementApiKey is { } replacement) _openAiCredentials.Write(replacement);
@@ -1049,6 +1116,7 @@ public sealed class MainForm : Form
             SilenceStandbySeconds = dialog.SilenceStandbySeconds,
             PushToTalkShortcut = dialog.PushToTalkShortcut,
             PushToTalkHoldThresholdMs = dialog.PushToTalkHoldThresholdMs,
+            CalibrationMicrophoneName = dialog.CalibrationMicrophoneName,
             ReceiverAlignmentTrimMs = alignmentTrims,
             SpeakerGroups = dialog.SpeakerGroups,
             AiEnabled = dialog.AiEnabled
@@ -1088,9 +1156,11 @@ public sealed class MainForm : Form
 
         var apiKey = ResolveOpenAiApiKey();
         _agent = _settings.AiEnabled && !string.IsNullOrWhiteSpace(apiKey)
-            ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller, activity: _activityStore)
+            ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller, activity: _activityStore,
+                confirmationStore: _agentConfirmations, confirmationPrompt: ConfirmAgentToolAsync)
             : null;
         UpdateTelemetry();
+        dialog.MarkSaved();
     }
 
     private string? ResolveOpenAiApiKey()

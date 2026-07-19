@@ -15,6 +15,9 @@ internal sealed class VoiceHudForm : Form
     private readonly Label _hint = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.TopLeft };
     private readonly VoiceLevelMeter _level = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 0, 3) };
     private readonly PillButton _cancel = new() { Text = string.Empty, IconGlyph = "\uE711", Quiet = true, TransparentQuiet = true, Width = 34, Height = 34, Margin = new Padding(2, 0, 0, 0) };
+    private readonly PillButton _deny = new() { Text = "Don’t allow", Quiet = true, Width = 112, Height = 34, Margin = new Padding(0, 0, 8, 0) };
+    private readonly PillButton _approve = new() { Text = "Approve", Primary = true, Width = 96, Height = 34, Margin = Padding.Empty };
+    private readonly FlowLayoutPanel _actions = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Visible = false, Margin = Padding.Empty };
     private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 50 };
     private readonly System.Windows.Forms.Timer _errorTimer = new() { Interval = 2500 };
     private ThemePalette _palette;
@@ -23,6 +26,8 @@ internal sealed class VoiceHudForm : Form
     private Point _windowOrigin;
     private bool _dragging;
     private float _pulsePhase;
+    private TaskCompletionSource<bool>? _confirmation;
+    private CancellationTokenRegistration _confirmationCancellation;
 
     public VoiceHudForm(ThemePalette palette)
     {
@@ -41,18 +46,24 @@ internal sealed class VoiceHudForm : Form
         _hint.Font = UiGeometry.UiFont(8.5F);
         _cancel.AccessibleName = "Cancel voice command";
         _cancel.AccessibleDescription = "Discard the current recording or transcription.";
+        _deny.AccessibleName = "Don’t allow action";
+        _approve.AccessibleName = "Approve action";
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 52));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 38));
-        var copy = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, Margin = Padding.Empty };
+        var copy = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 4, Margin = Padding.Empty };
         copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
         copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 11));
         copy.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        copy.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         copy.Controls.Add(_status, 0, 0);
         copy.Controls.Add(_level, 0, 1);
         copy.Controls.Add(_hint, 0, 2);
+        _actions.Controls.Add(_approve);
+        _actions.Controls.Add(_deny);
+        copy.Controls.Add(_actions, 0, 3);
         root.Controls.Add(_mic, 0, 0);
         root.Controls.Add(copy, 1, 0);
         root.Controls.Add(_cancel, 2, 0);
@@ -61,7 +72,13 @@ internal sealed class VoiceHudForm : Form
         SystemTextScale.Changed += OnTextScaleChanged;
         UiGeometry.ScaleInitialTextLayout(this);
 
-        _cancel.Click += (_, _) => CancelRequested?.Invoke(this, EventArgs.Empty);
+        _cancel.Click += (_, _) =>
+        {
+            if (_confirmation is not null) CompleteConfirmation(false);
+            else CancelRequested?.Invoke(this, EventArgs.Empty);
+        };
+        _deny.Click += (_, _) => CompleteConfirmation(false);
+        _approve.Click += (_, _) => CompleteConfirmation(true);
         _updateTimer.Tick += (_, _) => UpdateAnimation();
         _errorTimer.Tick += (_, _) => { _errorTimer.Stop(); HideHud(); };
         WireDrag(_surface);
@@ -96,6 +113,8 @@ internal sealed class VoiceHudForm : Form
         BackColor = palette.Window;
         _surface.ApplyTheme(palette);
         _cancel.ApplyTheme(palette);
+        _deny.ApplyTheme(palette);
+        _approve.ApplyTheme(palette);
         _level.ApplyTheme(palette);
         _mic.ApplyTheme(palette);
         _status.ForeColor = palette.Text;
@@ -119,6 +138,7 @@ internal sealed class VoiceHudForm : Form
 
     public void ShowListening(Func<float> levelProvider, bool holdHint)
     {
+        SetCompactLayout();
         _levelProvider = levelProvider;
         _status.Text = "Listening";
         _hint.Text = holdHint ? "release to send · Esc to cancel" : "tap shortcut to send · Esc to cancel";
@@ -134,6 +154,7 @@ internal sealed class VoiceHudForm : Form
 
     public void ShowTranscribing()
     {
+        SetCompactLayout();
         _levelProvider = null;
         _level.Level = 0;
         _status.Text = "Transcribing";
@@ -146,8 +167,59 @@ internal sealed class VoiceHudForm : Form
         ShowHud();
     }
 
+    public void ShowThinking()
+    {
+        SetCompactLayout();
+        _levelProvider = null;
+        _level.Level = 0;
+        _status.Text = "Thinking";
+        _hint.Text = "Working out what to do…";
+        _mic.IsError = false;
+        _level.Indeterminate = true;
+        _level.Visible = true;
+        _cancel.Visible = true;
+        _errorTimer.Stop();
+        ShowHud();
+    }
+
+    public Task<bool> ShowConfirmation(string title, string message, CancellationToken cancellationToken)
+    {
+        CompleteConfirmation(false, showThinking: false);
+        SetConfirmationLayout();
+        _levelProvider = null;
+        _status.Text = title;
+        _hint.Text = message;
+        _hint.AccessibleName = message;
+        _mic.IsError = false;
+        _mic.Pulse = 0;
+        _cancel.Visible = true;
+        _cancel.AccessibleName = "Don’t allow action";
+        _cancel.AccessibleDescription = "Close this prompt without approving the requested action.";
+        _confirmation = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        _confirmationCancellation = cancellationToken.Register(() =>
+        {
+            if (IsDisposed)
+            {
+                var completion = _confirmation;
+                _confirmation = null;
+                completion?.TrySetResult(false);
+                return;
+            }
+            try { BeginInvoke(() => CompleteConfirmation(false, showThinking: false)); }
+            catch (InvalidOperationException)
+            {
+                var completion = _confirmation;
+                _confirmation = null;
+                completion?.TrySetResult(false);
+            }
+        });
+        ShowHud();
+        return _confirmation.Task;
+    }
+
     public void ShowError(string message)
     {
+        SetCompactLayout();
         _levelProvider = null;
         _status.Text = "Voice command failed";
         _hint.Text = message;
@@ -164,6 +236,7 @@ internal sealed class VoiceHudForm : Form
 
     public void HideHud()
     {
+        CompleteConfirmation(false, showThinking: false);
         _updateTimer.Stop();
         _errorTimer.Stop();
         Hide();
@@ -173,9 +246,11 @@ internal sealed class VoiceHudForm : Form
     {
         if (disposing)
         {
+            CompleteConfirmation(false, showThinking: false);
             SystemTextScale.Changed -= OnTextScaleChanged;
             _updateTimer.Dispose();
             _errorTimer.Dispose();
+            _confirmationCancellation.Dispose();
         }
         base.Dispose(disposing);
     }
@@ -250,6 +325,58 @@ internal sealed class VoiceHudForm : Form
         using var path = UiGeometry.Rounded(ClientRectangle, UiGeometry.Scale(this, 18));
         Region = new Region(path);
         old?.Dispose();
+    }
+
+    private void SetCompactLayout()
+    {
+        _actions.Visible = false;
+        _level.Visible = true;
+        _hint.AutoEllipsis = true;
+        _hint.AccessibleName = null;
+        _cancel.AccessibleName = "Cancel voice command";
+        _cancel.AccessibleDescription = "Discard the current recording or transcription.";
+        if (_actions.Parent is TableLayoutPanel copy)
+        {
+            copy.RowStyles[1].Height = 11;
+            copy.RowStyles[3].Height = 0;
+        }
+        ResizeHud(new Size(360, 92));
+    }
+
+    private void SetConfirmationLayout()
+    {
+        _actions.Visible = true;
+        _level.Visible = false;
+        _hint.AutoEllipsis = false;
+        if (_actions.Parent is TableLayoutPanel copy)
+        {
+            copy.RowStyles[1].Height = 0;
+            copy.RowStyles[3].Height = 42;
+        }
+        ResizeHud(new Size(480, 164));
+    }
+
+    private void ResizeHud(Size logicalSize)
+    {
+        var scale = DeviceDpi / 96f;
+        var next = new Size((int)Math.Ceiling(logicalSize.Width * scale), (int)Math.Ceiling(logicalSize.Height * scale));
+        if (ClientSize == next) return;
+        var bottom = Bottom;
+        ClientSize = next;
+        Top = bottom - Height;
+        var area = Screen.FromRectangle(Bounds).WorkingArea;
+        Left = Math.Clamp(Left, area.Left, Math.Max(area.Left, area.Right - Width));
+        Top = Math.Clamp(Top, area.Top, Math.Max(area.Top, area.Bottom - Height));
+    }
+
+    private void CompleteConfirmation(bool approved, bool showThinking = true)
+    {
+        var completion = _confirmation;
+        if (completion is null) return;
+        _confirmation = null;
+        _confirmationCancellation.Dispose();
+        if (showThinking) ShowThinking();
+        completion.TrySetResult(approved);
     }
 }
 
