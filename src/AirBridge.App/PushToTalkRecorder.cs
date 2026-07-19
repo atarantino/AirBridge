@@ -77,6 +77,12 @@ public sealed class PushToTalkRecorder : IDisposable
     public static async Task<string> TranscribeAsync(byte[] wav, string apiKey, CancellationToken cancellationToken = default, IAgentActivitySink? activity = null)
     {
         if (wav.Length < 100) throw new InvalidOperationException("No microphone audio was captured.");
+        if (!ContainsAudibleAudio(wav))
+        {
+            activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "No speech detected",
+                "The microphone capture was silent", Tone: AgentActivityTone.Warning));
+            return string.Empty;
+        }
         activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "Audio transcription",
             $"gpt-4o-transcribe · {Math.Max(1, wav.Length / 1024):N0} KB in memory",
             "Microphone audio is sent only for this user-initiated transcription and is never added to the activity log."));
@@ -99,10 +105,48 @@ public sealed class PushToTalkRecorder : IDisposable
             throw new InvalidOperationException($"Transcription failed ({(int)response.StatusCode}).");
         }
         using var document = JsonDocument.Parse(raw);
-        var text = document.RootElement.GetProperty("text").GetString() ?? string.Empty;
+        var root = document.RootElement;
+        var apiUsage = OpenAiCostEstimator.FromTranscriptionResponse(root);
+        var text = root.GetProperty("text").GetString() ?? string.Empty;
+        if (!ContainsTranscript(text))
+        {
+            activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "No speech detected",
+                TranscriptionSummary("The transcription was empty", apiUsage), DurationMilliseconds: timer.ElapsedMilliseconds,
+                Tone: AgentActivityTone.Warning, ApiUsage: apiUsage));
+            return string.Empty;
+        }
         activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "Transcript ready",
-            "Text returned to the local AirBridge assistant", AgentActivitySanitizer.Sanitize(text), timer.ElapsedMilliseconds, AgentActivityTone.Success));
+            TranscriptionSummary("Text returned to the local AirBridge assistant", apiUsage), AgentActivitySanitizer.Sanitize(text),
+            timer.ElapsedMilliseconds, AgentActivityTone.Success, apiUsage));
         return text;
+    }
+
+    private static string TranscriptionSummary(string summary, OpenAiApiUsage? usage) => usage is null
+        ? summary
+        : $"{summary} · est. {OpenAiCostEstimator.FormatUsd(usage.EstimatedCostUsd)}";
+
+    internal static bool ContainsTranscript(string? text) => !string.IsNullOrWhiteSpace(text);
+
+    internal static bool ContainsAudibleAudio(byte[] wav)
+    {
+        var chunkOffset = 12;
+        while (chunkOffset + 8 <= wav.Length)
+        {
+            var chunkSize = BitConverter.ToInt32(wav, chunkOffset + 4);
+            if (chunkSize < 0) return false;
+            var dataOffset = chunkOffset + 8;
+            if (wav.AsSpan(chunkOffset, 4).SequenceEqual("data"u8))
+            {
+                var dataEnd = Math.Min(wav.Length, dataOffset + chunkSize);
+                for (var offset = dataOffset; offset + 1 < dataEnd; offset += 2)
+                    if (Math.Abs((int)BitConverter.ToInt16(wav, offset)) > 16) return true;
+                return false;
+            }
+            var nextOffset = (long)dataOffset + chunkSize + (chunkSize & 1);
+            if (nextOffset > wav.Length || nextOffset <= chunkOffset) return false;
+            chunkOffset = (int)nextOffset;
+        }
+        return false;
     }
 
     public void Dispose()

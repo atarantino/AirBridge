@@ -167,5 +167,12 @@ public sealed class DirectMicrophoneAuthorization
 
 public interface IAgentToolRuntime
 {
+    ToolConfirmationRequest? GetConfirmationRequest(string name, JsonElement arguments) => null;
     Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken);
 }
+
+public sealed record ToolConfirmationRequest(
+    string ToolName,
+    string Reason,
+    string? Title = null,
+    string? Message = null);

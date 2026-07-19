@@ -24,7 +24,17 @@ public sealed record AgentActivityEvent(
     string Summary,
     string? Details = null,
     long? DurationMilliseconds = null,
-    AgentActivityTone Tone = AgentActivityTone.Neutral);
+    AgentActivityTone Tone = AgentActivityTone.Neutral,
+    OpenAiApiUsage? ApiUsage = null);
+
+public sealed record OpenAiApiUsage(
+    string Model,
+    string ServiceTier,
+    long InputTokens,
+    long CachedInputTokens,
+    long CacheWriteTokens,
+    long OutputTokens,
+    decimal EstimatedCostUsd);
 
 public interface IAgentActivitySink
 {

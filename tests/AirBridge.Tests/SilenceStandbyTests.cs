@@ -11,6 +11,7 @@ public sealed class SilenceStandbyTests
         private static readonly JsonElement Empty = JsonDocument.Parse("{}").RootElement.Clone();
         public event EventHandler<(string? ReceiverId, StreamState State, string? Error)>? StateChanged;
         public List<(string ReceiverId, int Volume)> Starts { get; } = [];
+        public List<(string ReceiverId, int Volume)> VolumeChanges { get; } = [];
         public int StopAllCount { get; private set; }
         public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ReceiverInfo>>([]);
@@ -22,7 +23,11 @@ public sealed class SilenceStandbyTests
         }
         public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) { StopAllCount++; return Task.FromResult(Empty); }
-        public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
+        public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default)
+        {
+            VolumeChanges.Add((receiverId, percent));
+            return Task.FromResult(Empty);
+        }
         public Task<JsonElement> PlayDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public void ForceTerminate() { }
@@ -178,5 +183,38 @@ public sealed class SilenceStandbyTests
         Assert.Equal(60, controller.GetReceiverAlignmentTrim(receiver.Id));
         Assert.Equal(1, capture.StartCount);
         Assert.True(raop.StopAllCount >= 2); // initial route cleanup plus standby release
+    }
+
+    [Fact]
+    public async Task VoiceCaptureDuckingSoftensThenRestoresWithoutChangingSavedVolume()
+    {
+        var raop = new FakeRaopClient();
+        await using var controller = new AirBridgeController(raop, new FakeCaptureService());
+        var receiver = new ReceiverInfo("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
+        await controller.StartSystemAsync([receiver], new Dictionary<string, int> { [receiver.Id] = 40 });
+
+        await controller.SetVoiceCaptureDuckingAsync(true);
+        Assert.Equal((receiver.Id, 14), Assert.Single(raop.VolumeChanges));
+        Assert.Equal(40, Assert.Single(controller.ReceiverPlayback).Volume);
+
+        await controller.SetVoiceCaptureDuckingAsync(false);
+        Assert.Equal([(receiver.Id, 14), (receiver.Id, 40)], raop.VolumeChanges);
+        Assert.Equal(40, Assert.Single(controller.ReceiverPlayback).Volume);
+    }
+
+    [Fact]
+    public async Task VolumeChangedWhileDuckedUsesDuckedLevelAndRestoresLatestChoice()
+    {
+        var raop = new FakeRaopClient();
+        await using var controller = new AirBridgeController(raop, new FakeCaptureService());
+        var receiver = new ReceiverInfo("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
+        await controller.StartSystemAsync([receiver], new Dictionary<string, int> { [receiver.Id] = 40 });
+
+        await controller.SetVoiceCaptureDuckingAsync(true);
+        await controller.SetReceiverVolumeAsync(receiver.Id, 60);
+        await controller.SetVoiceCaptureDuckingAsync(false);
+
+        Assert.Equal([(receiver.Id, 14), (receiver.Id, 21), (receiver.Id, 60)], raop.VolumeChanges);
+        Assert.Equal(60, Assert.Single(controller.ReceiverPlayback).Volume);
     }
 }

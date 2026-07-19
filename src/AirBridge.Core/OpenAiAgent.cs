@@ -12,13 +12,13 @@ public sealed class OpenAiAgent
     private readonly AgentPolicy _policy;
     private readonly IAgentToolRuntime _runtime;
     private readonly IAgentActivitySink? _activity;
-    private readonly Func<string, CancellationToken, Task<bool>>? _confirmationPrompt;
+    private readonly Func<ToolConfirmationRequest, CancellationToken, Task<bool>>? _confirmationPrompt;
     private readonly ToolConfirmationStore _pendingConfirmations;
     private string? _previousResponseId;
 
     public OpenAiAgent(string apiKey, AgentPolicy policy, IAgentToolRuntime runtime, HttpClient? httpClient = null,
         IAgentActivitySink? activity = null, ToolConfirmationStore? confirmationStore = null,
-        Func<string, CancellationToken, Task<bool>>? confirmationPrompt = null)
+        Func<ToolConfirmationRequest, CancellationToken, Task<bool>>? confirmationPrompt = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("An OpenAI API key is required.", nameof(apiKey));
         _policy = policy;
@@ -65,8 +65,9 @@ public sealed class OpenAiAgent
             using var document = JsonDocument.Parse(raw);
             var root = document.RootElement;
             _previousResponseId = root.GetProperty("id").GetString();
-            Publish(AgentActivityKind.ApiResponse, "Responses API", ResponseSummary(root),
-                $"Response {ShortId(_previousResponseId)}", requestTimer.ElapsedMilliseconds, AgentActivityTone.Success);
+            var apiUsage = OpenAiCostEstimator.FromResponse(root);
+            Publish(AgentActivityKind.ApiResponse, "Responses API", ResponseSummary(root, apiUsage),
+                $"Response {ShortId(_previousResponseId)}", requestTimer.ElapsedMilliseconds, AgentActivityTone.Success, apiUsage);
             var calls = ReadFunctionCalls(root).ToArray();
             if (calls.Length == 0)
             {
@@ -83,10 +84,14 @@ public sealed class OpenAiAgent
                 var userConfirmed = directMicrophoneAuthorization.TryConsume(call.Name) ||
                     (confirmsPending && _pendingConfirmations.TryConsume(call.Name, argsDocument.RootElement));
                 var decision = _policy.Evaluate(call.Name, argsDocument.RootElement, userConfirmed);
+                var runtimeConfirmation = _runtime.GetConfirmationRequest(call.Name, argsDocument.RootElement);
+                if (decision.Allowed && !userConfirmed && runtimeConfirmation is not null)
+                    decision = new(false, true, runtimeConfirmation.Reason);
                 if (decision.RequiresConfirmation && _confirmationPrompt is not null)
                 {
                     Publish(AgentActivityKind.Policy, call.Name, "Showing local confirmation", decision.Reason, tone: AgentActivityTone.Warning);
-                    if (await _confirmationPrompt(call.Name, cancellationToken).ConfigureAwait(false))
+                    var confirmation = runtimeConfirmation ?? new ToolConfirmationRequest(call.Name, decision.Reason);
+                    if (await _confirmationPrompt(confirmation, cancellationToken).ConfigureAwait(false))
                         decision = _policy.Evaluate(call.Name, argsDocument.RootElement, userConfirmed: true);
                 }
                 if (decision.RequiresConfirmation) _pendingConfirmations.Request(call.Name, argsDocument.RootElement);
@@ -150,20 +155,22 @@ public sealed class OpenAiAgent
     }
 
     private void Publish(AgentActivityKind kind, string title, string summary, string? details = null,
-        long? durationMilliseconds = null, AgentActivityTone tone = AgentActivityTone.Neutral) =>
+        long? durationMilliseconds = null, AgentActivityTone tone = AgentActivityTone.Neutral,
+        OpenAiApiUsage? apiUsage = null) =>
         _activity?.Publish(new(DateTimeOffset.Now, kind, title, summary,
-            AgentActivitySanitizer.Sanitize(details), durationMilliseconds, tone));
+            AgentActivitySanitizer.Sanitize(details), durationMilliseconds, tone, apiUsage));
 
     private static string ShortId(string? value) => string.IsNullOrWhiteSpace(value)
         ? "unavailable"
         : value.Length <= 18 ? value : value[..18] + "…";
 
-    private static string ResponseSummary(JsonElement root)
+    private static string ResponseSummary(JsonElement root, OpenAiApiUsage? apiUsage)
     {
         if (!root.TryGetProperty("usage", out var usage)) return "Completed";
         var input = usage.TryGetProperty("input_tokens", out var inputTokens) ? inputTokens.GetInt32() : 0;
         var output = usage.TryGetProperty("output_tokens", out var outputTokens) ? outputTokens.GetInt32() : 0;
-        return $"Completed · {input:N0} input / {output:N0} output tokens";
+        var cost = apiUsage is null ? string.Empty : $" · est. {OpenAiCostEstimator.FormatUsd(apiUsage.EstimatedCostUsd)}";
+        return $"Completed · {input:N0} input / {output:N0} output tokens{cost}";
     }
 
     private static bool IsExplicitConfirmation(string text)
@@ -203,7 +210,7 @@ You are AirBridge's operational agent. Route Windows audio to AirPlay receivers 
 
     public static readonly object[] ToolDefinitions =
     [
-        Tool("list_airplay_devices", "Lists discovered AirPlay receivers.", new { type = "object", properties = new { }, required = Array.Empty<string>(), additionalProperties = false }),
+        Tool("list_airplay_devices", "Lists discovered AirPlay receivers, including whether local pairing is required before connecting.", new { type = "object", properties = new { }, required = Array.Empty<string>(), additionalProperties = false }),
         Tool("list_audio_sessions", "Lists active audio applications without sensitive window titles or paths.", new { type = "object", properties = new { }, required = Array.Empty<string>(), additionalProperties = false }),
         Tool("get_current_routes", "Returns the current audio route.", new { type = "object", properties = new { }, required = Array.Empty<string>(), additionalProperties = false }),
         Tool("get_stream_health", "Returns aggregated live stream health including buffer fill percent, underruns, overruns, benign producer-idle padding, and true starvation; never raw audio.", new { type = "object", properties = new { }, required = Array.Empty<string>(), additionalProperties = false }),

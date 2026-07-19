@@ -152,7 +152,10 @@ public sealed class ReceiverRowControl : UserControl
     {
         if (_compactStreamActive == active) return;
         _compactStreamActive = active;
+        UpdateVolumePresentation();
         UpdateAccessibility();
+        UpdateCompactHeight(Visible && IsHandleCreated);
+        PerformLayout();
         Invalidate();
     }
 
@@ -201,9 +204,7 @@ public sealed class ReceiverRowControl : UserControl
         _streamState = state;
         _detail = detail;
         UpdateDashboardPresentation();
-        _volume.AccentFill = _selected || state == StreamState.Streaming;
-        _volume.Dimmed = !_selected && !IsActive;
-        _volume.Invalidate();
+        UpdateVolumePresentation();
         _equalizerTimer.Enabled = IsAnimatedState(state) && Visible;
         UpdateAccessibility();
         UpdateCompactHeight(Visible && IsHandleCreated);
@@ -216,9 +217,7 @@ public sealed class ReceiverRowControl : UserControl
         _updating = true;
         _selected = selected;
         _updating = false;
-        _volume.AccentFill = selected || _streamState == StreamState.Streaming;
-        _volume.Dimmed = !selected && !IsActive;
-        _volume.Invalidate();
+        UpdateVolumePresentation();
         UpdateAccessibility();
         UpdateCompactHeight(Visible && IsHandleCreated);
         Invalidate();
@@ -337,10 +336,11 @@ public sealed class ReceiverRowControl : UserControl
         e.Graphics.Clear(Parent?.BackColor ?? _palette.Surface);
         var bounds = Rectangle.Inflate(ClientRectangle, -1, -1);
         using var path = UiGeometry.Rounded(bounds, UiGeometry.Scale(this, 11));
-        var baseSurface = _selected ? _palette.SurfaceSelected : _palette.Surface;
+        var highlighted = !_compact ? _selected : IsCompactPlaybackHighlighted(_compactStreamActive, _streamState);
+        var baseSurface = highlighted ? _palette.SurfaceSelected : _palette.Surface;
         var hovered = Blend(baseSurface, _palette.SurfaceHover, _hoverAlpha);
         using var brush = new SolidBrush(hovered);
-        using var border = new Pen(_selected ? _palette.Accent : _palette.Border);
+        using var border = new Pen(highlighted ? _palette.Accent : _palette.Border);
         e.Graphics.FillPath(brush, path);
         e.Graphics.DrawPath(border, path);
     }
@@ -398,7 +398,6 @@ public sealed class ReceiverRowControl : UserControl
 
     private void PaintCompact(Graphics graphics)
     {
-        graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         var s = DeviceDpi / 96f;
         var v = s * SystemTextScale.Current;
         var left = (int)(12 * s);
@@ -413,8 +412,8 @@ public sealed class ReceiverRowControl : UserControl
         var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * v) : 0, Math.Max(40, nameRight - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * v) : Height);
 
         using var iconFont = UiGeometry.IconFont(14F);
-        using var nameFont = UiGeometry.UiFont(9.5F, FontStyle.Bold);
-        using var statusFont = UiGeometry.UiFont(8.25F);
+        using var nameFont = UiGeometry.UiFont(10F, FontStyle.Bold);
+        using var statusFont = UiGeometry.UiFont(8.5F);
         var tileActive = _streamState == StreamState.Streaming;
         using var tilePath = UiGeometry.Rounded(glyphBox, UiGeometry.Scale(this, 8));
         using var tileBrush = new SolidBrush(tileActive ? _palette.Accent : _palette.SurfaceHover);
@@ -423,18 +422,16 @@ public sealed class ReceiverRowControl : UserControl
         using var centered = new StringFormat(StringFormat.GenericTypographic) { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         using var iconBrush = new SolidBrush(iconColor);
         graphics.DrawString(DeviceGlyph(), iconFont, iconBrush, glyphBox, centered);
-        using var nameBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.Text);
-        using var nameFormat = new StringFormat(StringFormat.GenericTypographic)
-        {
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        graphics.DrawString(_receiver?.Name ?? "Speaker", nameFont, nameBrush, nameBounds, nameFormat);
+        var nameColor = _palette.IsHighContrast ? SystemColors.WindowText : _palette.Text;
+        const TextFormatFlags textFlags = TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+            TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding |
+            TextFormatFlags.NoPrefix | TextFormatFlags.PreserveGraphicsClipping;
+        TextRenderer.DrawText(graphics, _receiver?.Name ?? "Speaker", nameFont, nameBounds, nameColor, textFlags);
 
         if (_streamState == StreamState.Streaming)
         {
-            var measured = graphics.MeasureString(_receiver?.Name ?? string.Empty, nameFont, PointF.Empty, StringFormat.GenericTypographic).Width;
+            var measured = TextRenderer.MeasureText(graphics, _receiver?.Name ?? string.Empty, nameFont, Size.Empty,
+                TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
             DrawEqualizer(graphics, (int)Math.Min(checkBox.Left - (int)(19 * s), nameLeft + measured + (int)(6 * s)), (int)(11 * v));
         }
 
@@ -446,14 +443,8 @@ public sealed class ReceiverRowControl : UserControl
             graphics.FillEllipse(stateBrush, dot);
             var statusText = _streamState == StreamState.Failed && !string.IsNullOrWhiteSpace(_detail) ? _detail! : StatusText(_streamState);
             var statusBounds = new Rectangle(dot.Right + (int)(5 * s), (int)(34 * v), Math.Max(28, _volume.Left - dot.Right - (int)(8 * s)), (int)(20 * v));
-            using var statusBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText);
-            using var statusFormat = new StringFormat(StringFormat.GenericTypographic)
-            {
-                LineAlignment = StringAlignment.Center,
-                Trimming = StringTrimming.EllipsisCharacter,
-                FormatFlags = StringFormatFlags.NoWrap
-            };
-            graphics.DrawString(statusText, statusFont, statusBrush, statusBounds, statusFormat);
+            var statusColor = _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText;
+            TextRenderer.DrawText(graphics, statusText, statusFont, statusBounds, statusColor, textFlags);
         }
 
         DrawCompactSelection(graphics, checkBox);
@@ -475,11 +466,28 @@ public sealed class ReceiverRowControl : UserControl
             return;
         }
 
-        if (_selected || _streamState == StreamState.Streaming)
+        if (IsCompactPlaybackHighlighted(_compactStreamActive, _streamState))
         {
             using var fill = new SolidBrush(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Accent);
             graphics.FillEllipse(fill, bounds);
             using var checkPen = new Pen(_palette.IsHighContrast ? SystemColors.HighlightText : _palette.OnAccent, Math.Max(1.5f, 2f * DeviceDpi / 96f))
+            { StartCap = LineCap.Round, EndCap = LineCap.Round };
+            graphics.DrawLines(checkPen,
+            [
+                new(bounds.Left + bounds.Width / 4, bounds.Top + bounds.Height / 2),
+                new(bounds.Left + bounds.Width * 5 / 12, bounds.Bottom - bounds.Height / 4),
+                new(bounds.Right - bounds.Width / 5, bounds.Top + bounds.Height / 3)
+            ]);
+            return;
+        }
+
+        // Before playback starts, preserve the saved start selection without using
+        // the live blue treatment. Once a route is active, only route members are checked.
+        if (!_compactStreamActive && _selected)
+        {
+            using var fill = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText);
+            graphics.FillEllipse(fill, bounds);
+            using var checkPen = new Pen(_palette.IsHighContrast ? SystemColors.Window : _palette.Surface, Math.Max(1.5f, 2f * DeviceDpi / 96f))
             { StartCap = LineCap.Round, EndCap = LineCap.Round };
             graphics.DrawLines(checkPen,
             [
@@ -513,7 +521,7 @@ public sealed class ReceiverRowControl : UserControl
         }
 
         if (_receiver is null) return;
-        if (_streamState == StreamState.Failed || !_selected)
+        if (_streamState == StreamState.Failed || !IsActive)
         {
             _selected = true;
             SetPlaybackState(StreamState.Connecting, "Connecting…");
@@ -531,9 +539,7 @@ public sealed class ReceiverRowControl : UserControl
     {
         Focus();
         _selected = !_selected;
-        _volume.AccentFill = _selected || _streamState == StreamState.Streaming;
-        _volume.Dimmed = !_selected && !IsActive;
-        _volume.Invalidate();
+        UpdateVolumePresentation();
         UpdateAccessibility();
         UpdateCompactHeight(Visible && IsHandleCreated);
         Invalidate();
@@ -550,7 +556,7 @@ public sealed class ReceiverRowControl : UserControl
             var action = !_compactStreamActive
                 ? _selected ? "unselect" : "select"
                 : _streamState == StreamState.Failed ? "retry"
-                : _selected ? "disconnect" : "connect";
+                : IsActive ? "disconnect" : "connect";
             AccessibleName = $"{name}, {action}";
             AccessibleDescription = $"{state}, volume {_volume.Value} percent, alignment trim {_alignmentTrimMilliseconds} milliseconds. Press Space or Enter to {action}.";
         }
@@ -605,7 +611,18 @@ public sealed class ReceiverRowControl : UserControl
         Invalidate();
     }
 
-    private bool CompactEngaged => _compact && (_selected || _streamState == StreamState.Streaming);
+    private bool CompactEngaged => _compact && (_compactStreamActive ? IsActive : _selected);
+
+    internal static bool IsCompactPlaybackHighlighted(bool streamActive, StreamState state) =>
+        streamActive && state is not StreamState.Idle and not StreamState.Failed;
+
+    private void UpdateVolumePresentation()
+    {
+        var liveHighlight = IsCompactPlaybackHighlighted(_compactStreamActive, _streamState);
+        _volume.AccentFill = _compact ? liveHighlight : _selected || _streamState == StreamState.Streaming;
+        _volume.Dimmed = _compact ? !liveHighlight : !_selected && !IsActive;
+        _volume.Invalidate();
+    }
 
     private void UpdateCompactHeight(bool animate)
     {

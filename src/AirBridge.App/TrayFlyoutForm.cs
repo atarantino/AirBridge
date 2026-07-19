@@ -15,6 +15,7 @@ public sealed class TrayFlyoutForm : Form
     private readonly AntiAliasedLabel _status = new() { Dock = DockStyle.Fill };
     private readonly LetterSpacedLabel _wordmark = new() { Text = "AIRBRIDGE", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8F, FontStyle.Bold), Tracking = 1.5f };
     private readonly LetterSpacedLabel _outputLabel = new() { Text = "OUTPUT", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8.5F, FontStyle.Regular), Tracking = 1.2f, Padding = new Padding(0, 2, 0, 0) };
+    private readonly AntiAliasedLabel _browserDelay = new() { Text = "Browser extension: delay picture 2,000 ms  ›", Dock = DockStyle.Fill, Cursor = Cursors.Hand };
     private readonly FlowLayoutPanel _receivers = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, 4, 0, 0) };
     private readonly LoadingIndicator _receiverLoading = new();
     private readonly PillButton _toggle = new() { Text = "Start", Primary = true, Width = 92, Height = 36 };
@@ -41,8 +42,8 @@ public sealed class TrayFlyoutForm : Form
         _palette = requested;
         var textWidthScale = TextWidthScale(SystemTextScale.Current);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 180);
-        MinimumSize = new Size((int)Math.Ceiling(380 * textWidthScale), 180);
+        ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 206);
+        MinimumSize = new Size((int)Math.Ceiling(380 * textWidthScale), 206);
         MaximumSize = new Size((int)Math.Ceiling(480 * textWidthScale), 600);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
@@ -52,9 +53,10 @@ public sealed class TrayFlyoutForm : Form
         AccessibleName = "AirBridge quick controls";
         AccessibleDescription = "Select speakers, adjust volume, and start or stop streaming.";
         KeyPreview = true;
+        Font = UiGeometry.UiFont(9F);
 
         _wordmark.AccessibleName = "AirBridge";
-        _status.Font = UiGeometry.UiFont(10F, FontStyle.Bold);
+        _status.Font = UiGeometry.UiFont(10.5F, FontStyle.Bold);
         _status.AccessibleName = "Streaming status";
         _toggle.AccessibleName = "Start selected speakers";
         _groups.AccessibleName = "Choose a speaker group";
@@ -67,12 +69,10 @@ public sealed class TrayFlyoutForm : Form
         _toolTip.SetToolTip(_groups, "Speaker groups");
         _toolTip.SetToolTip(_settings, "Settings");
         _toolTip.SetToolTip(_quit, "Quit AirBridge");
-        _toggle.GrayscaleText = true;
-        _groups.GrayscaleText = true;
-        _refresh.GrayscaleText = true;
-        _settings.GrayscaleText = true;
-        _quit.GrayscaleText = true;
         _outputLabel.AccessibleName = "Audio outputs";
+        _browserDelay.AccessibleName = "Browser extension picture delay";
+        _browserDelay.AccessibleDescription = "Open Browser sync settings to measure or review the recommended picture delay.";
+        _toolTip.SetToolTip(_browserDelay, "Open Browser sync settings");
 
         var heading = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty };
         heading.RowStyles.Add(new RowStyle(SizeType.Absolute, 23));
@@ -89,15 +89,17 @@ public sealed class TrayFlyoutForm : Form
         actions.Controls.Add(_toggle, 0, 0);
         actions.Controls.Add(quiet, 2, 0);
 
-        _root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
+        _root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Margin = Padding.Empty };
         _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 58));
         _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
         _root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 26));
         _root.RowStyles.Add(new RowStyle(SizeType.Absolute, 49));
         _root.Controls.Add(heading, 0, 0);
         _root.Controls.Add(_outputLabel, 0, 1);
         _root.Controls.Add(_receivers, 0, 2);
-        _root.Controls.Add(actions, 0, 3);
+        _root.Controls.Add(_browserDelay, 0, 3);
+        _root.Controls.Add(actions, 0, 4);
         Controls.Add(_root);
 
         _toggle.Click += (_, _) =>
@@ -108,6 +110,7 @@ public sealed class TrayFlyoutForm : Form
         _refresh.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
         _groups.Click += (_, _) => GroupsRequested?.Invoke(this, EventArgs.Empty);
         _settings.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
+        _browserDelay.Click += (_, _) => BrowserSyncRequested?.Invoke(this, EventArgs.Empty);
         _quit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         KeyDown += (_, args) => { if (args.KeyCode == Keys.Escape) Hide(); };
         Deactivate += (_, _) => { if (AutoHide) Hide(); };
@@ -126,6 +129,7 @@ public sealed class TrayFlyoutForm : Form
     public event EventHandler? RefreshRequested;
     public event EventHandler? GroupsRequested;
     public event EventHandler? SettingsRequested;
+    public event EventHandler? BrowserSyncRequested;
     public event EventHandler? QuitRequested;
     public event EventHandler<ReceiverSelectionChangedEventArgs>? ReceiverSelectionChanged;
     public event EventHandler<ReceiverVolumeChangedEventArgs>? ReceiverVolumeCommitted;
@@ -252,6 +256,12 @@ public sealed class TrayFlyoutForm : Form
         foreach (var row in _rows.Values) row.SetCompactStreamActive(IsGlobalStreamActive);
     }
 
+    public void UpdateBrowserDelay(int milliseconds)
+    {
+        _browserDelay.Text = $"Browser extension: delay picture {milliseconds:N0} ms  ›";
+        _browserDelay.AccessibleDescription = $"Recommended browser picture delay is {milliseconds} milliseconds. Open Browser sync settings to measure or review it.";
+    }
+
     public void ApplyTheme(ThemePalette palette)
     {
         _palette = palette;
@@ -263,6 +273,7 @@ public sealed class TrayFlyoutForm : Form
         _quit.ApplyTheme(_palette);
         _wordmark.ApplyTheme(_palette);
         _outputLabel.ApplyTheme(_palette);
+        _browserDelay.ForeColor = _palette.Accent;
         foreach (var row in _rows.Values) row.ApplyTheme(_palette);
         _status.ForeColor = _palette.StateColor(_streamState);
         UpdateRoundedRegion();

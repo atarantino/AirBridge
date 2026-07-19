@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1280, initial-scale=1">
+  <title>AirBridge Video Sync store screenshot</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 1280px; height: 800px; margin: 0; overflow: hidden; }
+    body {
+      background: #0f0f0f url("rick-youtube-base.png") center / 1280px 800px no-repeat;
+      font: 14px "Segoe UI", sans-serif;
+    }
+    .popup {
+      position: absolute;
+      top: 28px;
+      right: 28px;
+      width: 312px;
+      padding: 16px;
+      color: #f5f7fa;
+      background: #20242a;
+      border: 1px solid #3a424c;
+      border-radius: 8px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.65);
+    }
+    h1 { margin: 0 0 12px; font-size: 18px; }
+    label { display: block; margin: 12px 0 5px; }
+    .toggle { display: flex; gap: 8px; align-items: center; }
+    input[type="checkbox"] { width: 15px; height: 15px; accent-color: #0877c9; }
+    input[type="number"] {
+      width: 100%;
+      padding: 7px;
+      color: #20242a;
+      background: white;
+      border: 1px solid #9aa6b2;
+      border-radius: 2px;
+      font: inherit;
+    }
+    button {
+      width: 100%;
+      margin-top: 14px;
+      padding: 8px;
+      color: white;
+      background: #0877c9;
+      border: 0;
+      border-radius: 2px;
+      font: inherit;
+    }
+    small { display: block; margin-top: 7px; color: #bdc7d2; line-height: 1.35; }
+    #site { overflow: hidden; color: #bdc7d2; text-overflow: ellipsis; white-space: nowrap; }
+    #status { min-height: 18px; padding-top: 8px; color: #64d891; }
+  </style>
+</head>
+<body>
+  <section class="popup" aria-label="AirBridge picture delay extension popup">
+    <h1>AirBridge picture delay</h1>
+    <div id="site">www.youtube.com</div>
+    <label class="toggle"><input type="checkbox" checked> Enable on this site</label>
+    <label for="delay">Picture delay (milliseconds)</label>
+    <input id="delay" type="number" value="2300" readonly>
+    <small>Audio keeps playing normally. Only captured video frames are delayed. Buffering is capped at 4000 ms.</small>
+    <button type="button">Apply</button>
+    <div id="status">Applied</div>
+  </section>
+</body>
+</html>

@@ -71,6 +71,7 @@ public sealed class MainForm : Form
     private long _hotkeyPressedAt;
     private bool _hotkeyWaitingForRelease;
     private CancellationTokenSource? _transcriptionCancellation;
+    private Task _voiceDuckingTransition = Task.CompletedTask;
 
     public MainForm(bool previewMode = false, AppThemeMode? previewTheme = null, bool previewStreaming = true)
     {
@@ -79,11 +80,13 @@ public sealed class MainForm : Form
         _previewStreamActive = previewMode && previewStreaming;
         _settings = _settingsStore.Load();
         _controller.ConfigureSettings(_settings);
+        _controller.AgentPairingHandler = EnsureAgentReceiversPairedAsync;
         foreach (var id in _settings.SelectedReceiverIds) _selectedReceiverIds.Add(id);
         foreach (var pair in _settings.ReceiverVolumes) _receiverVolumes[pair.Key] = pair.Value;
         var themeMode = previewTheme ?? ParseTheme(_settings.ThemeMode);
         _palette = ThemePalette.Current(themeMode);
         _trayFlyout = new(themeMode);
+        _trayFlyout.UpdateBrowserDelay(_settings.EstimatedAudioDelayMilliseconds);
         _voiceHud = new(_palette);
         if (!_voiceHud.SetInitialPosition(_settings.VoiceHudX, _settings.VoiceHudY))
             _settings = _settings with { VoiceHudX = null, VoiceHudY = null };
@@ -148,6 +151,7 @@ public sealed class MainForm : Form
         _trayFlyout.RefreshRequested += async (_, _) => await RunUiActionAsync(RefreshReceiversAsync);
         _trayFlyout.GroupsRequested += (_, _) => ShowGroupsMenu();
         _trayFlyout.SettingsRequested += (_, _) => ShowSettingsDialog();
+        _trayFlyout.BrowserSyncRequested += (_, _) => ShowSettingsDialog("Browser sync");
         _trayFlyout.QuitRequested += (_, _) => RequestQuit();
         _trayFlyout.ReceiverSelectionChanged += (_, args) => SetReceiverSelected(args.ReceiverId, args.Selected);
         _trayFlyout.ReceiverVolumeCommitted += async (_, args) => await ChangeReceiverVolumeAsync(args.ReceiverId, args.Volume);
@@ -536,20 +540,20 @@ public sealed class MainForm : Form
         });
     }
 
-    private async Task<bool> EnsureReceiverPairedAsync(ReceiverInfo receiver)
+    private async Task<bool> EnsureReceiverPairedAsync(ReceiverInfo receiver, CancellationToken cancellationToken = default)
     {
         if (!receiver.RequiresPairing) return true;
         try
         {
-            await _controller.BeginPairingAsync(receiver.Id);
+            await _controller.BeginPairingAsync(receiver.Id, cancellationToken: cancellationToken);
             using var dialog = new PairingCodeDialog(receiver.Name, _palette);
             var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
             if (result != DialogResult.OK)
             {
-                await _controller.CancelPairingAsync(receiver.Id);
+                await _controller.CancelPairingAsync(receiver.Id, cancellationToken);
                 return false;
             }
-            await _controller.PairReceiverAsync(receiver.Id, dialog.PairingCode);
+            await _controller.PairReceiverAsync(receiver.Id, dialog.PairingCode, cancellationToken);
             RebuildReceiverRows(_controller.Receivers);
             return true;
         }
@@ -560,6 +564,41 @@ public sealed class MainForm : Form
             MessageBox.Show(this, "AirBridge could not complete pairing. Check the code shown on the TV and try again.",
                 "AirBridge pairing", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
+        }
+    }
+
+    private Task<bool> EnsureAgentReceiversPairedAsync(IReadOnlyCollection<ReceiverInfo> receivers, CancellationToken cancellationToken)
+    {
+        if (!InvokeRequired) return EnsureAgentReceiversPairedOnUiThreadAsync(receivers, cancellationToken);
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            BeginInvoke(async () =>
+            {
+                try { completion.TrySetResult(await EnsureAgentReceiversPairedOnUiThreadAsync(receivers, cancellationToken)); }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { completion.TrySetCanceled(cancellationToken); }
+                catch (Exception ex) { completion.TrySetException(ex); }
+            });
+        }
+        catch (InvalidOperationException ex) { completion.TrySetException(ex); }
+        return completion.Task;
+    }
+
+    private async Task<bool> EnsureAgentReceiversPairedOnUiThreadAsync(IReadOnlyCollection<ReceiverInfo> receivers, CancellationToken cancellationToken)
+    {
+        if (!_previewMode) _voiceHud.HideHud();
+        try
+        {
+            foreach (var receiver in receivers)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!await EnsureReceiverPairedAsync(receiver, cancellationToken)) return false;
+            }
+            return true;
+        }
+        finally
+        {
+            if (!_previewMode && !cancellationToken.IsCancellationRequested) _voiceHud.ShowThinking();
         }
     }
 
@@ -736,17 +775,20 @@ public sealed class MainForm : Form
         UpdateDashboardPresentation(active);
     }
 
-    private async Task AskAsync(string text, CancellationToken cancellationToken = default)
+    private async Task<string?> AskAsync(string text, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(text)) return;
+        if (string.IsNullOrWhiteSpace(text)) return null;
         AppendConversation("You", text);
         _command.Clear();
-        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because an OpenAI API key is not configured."); return; }
+        if (_agent is null) { AppendConversation("AirBridge", "GPT-5.6 is disabled because an OpenAI API key is not configured."); return null; }
+        string? response = null;
         await RunUiActionAsync(async () =>
         {
             var diagnostic = text.Contains("why", StringComparison.OrdinalIgnoreCase) || text.Contains("fix", StringComparison.OrdinalIgnoreCase) || text.Contains("analy", StringComparison.OrdinalIgnoreCase);
-            AppendConversation("AirBridge", await _agent.AskAsync(text, diagnostic, cancellationToken));
+            response = await _agent.AskAsync(text, diagnostic, cancellationToken);
+            AppendConversation("AirBridge", response);
         });
+        return response;
     }
 
     private bool StartRecording(bool holdHint)
@@ -755,6 +797,7 @@ public sealed class MainForm : Form
         try
         {
             _recorder.Start();
+            QueueVoiceDucking(enabled: true);
             _pushToTalk.Text = "Listening…";
             if (!_previewMode) _voiceHud.ShowListening(() => _recorder.PeakLevel, holdHint);
             return true;
@@ -773,6 +816,7 @@ public sealed class MainForm : Form
         StopHotkeyPolling();
         _pushToTalk.Text = "Transcribing…";
         var wav = _recorder.Stop();
+        await QueueVoiceDucking(enabled: false);
         var apiKey = ResolveOpenAiApiKey();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
@@ -788,9 +832,19 @@ public sealed class MainForm : Form
         try
         {
             var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token, _activityStore);
+            if (!PushToTalkRecorder.ContainsTranscript(text))
+            {
+                AppendConversation("System", "No speech was detected. Check that your microphone isn’t muted, then try again.");
+                if (!_previewMode) _voiceHud.ShowNoSpeech();
+                return;
+            }
             if (!_previewMode) _voiceHud.ShowThinking();
-            await AskAsync(text, cancellation.Token);
-            if (!_previewMode) _voiceHud.HideHud();
+            var response = await AskAsync(text, cancellation.Token);
+            if (!_previewMode)
+            {
+                if (string.IsNullOrWhiteSpace(response)) _voiceHud.HideHud();
+                else _voiceHud.ShowAssistantResponse(response);
+            }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -859,32 +913,70 @@ public sealed class MainForm : Form
     {
         StopHotkeyPolling();
         if (_recorder.IsRecording) _recorder.Cancel();
+        QueueVoiceDucking(enabled: false);
         _transcriptionCancellation?.Cancel();
         _pushToTalk.Text = "Hold to talk";
         if (!_previewMode) _voiceHud.HideHud();
     }
 
-    private async Task MeasureSelectedDelayAsync()
+    private Task QueueVoiceDucking(bool enabled)
+    {
+        var previous = _voiceDuckingTransition;
+        return _voiceDuckingTransition = ApplyAsync();
+
+        async Task ApplyAsync()
+        {
+            try { await previous.ConfigureAwait(false); }
+            catch (Exception ex) { AppLog.Warning("voice", $"Previous volume transition failed: {ex.Message}"); }
+
+            try { await _controller.SetVoiceCaptureDuckingAsync(enabled).ConfigureAwait(false); }
+            catch (Exception ex) { AppLog.Warning("voice", $"Voice volume transition failed: {ex.Message}"); }
+        }
+    }
+
+    private async Task MeasureSelectedDelayAsync(SettingsForm? settingsDialog = null)
     {
         var active = _controller.ReceiverPlayback.Where(item => _selectedReceiverIds.Contains(item.Receiver.Id)).ToArray();
         if (active.Length != 1)
         {
-            AppendConversation("System", "Select exactly one currently streaming speaker before measuring delay.");
+            const string message = "Start and select exactly one speaker in the tray before measuring browser picture delay.";
+            AppendConversation("System", message);
+            settingsDialog?.SetBrowserDelayError(message);
+            if (settingsDialog is not null && !settingsDialog.IsDisposed)
+                MessageBox.Show(settingsDialog, message, "Browser picture delay", MessageBoxButtons.OK, MessageBoxIcon.Information);
             return;
         }
         var microphone = _settings.CalibrationMicrophoneName ?? AcousticDelayMeasurer.GetAvailableMicrophones().FirstOrDefault()?.Name ?? "the default recording device";
         AppendConversation("System", $"Measuring {active[0].Receiver.Name} with {microphone}; five short chirps will play and microphone audio stays in memory.");
-        await RunUiActionAsync(async () =>
+        settingsDialog?.SetBrowserDelayMeasuring(active[0].Receiver.Name);
+        try
         {
+            UseWaitCursor = true;
             var result = await _controller.MeasureAcousticDelayAsync(active[0].Receiver.Id);
             _settings = _settings with { EstimatedAudioDelayMilliseconds = result.MedianMilliseconds };
             _settingsStore.Save(_settings);
+            _trayFlyout.UpdateBrowserDelay(result.MedianMilliseconds);
             _latency.Text = $"Delay: {result.MedianMilliseconds}ms";
             UpdateMetricsSummary();
             _recommendation.Text = $"Measured {result.MedianMilliseconds} ms. Use this value in the browser extension.";
             AppendConversation("Delay", $"Median {result.MedianMilliseconds} ms ({string.Join(", ", result.DelaysMilliseconds)} ms). Use this value in the browser extension.");
-            MessageBox.Show($"Measured delay for {active[0].Receiver.Name}: {result.MedianMilliseconds} ms.\n\nUse this value in the browser extension.", "AirBridge delay measurement", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        });
+            settingsDialog?.SetBrowserDelayResult(result.MedianMilliseconds, active[0].Receiver.Name);
+            var owner = settingsDialog is { IsDisposed: false } ? (IWin32Window)settingsDialog : this;
+            MessageBox.Show(owner, $"Set the AirBridge browser extension picture delay to {result.MedianMilliseconds} ms.\n\nMeasured using {active[0].Receiver.Name}.", "Browser picture delay measured", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            AppLog.Error("delay-measurement", "Browser picture delay measurement failed.", ex);
+            AppendConversation("System", ex.Message);
+            settingsDialog?.SetBrowserDelayError($"Measurement failed: {ex.Message}");
+            if (settingsDialog is not null && !settingsDialog.IsDisposed)
+                MessageBox.Show(settingsDialog, ex.Message, "Browser picture delay measurement failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+        finally
+        {
+            UseWaitCursor = false;
+            UpdateTelemetry();
+        }
     }
 
     private async Task AlignSelectedGroupAsync()
@@ -1027,9 +1119,11 @@ public sealed class MainForm : Form
             MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
-        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers, initialTab);
+        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey),
+            _controller.Receivers, initialTab, _activityStore.CostSnapshot());
         dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
         dialog.OpenActivityInspectorRequested += (_, _) => ShowActivityInspector();
+        dialog.BrowserDelayMeasureRequested += async (_, _) => await MeasureSelectedDelayAsync(dialog);
         dialog.SaveRequested += (_, _) => ApplySettings(dialog);
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
         if (Visible) dialog.ShowDialog(this); else dialog.ShowDialog();
@@ -1054,7 +1148,7 @@ public sealed class MainForm : Form
         });
     }
 
-    private Task<bool> ConfirmAgentToolAsync(string toolName, CancellationToken cancellationToken)
+    private Task<bool> ConfirmAgentToolAsync(ToolConfirmationRequest request, CancellationToken cancellationToken)
     {
         var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         void ShowPrompt()
@@ -1064,7 +1158,9 @@ public sealed class MainForm : Form
                 completion.TrySetResult(false);
                 return;
             }
-            var (title, message) = toolName switch
+            var (title, message) = request.Title is not null && request.Message is not null
+                ? (request.Title, request.Message)
+                : request.ToolName switch
             {
                 "align_group" => ("Allow speaker alignment?",
                     "AirBridge will play calibration chirps, briefly mute non-target speakers, capture the selected microphone in memory, and apply bounded timing trims. Microphone audio is discarded locally."),
@@ -1073,13 +1169,17 @@ public sealed class MainForm : Form
                 "save_routing_rule" => ("Save routing rule?", "Allow AirBridge to save this routing rule?"),
                 "change_startup_behavior" => ("Change startup behavior?", "Allow AirBridge to change its startup behavior?"),
                 "enable_microphone_calibration" => ("Enable microphone calibration?", "Allow AirBridge to enable microphone calibration?"),
-                _ => ("Allow AirBridge action?", $"Allow the requested {toolName.Replace('_', ' ')} action once?")
+                _ => ("Allow AirBridge action?", $"Allow the requested {request.ToolName.Replace('_', ' ')} action once?")
             };
             CompleteFromHudAsync();
 
             async void CompleteFromHudAsync()
             {
-                try { completion.TrySetResult(await _voiceHud.ShowConfirmation(title, message, cancellationToken)); }
+                try
+                {
+                    var usesMicrophone = request.ToolName is "align_group" or "measure_acoustic_delay" or "enable_microphone_calibration";
+                    completion.TrySetResult(await _voiceHud.ShowConfirmation(title, message, cancellationToken, usesMicrophone));
+                }
                 catch (Exception ex)
                 {
                     AppLog.Error("agent-confirmation", "Could not show the confirmation prompt.", ex);

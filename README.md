@@ -38,7 +38,7 @@ On first launch, refresh the output list, select one or more discovered AirPlay 
 
 A Mac advertising itself as an AirPlay Receiver is usable when **Allow AirPlay for** is set to **Anyone on the Same Network**. The **Current User** setting only accepts devices signed into the same Apple Account, which a Windows sender cannot satisfy; AirBridge detects that mode, leaves the Mac unselected, and points to the setting that must be changed.
 
-Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout applies a group's saved speaker selection; choose **Start** separately to begin playback. The same menu links directly to the Groups settings page.
+Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, browser picture sync, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout applies a group's saved speaker selection; choose **Start** separately to begin playback. The same menu links directly to the Groups settings page.
 
 Discovered Apple TVs include a **Sleep Apple TV** action in their receiver row. AirBridge always asks for confirmation, stops its active stream to prevent an automatic reconnect, and then places the Apple TV in standby. The first use can require a separate on-screen code for Apple TV control authorization. HDMI-CEC may also turn off the connected display or receiver.
 
@@ -59,7 +59,7 @@ Core capture, streaming, tray controls, health telemetry, and delay measurement 
 
 ## Browser picture delay
 
-Load `src/AirBridge.BrowserExtension` as an unpacked Manifest V3 extension in Chrome or Edge. Open its popup on a video site, enable that site, and enter the delay reported by **Measure delay** in AirBridge.
+Load `src/AirBridge.BrowserExtension` as an unpacked Manifest V3 extension in Chrome or Edge. For Firefox, open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose `src/AirBridge.FirefoxExtension/manifest.json`. The tray flyout always shows the current recommended picture delay; select it to open **Settings → Browser sync**. For the most accurate value, start exactly one speaker and use **Measure delay**, then enter the reported number in the extension popup and enable that video site.
 
 The extension leaves the real `<video>` playing so its audio continues into WASAPI. It makes only the real picture transparent, captures downscaled frames into a bounded in-memory queue, and renders delayed frames on an overlay canvas. Buffering is capped at approximately four seconds and 450 frames. Seeks flush the queue; pause freezes its clock; resize, fullscreen, SPA navigation, and replaced video elements are tracked. DRM/EME or otherwise protected frames are restored and skipped when capture is blocked.
 
@@ -69,9 +69,9 @@ AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`.
 
 ## AI Activity Inspector
 
-Open **Settings → Advanced → Open AI Activity Inspector** to see the optional assistant work in real time. When using the developer dashboard in `--preview` mode, the same inspector is available from its diagnostics menu. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and whether a local action was allowed, blocked, or awaiting confirmation. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
+Open **Settings → Advanced → Open AI Activity Inspector** to see the optional assistant work in real time. When using the developer dashboard in `--preview` mode, the same inspector is available from its diagnostics menu. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and estimated per-response, session, and tracked cost based on the embedded OpenAI rate card. The estimate accounts for cache reads and cache writes but may differ from the OpenAI invoice; tracking begins after this feature is installed. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
 
-The inspector never stores microphone audio or displays API keys. Credentials, network addresses, hardware identifiers, and pipe identifiers are redacted before an event enters its bounded buffer. Transcript text is hidden in the detail pane unless the user explicitly enables it, and inspector events are not written to disk.
+The inspector never stores microphone audio or displays API keys. Credentials, network addresses, hardware identifiers, and pipe identifiers are redacted before an event enters its bounded buffer. Transcript text is hidden in the detail pane unless the user explicitly enables it and is never written to disk. Sanitized operational events are stored with AirBridge's rolling logs. The aggregate estimated-cost ledger is persisted separately in AirBridge's local application data and its total is shown on the Assistant settings page.
 
 ## Verify and package
 

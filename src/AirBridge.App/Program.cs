@@ -17,6 +17,7 @@ internal static class Program
         };
         AppLog.Info("lifecycle", $"AirBridge starting; pid={Environment.ProcessId}.");
         ApplicationConfiguration.Initialize();
+        Application.SetDefaultFont(UiGeometry.UiFont(9F));
         if (args is ["--preview"])
         {
             Application.Run(new MainForm(previewMode: true));
@@ -91,7 +92,9 @@ internal static class Program
                     new("group-home", "Whole home", ["output-a", "output-b", "output-c"])
                 ]
             };
-            using var settings = new SettingsForm(previewSettings, ThemePalette.Current(theme), storedApiKeyConfigured: true, apiKeyManagedByEnvironment: false, previewReceivers);
+            using var settings = new SettingsForm(previewSettings, ThemePalette.Current(theme), storedApiKeyConfigured: true,
+                apiKeyManagedByEnvironment: false, previewReceivers,
+                apiCosts: new(0.0174m, 3, 1.2847m, 142, true));
             settings.Show();
             Application.DoEvents();
             if (args.Length >= 4 && int.TryParse(args[3], out var tabIndex) && settings.Controls.OfType<TabControl>().FirstOrDefault() is { } tabs)
@@ -109,8 +112,14 @@ internal static class Program
             var theme = args.Length >= 3 && Enum.TryParse<AppThemeMode>(args[2], true, out var parsedTheme) ? parsedTheme : AppThemeMode.Dark;
             using var hud = new VoiceHudForm(ThemePalette.Current(theme));
             hud.SetInitialPosition(null, null);
-            if (args.Length >= 4 && args[3].Equals("confirmation", StringComparison.OrdinalIgnoreCase))
+            if (args.Length >= 4 && args[3].Equals("pairing", StringComparison.OrdinalIgnoreCase))
+                _ = hud.ShowConfirmation("Pair with Bedroom?", "Bedroom requires pairing before AirBridge can connect. Approve once, then enter the code shown by the receiver. The pairing credential stays on this PC.", CancellationToken.None, useMicrophoneIcon: false);
+            else if (args.Length >= 4 && args[3].Equals("confirmation", StringComparison.OrdinalIgnoreCase))
                 _ = hud.ShowConfirmation("Allow speaker alignment?", "AirBridge will play calibration chirps, briefly mute non-target speakers, capture the selected microphone in memory, and apply bounded timing trims. Microphone audio is discarded locally.", CancellationToken.None);
+            else if (args.Length >= 4 && args[3].Equals("silence", StringComparison.OrdinalIgnoreCase))
+                hud.ShowNoSpeech();
+            else if (args.Length >= 4 && args[3].Equals("response", StringComparison.OrdinalIgnoreCase))
+                hud.ShowAssistantResponse("I don’t see a receiver named **Bathroom**. Available speakers:\n- Family Room 3\n- Kitchen\n- Living room\n\nWhich one should I use?");
             else if (args.Length >= 4 && args[3].Equals("thinking", StringComparison.OrdinalIgnoreCase))
                 hud.ShowThinking();
             else
@@ -132,7 +141,8 @@ internal static class Program
             store.Publish(new(now, AirBridge.Core.AgentActivityKind.Transcription, "Audio transcription", "gpt-4o-transcribe · 84 KB in memory", "Audio is never logged."));
             store.Publish(new(now.AddMilliseconds(842), AirBridge.Core.AgentActivityKind.Transcription, "Transcript ready", "Text returned to the local AirBridge assistant", "Why does the media room speaker keep dropping out?", 842, AirBridge.Core.AgentActivityTone.Success));
             store.Publish(new(now.AddMilliseconds(850), AirBridge.Core.AgentActivityKind.ApiRequest, "Responses API", "gpt-5.6 · high reasoning · turn 1", "New conversation response"));
-            store.Publish(new(now.AddSeconds(2.2), AirBridge.Core.AgentActivityKind.ApiResponse, "Responses API", "Completed · 1,284 input / 96 output tokens", "Response resp_demo_123456…", 1350, AirBridge.Core.AgentActivityTone.Success));
+            store.Publish(new(now.AddSeconds(2.2), AirBridge.Core.AgentActivityKind.ApiResponse, "Responses API", "Completed · 1,284 input / 96 output tokens · est. $0.009300", "Response resp_demo_123456…", 1350, AirBridge.Core.AgentActivityTone.Success,
+                new("gpt-5.6", "standard", 1284, 0, 0, 96, 0.0093m)));
             store.Publish(new(now.AddSeconds(2.3), AirBridge.Core.AgentActivityKind.ToolCall, "get_stream_health", "Tool requested by GPT-5.6", "{}"));
             store.Publish(new(now.AddSeconds(2.31), AirBridge.Core.AgentActivityKind.Policy, "get_stream_health", "Allowed by local policy", "Allowed.", Tone: AirBridge.Core.AgentActivityTone.Success));
             store.Publish(new(now.AddSeconds(2.32), AirBridge.Core.AgentActivityKind.ToolResult, "get_stream_health", "Local tool completed", "{\"state\":\"Streaming\",\"buffer_fill_percent\":72,\"new_underruns\":0}", 8, AirBridge.Core.AgentActivityTone.Success));

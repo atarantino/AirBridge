@@ -11,13 +11,21 @@ internal sealed class AgentActivityStore : IAgentActivitySink
     private readonly Queue<AgentActivityEvent> _events = new();
     private readonly int _capacity;
     private readonly PersistentAgentActivityLog? _persistentLog;
+    private readonly PersistentAgentCostLedger? _costLedger;
+    private decimal _sessionEstimatedCostUsd;
+    private long _sessionPricedResponses;
 
-    internal AgentActivityStore(int capacity = DefaultCapacity, bool persistToDisk = false, string? logPath = null)
+    internal AgentActivityStore(int capacity = DefaultCapacity, bool persistToDisk = false, string? logPath = null,
+        string? costLedgerPath = null)
     {
         if (capacity is < 10 or > 5000) throw new ArgumentOutOfRangeException(nameof(capacity));
         _capacity = capacity;
         if (persistToDisk)
+        {
             _persistentLog = new(logPath ?? System.IO.Path.Combine(AppLog.DirectoryPath, "ai-activity.jsonl"));
+            _costLedger = new(costLedgerPath ?? System.IO.Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AirBridge", "ai-cost.json"));
+        }
     }
 
     internal event Action<AgentActivityEvent>? ActivityPublished;
@@ -35,6 +43,19 @@ internal sealed class AgentActivityStore : IAgentActivitySink
         {
             _events.Enqueue(sanitized);
             while (_events.Count > _capacity) _events.Dequeue();
+            if (sanitized.ApiUsage is { } usage)
+            {
+                _sessionEstimatedCostUsd += usage.EstimatedCostUsd;
+                _sessionPricedResponses++;
+            }
+        }
+        if (sanitized.ApiUsage is { } pricedUsage)
+        {
+            try { _costLedger?.Add(pricedUsage.EstimatedCostUsd); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            {
+                AppLog.Warning("ai-activity", $"Could not persist estimated AI cost: {ex.Message}");
+            }
         }
         if (ShouldPersist(sanitized.Kind))
         {
@@ -56,12 +77,36 @@ internal sealed class AgentActivityStore : IAgentActivitySink
         lock (_gate) return _events.ToArray();
     }
 
+    internal AgentCostSnapshot CostSnapshot()
+    {
+        lock (_gate)
+        {
+            var tracked = _costLedger?.Snapshot();
+            return new(_sessionEstimatedCostUsd, _sessionPricedResponses,
+                tracked?.EstimatedCostUsd ?? _sessionEstimatedCostUsd,
+                tracked?.PricedResponses ?? _sessionPricedResponses,
+                _costLedger is not null);
+        }
+    }
+
     internal void Clear()
     {
-        lock (_gate) _events.Clear();
+        lock (_gate)
+        {
+            _events.Clear();
+            _sessionEstimatedCostUsd = 0;
+            _sessionPricedResponses = 0;
+        }
         Cleared?.Invoke(this, EventArgs.Empty);
     }
 }
+
+internal readonly record struct AgentCostSnapshot(
+    decimal SessionEstimatedCostUsd,
+    long SessionPricedResponses,
+    decimal TrackedEstimatedCostUsd,
+    long TrackedPricedResponses,
+    bool IsPersisted);
 
 internal sealed class PersistentAgentActivityLog
 {
@@ -88,6 +133,7 @@ internal sealed class PersistentAgentActivityLog
             activity.Summary,
             activity.Details,
             duration_ms = activity.DurationMilliseconds,
+            api_usage = activity.ApiUsage,
             tone = activity.Tone.ToString()
         };
         var line = JsonSerializer.Serialize(payload, JsonOptions) + Environment.NewLine;
@@ -111,6 +157,60 @@ internal sealed class PersistentAgentActivityLog
         }
         if (File.Exists(_path)) File.Move(_path, $"{_path}.1");
     }
+}
+
+internal sealed class PersistentAgentCostLedger
+{
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
+    };
+    private readonly object _gate = new();
+    private readonly string _path;
+
+    internal PersistentAgentCostLedger(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        _path = System.IO.Path.GetFullPath(path);
+        Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_path)!);
+        if (!File.Exists(_path)) return;
+        try
+        {
+            var state = JsonSerializer.Deserialize<LedgerState>(File.ReadAllText(_path), JsonOptions);
+            EstimatedCostUsd = state?.EstimatedCostUsd ?? 0;
+            PricedResponses = state?.PricedResponses ?? 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            AppLog.Warning("ai-activity", $"Could not read the estimated AI cost ledger: {ex.Message}");
+        }
+    }
+
+    internal decimal EstimatedCostUsd { get; private set; }
+    internal long PricedResponses { get; private set; }
+
+    internal (decimal EstimatedCostUsd, long PricedResponses) Snapshot()
+    {
+        lock (_gate) return (EstimatedCostUsd, PricedResponses);
+    }
+
+    internal void Add(decimal estimatedCostUsd)
+    {
+        lock (_gate)
+        {
+            EstimatedCostUsd += estimatedCostUsd;
+            PricedResponses++;
+            var temporary = _path + ".new";
+            File.WriteAllText(temporary, JsonSerializer.Serialize(
+                new LedgerState(EstimatedCostUsd, PricedResponses, DateTimeOffset.UtcNow,
+                    OpenAiCostEstimator.RateCardDate.ToString("yyyy-MM-dd"), OpenAiCostEstimator.PricingUrl), JsonOptions));
+            File.Move(temporary, _path, true);
+        }
+    }
+
+    private sealed record LedgerState(decimal EstimatedCostUsd, long PricedResponses,
+        DateTimeOffset UpdatedAt, string RateCardDate, string PricingUrl);
 }
 
 internal sealed class ActivityInspectorForm : Form
@@ -193,10 +293,13 @@ internal sealed class ActivityInspectorForm : Form
         };
         toolbar.Controls.AddRange([_paused, _autoScroll, _showTranscripts, _copy, _clear, _status]);
 
+        var persistsActivity = _store.CostSnapshot().IsPersisted;
         _privacy = new Label
         {
             Dock = DockStyle.Fill,
-            Text = "Memory only · bounded to 250 events · credentials, network addresses, hardware IDs, and pipe identifiers are redacted · audio is never logged",
+            Text = persistsActivity
+                ? "Bounded to 250 events · sanitized operational events and aggregate cost estimates are stored locally · audio and transcripts are never logged"
+                : "Memory only · bounded to 250 events · credentials, network addresses, hardware IDs, and pipe identifiers are redacted · audio is never logged",
             AutoEllipsis = true,
             TextAlign = ContentAlignment.MiddleLeft,
             Padding = new Padding(10, 0, 8, 0)
@@ -369,15 +472,27 @@ internal sealed class ActivityInspectorForm : Form
     private AgentActivityEvent? SelectedActivity() =>
         _events.SelectedItems.Count == 1 ? _events.SelectedItems[0].Tag as AgentActivityEvent : null;
 
-    private string? VisibleDetails(AgentActivityEvent activity) =>
-        activity.Kind == AgentActivityKind.Transcription && !_showTranscripts.Checked
+    private string? VisibleDetails(AgentActivityEvent activity)
+    {
+        var details = activity.Kind == AgentActivityKind.Transcription && !_showTranscripts.Checked
             ? "Transcript hidden. Enable “Show transcript text” to reveal it for this in-memory session."
             : activity.Details;
+        if (activity.ApiUsage is not { } usage) return details;
+        var costDetails = $"Estimated API cost: {OpenAiCostEstimator.FormatUsd(usage.EstimatedCostUsd)}\r\n" +
+            $"Model: {usage.Model} · tier: {usage.ServiceTier}\r\n" +
+            $"Tokens: {usage.InputTokens:N0} input ({usage.CachedInputTokens:N0} cached, {usage.CacheWriteTokens:N0} cache write) · {usage.OutputTokens:N0} output\r\n" +
+            $"Rate card: {OpenAiCostEstimator.RateCardDate:yyyy-MM-dd} · estimate may differ from the OpenAI invoice";
+        return string.IsNullOrWhiteSpace(details) ? costDetails : $"{details}\r\n\r\n{costDetails}";
+    }
 
     private void UpdateStatus()
     {
         var count = _store.Snapshot().Count;
-        _status.Text = $"{(_paused.Checked ? "Paused" : "Live")} · {count} event{(count == 1 ? string.Empty : "s")}";
+        var costs = _store.CostSnapshot();
+        var costText = costs.TrackedPricedResponses == 0 ? string.Empty : costs.IsPersisted
+            ? $" · est. {OpenAiCostEstimator.FormatUsd(costs.SessionEstimatedCostUsd)} session / {OpenAiCostEstimator.FormatUsd(costs.TrackedEstimatedCostUsd)} tracked"
+            : $" · est. {OpenAiCostEstimator.FormatUsd(costs.SessionEstimatedCostUsd)} session";
+        _status.Text = $"{(_paused.Checked ? "Paused" : "Live")} · {count} event{(count == 1 ? string.Empty : "s")}{costText}";
         _status.ForeColor = _paused.Checked ? _palette.Warning : _palette.Success;
     }
 

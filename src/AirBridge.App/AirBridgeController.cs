@@ -42,6 +42,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private volatile bool _standbyWakeRequested;
     private int _standbySuppressionCount;
     private int _standbyTransitionInProgress;
+    private bool _voiceCaptureDucking;
 
     public AirBridgeController() : this(null, null) { }
 
@@ -63,6 +64,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     public event EventHandler<string>? TelemetryEvent;
     public StreamCoordinator Coordinator { get; }
     public IReadOnlyList<ReceiverInfo> Receivers => _receivers;
+    public Func<IReadOnlyCollection<ReceiverInfo>, CancellationToken, Task<bool>>? AgentPairingHandler { get; set; }
     public IReadOnlyList<ReceiverPlaybackInfo> ReceiverPlayback
     {
         get { lock (_legsGate) return _legs.Values.Select(item => item.Snapshot()).OrderBy(item => item.Receiver.Name).ToArray(); }
@@ -257,13 +259,56 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         leg.Volume = percent;
         PublishDestinations();
         if (_isStandby) return;
-        try { await _raop.SetVolumeAsync(receiverId, percent, cancellationToken); }
+        try { await _raop.SetVolumeAsync(receiverId, EffectiveVoiceCaptureVolume(percent), cancellationToken); }
         catch
         {
             leg.Volume = previous;
             PublishDestinations();
             throw;
         }
+    }
+
+    public async Task SetVoiceCaptureDuckingAsync(bool enabled, CancellationToken cancellationToken = default)
+    {
+        await _routeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            _voiceCaptureDucking = enabled;
+            if (_isStandby) return;
+
+            ReceiverLeg[] activeLegs;
+            lock (_legsGate)
+                activeLegs = _legs.Values
+                    .Where(leg => leg.State is StreamState.Streaming or StreamState.Degraded)
+                    .ToArray();
+
+            foreach (var leg in activeLegs)
+            {
+                try
+                {
+                    await _raop.SetVolumeAsync(
+                        leg.Receiver.Id,
+                        EffectiveVoiceCaptureVolume(leg.Volume),
+                        cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    AppLog.Warning("voice", $"Could not {(enabled ? "soften" : "restore")} {leg.Receiver.Name} volume: {ex.Message}");
+                }
+            }
+        }
+        finally { _routeGate.Release(); }
+    }
+
+    internal int EffectiveVoiceCaptureVolume(int volume)
+    {
+        volume = Math.Clamp(volume, 0, 100);
+        if (!_voiceCaptureDucking || volume == 0) return volume;
+        return Math.Max(1, (int)Math.Round(volume * 0.35, MidpointRounding.AwayFromZero));
     }
 
     public async Task ReconnectReceiverAsync(string receiverId, CancellationToken cancellationToken = default)
@@ -443,7 +488,14 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     {
         return name switch
         {
-            "list_airplay_devices" => Receivers.Select(item => new { id = GetToolReceiverAlias(item.Id), item.Name, item.RequiresPassword }),
+            "list_airplay_devices" => Receivers.Select(item => new
+            {
+                id = GetToolReceiverAlias(item.Id),
+                item.Name,
+                item.RequiresPassword,
+                item.RequiresPairing,
+                item.SupportsPairing
+            }),
             "list_audio_sessions" => WasapiCaptureService.ListSessions(),
             "get_current_routes" => GetToolRoute(),
             "get_stream_health" => await GetVerifiedHealthAsync(cancellationToken),
@@ -473,6 +525,18 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             "apply_sync_offset" => EnableBrowserSync(arguments.GetProperty("offset_ms").GetInt32()),
             _ => throw new InvalidOperationException("Tool handler is not implemented.")
         };
+    }
+
+    public ToolConfirmationRequest? GetConfirmationRequest(string name, JsonElement arguments)
+    {
+        if (name is not ("start_system_stream" or "start_application_stream" or "move_stream")) return null;
+        var pairing = ResolveReceivers(arguments).Where(receiver => receiver.RequiresPairing).ToArray();
+        if (pairing.Length == 0) return null;
+        var names = string.Join(", ", pairing.Select(receiver => receiver.Name));
+        var subject = pairing.Length == 1 ? pairing[0].Name : $"{pairing.Length} receivers";
+        return new(name, "Receiver pairing requires explicit user confirmation.",
+            $"Pair with {subject}?",
+            $"{names} requires pairing before AirBridge can connect. Approve once, then enter the code shown by the receiver. The pairing credential stays on this PC.");
     }
 
     private async Task StartRouteInternalAsync(IReadOnlyCollection<ReceiverInfo> receivers, CaptureMode mode, int? processId, IReadOnlyDictionary<string, int>? volumes, CancellationToken cancellationToken)
@@ -746,13 +810,19 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
 
     private async Task<object> StartSystemToolAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        await StartSystemAsync(ResolveReceivers(arguments), cancellationToken);
+        var receivers = ResolveReceivers(arguments);
+        if (!await EnsureAgentPairingAsync(receivers, cancellationToken))
+            return new { error = "Pairing was cancelled.", pairing_cancelled = true };
+        await StartSystemAsync(receivers, cancellationToken);
         return GetToolRoute();
     }
 
     private async Task<object> StartApplicationToolAsync(JsonElement arguments, CancellationToken cancellationToken)
     {
-        await StartApplicationAsync(arguments.GetProperty("process_id").GetInt32(), ResolveReceivers(arguments), cancellationToken);
+        var receivers = ResolveReceivers(arguments);
+        if (!await EnsureAgentPairingAsync(receivers, cancellationToken))
+            return new { error = "Pairing was cancelled.", pairing_cancelled = true };
+        await StartApplicationAsync(arguments.GetProperty("process_id").GetInt32(), receivers, cancellationToken);
         return GetToolRoute();
     }
 
@@ -769,9 +839,20 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     {
         var route = Coordinator.Route;
         var receivers = ResolveReceivers(arguments);
+        if (!await EnsureAgentPairingAsync(receivers, cancellationToken))
+            return new { error = "Pairing was cancelled.", pairing_cancelled = true };
         if (route.Mode == CaptureMode.SystemMix) await StartSystemAsync(receivers, cancellationToken);
         else if (route.ProcessId is int pid) await StartApplicationAsync(pid, receivers, cancellationToken);
         return GetToolRoute();
+    }
+
+    private async Task<bool> EnsureAgentPairingAsync(IReadOnlyCollection<ReceiverInfo> receivers, CancellationToken cancellationToken)
+    {
+        var pairing = receivers.Where(receiver => receiver.RequiresPairing).ToArray();
+        if (pairing.Length == 0) return true;
+        if (AgentPairingHandler is null)
+            throw new InvalidOperationException("Receiver pairing requires interaction in the AirBridge app.");
+        return await AgentPairingHandler(pairing, cancellationToken);
     }
 
     private async Task<object> SetVolumeToolAsync(JsonElement arguments, CancellationToken cancellationToken)

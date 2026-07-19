@@ -8,6 +8,32 @@ namespace AirBridge.Tests;
 
 public sealed class AgentActivityTests
 {
+    [Fact]
+    public void AssistantResponseFormattingRemovesMarkdownAndPreservesLists()
+    {
+        var formatted = VoiceHudForm.PlainTextResponse("I don’t see **Bathroom**.\n- Kitchen\n- Living room");
+
+        Assert.Equal($"I don’t see Bathroom.{Environment.NewLine}• Kitchen{Environment.NewLine}• Living room", formatted);
+    }
+
+    [Theory]
+    [InlineData(null, false)]
+    [InlineData("", false)]
+    [InlineData("   \r\n", false)]
+    [InlineData("Stream to Kitchen", true)]
+    public void TranscriptMustContainNonWhitespaceText(string? text, bool expected) =>
+        Assert.Equal(expected, PushToTalkRecorder.ContainsTranscript(text));
+
+    [Fact]
+    public void MutedMicrophoneWavIsDistinguishedFromCapturedAudio()
+    {
+        var silent = BuildPcmWav([0, 0, 0]);
+        var audible = BuildPcmWav([0, 32, -24]);
+
+        Assert.False(PushToTalkRecorder.ContainsAudibleAudio(silent));
+        Assert.True(PushToTalkRecorder.ContainsAudibleAudio(audible));
+    }
+
     [Theory]
     [InlineData("I explicitly approve this microphone measurement")]
     [InlineData("I fully consent to the requested calibration")]
@@ -76,15 +102,56 @@ public sealed class AgentActivityTests
         var runtime = new CountingRuntime();
         using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
-            confirmationPrompt: (toolName, _) =>
+            confirmationPrompt: (request, _) =>
             {
-                promptedTools.Add(toolName);
+                promptedTools.Add(request.ToolName);
                 return Task.FromResult(true);
             });
 
         Assert.Equal("Alignment completed.", await agent.AskAsync("Check speaker timing", diagnostic: false));
         Assert.Equal(["align_group"], promptedTools);
         Assert.Equal(1, runtime.ExecutionCount);
+    }
+
+    [Fact]
+    public async Task RuntimePairingConfirmationIsApprovedBeforeStreamToolExecutes()
+    {
+        var responses = new Queue<string>(
+        [
+            """{"id":"resp_pairing_prompt","output":[{"type":"function_call","name":"start_system_stream","call_id":"call_pairing","arguments":"{\"receiver_ids\":[\"receiver-1\"],\"quality_profile\":\"balanced\"}"}]}""",
+            """{"id":"resp_pairing_complete","output_text":"Paired and streaming.","output":[]}"""
+        ]);
+        ToolConfirmationRequest? shown = null;
+        var runtime = new PairingConfirmationRuntime();
+        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+        var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
+            confirmationPrompt: (request, _) =>
+            {
+                shown = request;
+                return Task.FromResult(true);
+            });
+
+        Assert.Equal("Paired and streaming.", await agent.AskAsync("Connect to Bedroom", diagnostic: false));
+        Assert.Equal("Pair with Bedroom?", shown?.Title);
+        Assert.Contains("code shown by the receiver", shown?.Message, StringComparison.Ordinal);
+        Assert.Equal(1, runtime.ExecutionCount);
+    }
+
+    [Fact]
+    public async Task DeniedPairingConfirmationDoesNotExecuteStreamTool()
+    {
+        var responses = new Queue<string>(
+        [
+            """{"id":"resp_pairing_denied","output":[{"type":"function_call","name":"start_system_stream","call_id":"call_pairing_denied","arguments":"{\"receiver_ids\":[\"receiver-1\"],\"quality_profile\":\"balanced\"}"}]}""",
+            """{"id":"resp_pairing_cancelled","output_text":"Pairing was not started.","output":[]}"""
+        ]);
+        var runtime = new PairingConfirmationRuntime();
+        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+        var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
+            confirmationPrompt: (_, _) => Task.FromResult(false));
+
+        Assert.Equal("Pairing was not started.", await agent.AskAsync("Connect to Bedroom", diagnostic: false));
+        Assert.Equal(0, runtime.ExecutionCount);
     }
 
     [Fact]
@@ -135,15 +202,91 @@ public sealed class AgentActivityTests
     }
 
     [Fact]
+    public void CostEstimatorPricesCachedAndCacheWriteTokensSeparately()
+    {
+        using var response = JsonDocument.Parse("""
+        {
+          "model":"gpt-5.6-sol-2026-07-01",
+          "service_tier":"default",
+          "usage":{
+            "input_tokens":1000,
+            "input_tokens_details":{"cached_tokens":400,"cache_write_tokens":100},
+            "output_tokens":200
+          }
+        }
+        """);
+
+        var usage = OpenAiCostEstimator.FromResponse(response.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(0.009325m, usage.EstimatedCostUsd);
+        Assert.Equal(400, usage.CachedInputTokens);
+        Assert.Equal(100, usage.CacheWriteTokens);
+        Assert.Equal("standard", usage.ServiceTier);
+    }
+
+    [Fact]
+    public void Gpt56AliasUsesDocumentedSolPricing()
+    {
+        using var response = JsonDocument.Parse("""
+        {"model":"gpt-5.6","usage":{"input_tokens":1000000,"output_tokens":1000000}}
+        """);
+
+        var usage = OpenAiCostEstimator.FromResponse(response.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(35m, usage.EstimatedCostUsd);
+    }
+
+    [Fact]
+    public void TranscriptionUsageIsIncludedInCostEstimate()
+    {
+        using var response = JsonDocument.Parse("""
+        {"text":"route to Kitchen","usage":{"type":"tokens","input_tokens":1000,"output_tokens":100}}
+        """);
+
+        var usage = OpenAiCostEstimator.FromTranscriptionResponse(response.RootElement);
+
+        Assert.NotNull(usage);
+        Assert.Equal(0.0035m, usage.EstimatedCostUsd);
+        Assert.Equal("gpt-4o-transcribe", usage.Model);
+    }
+
+    [Fact]
+    public void CostLedgerSurvivesStoreRecreation()
+    {
+        var directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "AirBridgeCostTests", Guid.NewGuid().ToString("N"));
+        var logPath = System.IO.Path.Combine(directory, "ai-activity.jsonl");
+        var ledgerPath = System.IO.Path.Combine(directory, "ai-cost.json");
+        try
+        {
+            var usage = new OpenAiApiUsage("gpt-5.6", "standard", 100, 0, 0, 10, 0.001m);
+            var first = new AgentActivityStore(persistToDisk: true, logPath: logPath, costLedgerPath: ledgerPath);
+            first.Publish(new(DateTimeOffset.UtcNow, AgentActivityKind.ApiResponse, "Responses API", "Completed", ApiUsage: usage));
+
+            var second = new AgentActivityStore(persistToDisk: true, logPath: logPath, costLedgerPath: ledgerPath);
+            var totals = second.CostSnapshot();
+
+            Assert.Equal(0m, totals.SessionEstimatedCostUsd);
+            Assert.Equal(0.001m, totals.TrackedEstimatedCostUsd);
+            Assert.Equal(1, totals.TrackedPricedResponses);
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task AgentPublishesRequestPolicyToolResultAndFinalResponse()
     {
         var responses = new Queue<string>(
         [
             """
-            {"id":"resp_first_123456789","usage":{"input_tokens":12,"output_tokens":4},"output":[{"type":"function_call","name":"get_stream_health","call_id":"call_1","arguments":"{}"}]}
+            {"id":"resp_first_123456789","model":"gpt-5.6","usage":{"input_tokens":12,"output_tokens":4},"output":[{"type":"function_call","name":"get_stream_health","call_id":"call_1","arguments":"{}"}]}
             """,
             """
-            {"id":"resp_second_123456789","usage":{"input_tokens":21,"output_tokens":7},"output_text":"The stream is healthy.","output":[]}
+            {"id":"resp_second_123456789","model":"gpt-5.6","usage":{"input_tokens":21,"output_tokens":7},"output_text":"The stream is healthy.","output":[]}
             """
         ]);
         using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
@@ -156,6 +299,7 @@ public sealed class AgentActivityTests
         var events = store.Snapshot();
         Assert.Equal(2, events.Count(item => item.Kind == AgentActivityKind.ApiRequest));
         Assert.Equal(2, events.Count(item => item.Kind == AgentActivityKind.ApiResponse));
+        Assert.All(events.Where(item => item.Kind == AgentActivityKind.ApiResponse), item => Assert.NotNull(item.ApiUsage));
         Assert.Contains(events, item => item.Kind == AgentActivityKind.ToolCall && item.Title == "get_stream_health");
         Assert.Contains(events, item => item.Kind == AgentActivityKind.Policy && item.Tone == AgentActivityTone.Success);
         Assert.Contains(events, item => item.Kind == AgentActivityKind.ToolResult && item.Details!.Contains("Streaming", StringComparison.Ordinal));
@@ -193,6 +337,25 @@ public sealed class AgentActivityTests
             Task.FromResult<object?>(new { state = "Streaming", buffer_fill_percent = 72 });
     }
 
+    private static byte[] BuildPcmWav(short[] samples)
+    {
+        var wav = new byte[44 + samples.Length * sizeof(short)];
+        Encoding.ASCII.GetBytes("RIFF").CopyTo(wav, 0);
+        BitConverter.GetBytes(wav.Length - 8).CopyTo(wav, 4);
+        Encoding.ASCII.GetBytes("WAVEfmt ").CopyTo(wav, 8);
+        BitConverter.GetBytes(16).CopyTo(wav, 16);
+        BitConverter.GetBytes((short)1).CopyTo(wav, 20);
+        BitConverter.GetBytes((short)1).CopyTo(wav, 22);
+        BitConverter.GetBytes(16000).CopyTo(wav, 24);
+        BitConverter.GetBytes(32000).CopyTo(wav, 28);
+        BitConverter.GetBytes((short)2).CopyTo(wav, 32);
+        BitConverter.GetBytes((short)16).CopyTo(wav, 34);
+        Encoding.ASCII.GetBytes("data").CopyTo(wav, 36);
+        BitConverter.GetBytes(samples.Length * sizeof(short)).CopyTo(wav, 40);
+        Buffer.BlockCopy(samples, 0, wav, 44, samples.Length * sizeof(short));
+        return wav;
+    }
+
     private sealed class FailingRuntime : IAgentToolRuntime
     {
         public Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken) =>
@@ -207,6 +370,23 @@ public sealed class AgentActivityTests
         {
             ExecutionCount++;
             return Task.FromResult<object?>(new { median_ms = 1200 });
+        }
+    }
+
+    private sealed class PairingConfirmationRuntime : IAgentToolRuntime
+    {
+        public int ExecutionCount { get; private set; }
+
+        public ToolConfirmationRequest? GetConfirmationRequest(string name, JsonElement arguments) =>
+            name == "start_system_stream"
+                ? new(name, "Receiver pairing requires explicit user confirmation.", "Pair with Bedroom?",
+                    "Approve once, then enter the code shown by the receiver.")
+                : null;
+
+        public Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            return Task.FromResult<object?>(new { state = "Streaming" });
         }
     }
 

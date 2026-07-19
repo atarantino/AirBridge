@@ -20,6 +20,7 @@ internal sealed class VoiceHudForm : Form
     private readonly FlowLayoutPanel _actions = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft, WrapContents = false, Visible = false, Margin = Padding.Empty };
     private readonly System.Windows.Forms.Timer _updateTimer = new() { Interval = 50 };
     private readonly System.Windows.Forms.Timer _errorTimer = new() { Interval = 2500 };
+    private readonly System.Windows.Forms.Timer _responseTimer = new();
     private ThemePalette _palette;
     private Func<float>? _levelProvider;
     private Point _dragOrigin;
@@ -81,6 +82,7 @@ internal sealed class VoiceHudForm : Form
         _approve.Click += (_, _) => CompleteConfirmation(true);
         _updateTimer.Tick += (_, _) => UpdateAnimation();
         _errorTimer.Tick += (_, _) => { _errorTimer.Stop(); HideHud(); };
+        _responseTimer.Tick += (_, _) => { _responseTimer.Stop(); HideHud(); };
         WireDrag(_surface);
         WireDrag(root);
         WireDrag(copy);
@@ -139,10 +141,13 @@ internal sealed class VoiceHudForm : Form
     public void ShowListening(Func<float> levelProvider, bool holdHint)
     {
         SetCompactLayout();
+        _responseTimer.Stop();
         _levelProvider = levelProvider;
         _status.Text = "Listening";
         _hint.Text = holdHint ? "release to send · Esc to cancel" : "tap shortcut to send · Esc to cancel";
         _mic.IsError = false;
+        _mic.IsWarning = false;
+        _mic.IsResponse = false;
         _level.Indeterminate = false;
         _level.Visible = true;
         _cancel.Visible = true;
@@ -155,11 +160,14 @@ internal sealed class VoiceHudForm : Form
     public void ShowTranscribing()
     {
         SetCompactLayout();
+        _responseTimer.Stop();
         _levelProvider = null;
         _level.Level = 0;
         _status.Text = "Transcribing";
         _hint.Text = "Turning speech into text…";
         _mic.IsError = false;
+        _mic.IsWarning = false;
+        _mic.IsResponse = false;
         _level.Indeterminate = true;
         _level.Visible = true;
         _cancel.Visible = true;
@@ -170,11 +178,14 @@ internal sealed class VoiceHudForm : Form
     public void ShowThinking()
     {
         SetCompactLayout();
+        _responseTimer.Stop();
         _levelProvider = null;
         _level.Level = 0;
         _status.Text = "Thinking";
         _hint.Text = "Working out what to do…";
         _mic.IsError = false;
+        _mic.IsWarning = false;
+        _mic.IsResponse = false;
         _level.Indeterminate = true;
         _level.Visible = true;
         _cancel.Visible = true;
@@ -182,15 +193,64 @@ internal sealed class VoiceHudForm : Form
         ShowHud();
     }
 
-    public Task<bool> ShowConfirmation(string title, string message, CancellationToken cancellationToken)
+    public void ShowAssistantResponse(string message)
+    {
+        var displayMessage = PlainTextResponse(message);
+        SetResponseLayout(displayMessage);
+        _levelProvider = null;
+        _status.Text = "AirBridge";
+        _hint.Text = displayMessage;
+        _hint.AccessibleName = $"AirBridge response: {displayMessage}";
+        _mic.IsError = false;
+        _mic.IsWarning = false;
+        _mic.IsResponse = true;
+        _mic.Pulse = 0;
+        _level.Indeterminate = false;
+        _level.Visible = false;
+        _cancel.Visible = false;
+        _errorTimer.Stop();
+        _responseTimer.Stop();
+        _responseTimer.Interval = Math.Clamp(3000 + message.Length * 35, 4000, 10000);
+        ShowHud();
+        _updateTimer.Stop();
+        _responseTimer.Start();
+    }
+
+    public void ShowNoSpeech()
+    {
+        const string message = "Check that your microphone isn’t muted, then try again.";
+        SetResponseLayout(message);
+        _levelProvider = null;
+        _status.Text = "Nothing heard";
+        _hint.Text = message;
+        _hint.AccessibleName = $"No speech detected. {message}";
+        _mic.IsError = false;
+        _mic.IsWarning = true;
+        _mic.IsResponse = false;
+        _mic.Pulse = 0;
+        _level.Indeterminate = false;
+        _level.Visible = false;
+        _cancel.Visible = false;
+        _errorTimer.Stop();
+        _responseTimer.Stop();
+        _responseTimer.Interval = 5000;
+        ShowHud();
+        _updateTimer.Stop();
+        _responseTimer.Start();
+    }
+
+    public Task<bool> ShowConfirmation(string title, string message, CancellationToken cancellationToken, bool useMicrophoneIcon = true)
     {
         CompleteConfirmation(false, showThinking: false);
         SetConfirmationLayout();
+        _responseTimer.Stop();
         _levelProvider = null;
         _status.Text = title;
         _hint.Text = message;
         _hint.AccessibleName = message;
         _mic.IsError = false;
+        _mic.IsWarning = false;
+        _mic.IsResponse = !useMicrophoneIcon;
         _mic.Pulse = 0;
         _cancel.Visible = true;
         _cancel.AccessibleName = "Don’t allow action";
@@ -220,6 +280,7 @@ internal sealed class VoiceHudForm : Form
     public void ShowError(string message)
     {
         SetCompactLayout();
+        _responseTimer.Stop();
         _levelProvider = null;
         _status.Text = "Voice command failed";
         _hint.Text = message;
@@ -227,6 +288,8 @@ internal sealed class VoiceHudForm : Form
         _level.Visible = false;
         _cancel.Visible = false;
         _mic.IsError = true;
+        _mic.IsWarning = false;
+        _mic.IsResponse = false;
         _mic.Pulse = 0;
         ShowHud();
         _updateTimer.Stop();
@@ -239,6 +302,7 @@ internal sealed class VoiceHudForm : Form
         CompleteConfirmation(false, showThinking: false);
         _updateTimer.Stop();
         _errorTimer.Stop();
+        _responseTimer.Stop();
         Hide();
     }
 
@@ -250,6 +314,7 @@ internal sealed class VoiceHudForm : Form
             SystemTextScale.Changed -= OnTextScaleChanged;
             _updateTimer.Dispose();
             _errorTimer.Dispose();
+            _responseTimer.Dispose();
             _confirmationCancellation.Dispose();
         }
         base.Dispose(disposing);
@@ -356,6 +421,36 @@ internal sealed class VoiceHudForm : Form
         ResizeHud(new Size(480, 164));
     }
 
+    private void SetResponseLayout(string message)
+    {
+        _actions.Visible = false;
+        _level.Visible = false;
+        _hint.AutoEllipsis = true;
+        _hint.AccessibleName = null;
+        if (_actions.Parent is TableLayoutPanel copy)
+        {
+            copy.RowStyles[1].Height = 0;
+            copy.RowStyles[3].Height = 0;
+        }
+        var estimatedLines = message.Split('\n').Sum(line => Math.Max(1, (int)Math.Ceiling(line.Length / 52d)));
+        var height = Math.Clamp(60 + estimatedLines * 18, 96, 164);
+        ResizeHud(new Size(420, height));
+    }
+
+    internal static string PlainTextResponse(string message)
+    {
+        var plain = message.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace("**", string.Empty, StringComparison.Ordinal)
+            .Replace("__", string.Empty, StringComparison.Ordinal)
+            .Replace("`", string.Empty, StringComparison.Ordinal)
+            .Trim();
+        return string.Join(Environment.NewLine, plain.Split('\n').Select(line =>
+            line.TrimStart().StartsWith("- ", StringComparison.Ordinal)
+                ? $"• {line.TrimStart()[2..]}"
+                : line.TrimEnd()));
+    }
+
     private void ResizeHud(Size logicalSize)
     {
         var scale = DeviceDpi / 96f;
@@ -385,12 +480,20 @@ internal sealed class VoiceMicIndicator : Control, IThemeAware
     private ThemePalette _palette = ThemePalette.Current();
     private float _pulse;
     private bool _isError;
+    private bool _isWarning;
+    private bool _isResponse;
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal float Pulse { get => _pulse; set { _pulse = Math.Clamp(value, 0, 1); Invalidate(); } }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal bool IsError { get => _isError; set { _isError = value; Invalidate(); } }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool IsWarning { get => _isWarning; set { _isWarning = value; Invalidate(); } }
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool IsResponse { get => _isResponse; set { _isResponse = value; Invalidate(); } }
 
     public VoiceMicIndicator()
     {
@@ -407,15 +510,25 @@ internal sealed class VoiceMicIndicator : Control, IThemeAware
         var size = Math.Min(Width, Height) - 2;
         if (size <= 0) return;
         var bounds = new Rectangle((Width - size) / 2, (Height - size) / 2, size, size);
-        var color = IsError ? _palette.Error : _palette.Accent;
+        var color = IsError ? _palette.Error : IsWarning ? _palette.Warning : _palette.Accent;
         using var halo = new SolidBrush(Color.FromArgb(IsError ? 28 : 24 + (int)(Pulse * 20), color));
         e.Graphics.FillEllipse(halo, bounds);
         var ring = Rectangle.Inflate(bounds, -1, -1);
         using var ringPen = new Pen(Color.FromArgb(IsError ? 95 : 80 + (int)(Pulse * 60), color), 1.2f);
         e.Graphics.DrawEllipse(ringPen, ring);
         using var iconFont = UiGeometry.IconFont(17F);
-        TextRenderer.DrawText(e.Graphics, "\uE720", iconFont, bounds, color,
-            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        using var iconPath = new GraphicsPath();
+        using var format = new StringFormat(StringFormat.GenericTypographic);
+        var emSize = iconFont.SizeInPoints * e.Graphics.DpiY / 72f;
+        iconPath.AddString(IsResponse ? "\uE8BD" : "\uE720", iconFont.FontFamily, (int)iconFont.Style, emSize, PointF.Empty, format);
+        var glyphBounds = iconPath.GetBounds();
+        using var transform = new Matrix();
+        transform.Translate(
+            bounds.Left + (bounds.Width - glyphBounds.Width) / 2f - glyphBounds.Left,
+            bounds.Top + (bounds.Height - glyphBounds.Height) / 2f - glyphBounds.Top);
+        iconPath.Transform(transform);
+        using var iconBrush = new SolidBrush(color);
+        e.Graphics.FillPath(iconBrush, iconPath);
     }
 }
 

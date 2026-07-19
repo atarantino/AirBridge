@@ -81,4 +81,20 @@ public sealed class ToolPrivacyTests
         Assert.DoesNotContain("192.0.2.10", json, StringComparison.Ordinal);
         Assert.Contains("receiver-1", json, StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task PairingReceiverProducesSpecificAgentConfirmationRequest()
+    {
+        var receiver = new ReceiverInfo("private-id", "Bedroom", "local", false, DateTimeOffset.UtcNow,
+            RequiresPairing: true, SupportsPairing: true);
+        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCapture());
+        await controller.InitializeAsync();
+        await controller.DiscoverAsync();
+        using var start = JsonDocument.Parse("""{"receiver_ids":["receiver-1"],"quality_profile":"balanced"}""");
+
+        var confirmation = controller.GetConfirmationRequest("start_system_stream", start.RootElement);
+
+        Assert.Equal("Pair with Bedroom?", confirmation?.Title);
+        Assert.Contains("enter the code", confirmation?.Message, StringComparison.Ordinal);
+    }
 }

@@ -29,6 +29,9 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _apiKey = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly Button _removeApiKey = new() { Text = "Remove", AutoSize = true };
     private readonly Label _apiKeyStatus = new() { AutoSize = true };
+    private readonly Label _browserDelayValue = new() { AutoSize = true };
+    private readonly Label _browserDelayStatus = new() { AutoSize = true };
+    private readonly Button _measureBrowserDelay = new() { Text = "Measure delay", AutoSize = true, Padding = new Padding(12, 4, 12, 4) };
     private readonly FlowLayoutPanel _buttonBar = new();
     private readonly Dictionary<string, NumericUpDown> _alignmentTrims = new(StringComparer.Ordinal);
     private readonly List<SpeakerGroup> _speakerGroups;
@@ -49,7 +52,8 @@ internal sealed class SettingsForm : Form
         bool storedApiKeyConfigured,
         bool apiKeyManagedByEnvironment,
         IReadOnlyList<ReceiverInfo>? receivers = null,
-        string? initialTab = null)
+        string? initialTab = null,
+        AgentCostSnapshot? apiCosts = null)
     {
         _speakerGroups = settings.SpeakerGroups.ToList();
         Text = "AirBridge Settings";
@@ -82,7 +86,8 @@ internal sealed class SettingsForm : Form
         _groupsPage = BuildGroupsPage(receivers ?? [], palette);
         tabs.TabPages.Add(_groupsPage);
         tabs.TabPages.Add(BuildSyncPage(receivers ?? [], settings.ReceiverAlignmentTrimMs, palette));
-        tabs.TabPages.Add(BuildAssistantPage(palette));
+        tabs.TabPages.Add(BuildBrowserSyncPage(settings.EstimatedAudioDelayMilliseconds, palette));
+        tabs.TabPages.Add(BuildAssistantPage(palette, apiCosts));
         tabs.TabPages.Add(BuildAdvancedPage(palette));
         _tabs = tabs;
         if (!string.IsNullOrWhiteSpace(initialTab))
@@ -128,6 +133,7 @@ internal sealed class SettingsForm : Form
 
     public event EventHandler? OpenLogsRequested;
     public event EventHandler? OpenActivityInspectorRequested;
+    public event EventHandler? BrowserDelayMeasureRequested;
     public event EventHandler? SaveRequested;
 
     public AppThemeMode ThemeMode => _theme.SelectedIndex switch { 1 => AppThemeMode.Light, 2 => AppThemeMode.Dark, _ => AppThemeMode.System };
@@ -162,6 +168,32 @@ internal sealed class SettingsForm : Form
             _removeApiKey.Enabled = false;
         }
         _removeApiKeyRequested = false;
+    }
+
+    public void SetBrowserDelayMeasuring(string speakerName)
+    {
+        if (IsDisposed) return;
+        _measureBrowserDelay.Enabled = false;
+        _browserDelayStatus.Text = $"Measuring {speakerName}… Five short chirps will play.";
+        _browserDelayStatus.AccessibleDescription = _browserDelayStatus.Text;
+    }
+
+    public void SetBrowserDelayResult(int milliseconds, string speakerName)
+    {
+        if (IsDisposed) return;
+        _browserDelayValue.Text = $"{milliseconds:N0} ms";
+        _browserDelayValue.AccessibleDescription = $"Recommended browser picture delay: {milliseconds} milliseconds";
+        _browserDelayStatus.Text = $"Measured using {speakerName}. Enter {milliseconds} in the AirBridge browser extension.";
+        _browserDelayStatus.AccessibleDescription = _browserDelayStatus.Text;
+        _measureBrowserDelay.Enabled = true;
+    }
+
+    public void SetBrowserDelayError(string message)
+    {
+        if (IsDisposed) return;
+        _browserDelayStatus.Text = message;
+        _browserDelayStatus.AccessibleDescription = message;
+        _measureBrowserDelay.Enabled = true;
     }
 
     private void InitializeValues(AirBridgeSettings settings, ThemePalette palette, bool storedApiKeyConfigured, bool apiKeyManagedByEnvironment)
@@ -331,6 +363,56 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
+    private TabPage BuildBrowserSyncPage(int recommendedDelayMilliseconds, ThemePalette palette)
+    {
+        var page = CreatePage("Browser sync");
+        var content = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Padding = new Padding(24, 22, 24, 16)
+        };
+
+        content.Controls.Add(new Label
+        {
+            Text = "Browser extension picture delay",
+            AutoSize = true,
+            Font = UiGeometry.UiFont(11F, FontStyle.Bold)
+        });
+        content.Controls.Add(SecondaryText("Enter this value in the AirBridge browser extension. It delays only the picture so browser audio stays synchronized with the selected AirPlay speaker.", palette));
+
+        _browserDelayValue.Text = $"{recommendedDelayMilliseconds:N0} ms";
+        _browserDelayValue.Font = UiGeometry.UiFont(22F, FontStyle.Bold);
+        _browserDelayValue.Margin = new Padding(0, 24, 0, 0);
+        _browserDelayValue.AccessibleName = "Recommended browser picture delay";
+        _browserDelayValue.AccessibleDescription = $"Recommended browser picture delay: {recommendedDelayMilliseconds} milliseconds";
+        content.Controls.Add(_browserDelayValue);
+
+        content.Controls.Add(SecondaryText("Current recommendation. Measure it for the most accurate value.", palette));
+        _measureBrowserDelay.Margin = new Padding(0, 18, 0, 0);
+        _measureBrowserDelay.AccessibleName = "Measure browser picture delay";
+        _measureBrowserDelay.AccessibleDescription = "Measure the audio delay of the one selected, currently streaming speaker.";
+        _measureBrowserDelay.Click += (_, _) => BrowserDelayMeasureRequested?.Invoke(this, EventArgs.Empty);
+        content.Controls.Add(_measureBrowserDelay);
+
+        _browserDelayStatus.Text = "To measure: start exactly one speaker from the tray, then select Measure delay. The calibration microphone selected under Speaker sync is used; save microphone changes first.";
+        _browserDelayStatus.MaximumSize = new Size(580, 0);
+        _browserDelayStatus.Margin = new Padding(0, 10, 0, 0);
+        _browserDelayStatus.ForeColor = palette.SecondaryText;
+        _browserDelayStatus.Tag = SecondaryTextTag;
+        _browserDelayStatus.AccessibleName = "Browser delay measurement status";
+        content.Controls.Add(_browserDelayStatus);
+
+        var distinction = SecondaryText("This is browser picture delay—not the per-speaker alignment delay under Speaker sync.", palette);
+        distinction.Font = UiGeometry.UiFont(9F, FontStyle.Bold);
+        distinction.Margin = new Padding(0, 28, 0, 0);
+        content.Controls.Add(distinction);
+
+        page.Controls.Add(content);
+        return page;
+    }
+
     private TabPage BuildGroupsPage(IReadOnlyList<ReceiverInfo> receivers, ThemePalette palette)
     {
         var page = CreatePage("Groups");
@@ -474,7 +556,7 @@ internal sealed class SettingsForm : Form
         return false;
     }
 
-    private TabPage BuildAssistantPage(ThemePalette palette)
+    private TabPage BuildAssistantPage(ThemePalette palette, AgentCostSnapshot? apiCosts)
     {
         var page = CreatePage("Assistant");
         var fields = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2, Padding = new Padding(24, 22, 24, 8) };
@@ -482,6 +564,7 @@ internal sealed class SettingsForm : Form
         fields.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
         fields.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
 
         var keyInput = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Margin = Padding.Empty };
@@ -493,12 +576,43 @@ internal sealed class SettingsForm : Form
         keyInput.Controls.Add(_removeApiKey, 1, 0);
         AddField(fields, 0, "OpenAI API key", keyInput);
         fields.Controls.Add(_apiKeyStatus, 1, 1);
-        fields.Controls.Add(_aiEnabled, 0, 2);
+        AddField(fields, 2, "Estimated API cost", BuildApiCostSummary(apiCosts, palette));
+        fields.Controls.Add(_aiEnabled, 0, 3);
         fields.SetColumnSpan(_aiEnabled, 2);
-        fields.Controls.Add(SecondaryText("The key is stored in Windows Credential Manager and is never displayed after saving. Streaming works without it.", palette), 0, 3);
-        fields.SetColumnSpan(fields.GetControlFromPosition(0, 3)!, 2);
+        fields.Controls.Add(SecondaryText("The key is stored in Windows Credential Manager and is never displayed after saving. Streaming works without it.", palette), 0, 4);
+        fields.SetColumnSpan(fields.GetControlFromPosition(0, 4)!, 2);
         page.Controls.Add(fields);
         return page;
+    }
+
+    private static Control BuildApiCostSummary(AgentCostSnapshot? costs, ThemePalette palette)
+    {
+        var tracked = costs?.TrackedEstimatedCostUsd ?? 0;
+        var requests = costs?.TrackedPricedResponses ?? 0;
+        var value = new Label
+        {
+            AutoSize = true,
+            Font = UiGeometry.UiFont(10F, FontStyle.Bold),
+            Text = requests == 0
+                ? "No priced requests tracked yet"
+                : $"{OpenAiCostEstimator.FormatUsd(tracked)} across {requests:N0} request{(requests == 1 ? string.Empty : "s")}",
+            AccessibleName = "Tracked estimated OpenAI API cost"
+        };
+        var note = SecondaryText(
+            requests == 0
+                ? "Tracking begins with this version of AirBridge."
+                : $"Since tracking began · {OpenAiCostEstimator.FormatUsd(costs?.SessionEstimatedCostUsd ?? 0)} this session · estimate may differ from your OpenAI invoice.",
+            palette);
+        var panel = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Margin = Padding.Empty
+        };
+        panel.Controls.Add(value);
+        panel.Controls.Add(note);
+        return panel;
     }
 
     private TabPage BuildAdvancedPage(ThemePalette palette)

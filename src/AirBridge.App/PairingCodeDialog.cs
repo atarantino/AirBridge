@@ -8,16 +8,17 @@ internal sealed class PairingCodeDialog : Form
         MaxLength = 8,
         TextAlign = HorizontalAlignment.Center,
         Font = UiGeometry.UiFont(18F, FontStyle.Bold),
-        AccessibleName = "Apple TV pairing code"
+        AccessibleName = "AirPlay pairing code"
     };
     private readonly Button _pair = new() { Text = "Pair", DialogResult = DialogResult.OK, AutoSize = true, Enabled = false };
 
     public PairingCodeDialog(string receiverName, ThemePalette palette)
     {
-        Text = "Pair Apple TV";
+        Text = "Pair AirPlay receiver";
         StartPosition = FormStartPosition.CenterParent;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MinimizeBox = MaximizeBox = ShowInTaskbar = false;
+        TopMost = true;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(370, 165);
         BackColor = palette.Window;
@@ -61,7 +62,12 @@ internal sealed class PairingCodeDialog : Form
             var digitsOnly = _code.Text.All(char.IsDigit);
             _pair.Enabled = digitsOnly && _code.Text.Length >= 4;
         };
-        Shown += (_, _) => _code.Focus();
+        Shown += (_, _) =>
+        {
+            BringToFront();
+            Activate();
+            _code.Focus();
+        };
     }
 
     public string PairingCode => _code.Text;

@@ -44,8 +44,33 @@ test("pause shifts queued timestamps so the delay clock freezes", () => {
 });
 
 test("capture dimensions preserve aspect ratio and downscale", () => {
-  assert.deepEqual(Core.captureSize(1920, 1080), { width: 640, height: 360 });
+  assert.deepEqual(Core.captureSize(3840, 2160), { width: 1920, height: 1080 });
+  assert.deepEqual(Core.captureSize(1920, 1080), { width: 1920, height: 1080 });
   assert.deepEqual(Core.captureSize(320, 180), { width: 320, height: 180 });
+});
+
+test("capture dimensions account for device pixel ratio without upscaling", () => {
+  globalThis.devicePixelRatio = 0.5;
+  assert.deepEqual(Core.captureSize(1920, 1080), { width: 960, height: 540 });
+  globalThis.devicePixelRatio = 2;
+  assert.deepEqual(Core.captureSize(1280, 720), { width: 1280, height: 720 });
+  delete globalThis.devicePixelRatio;
+});
+
+test("YouTube player overlay stays below controls while viewport fallback remains topmost", () => {
+  const video = { left: 120, top: 80, width: 1280, height: 720 };
+  const player = { left: 100, top: 50 };
+
+  assert.deepEqual(Core.overlayLayout(video, player), {
+    position: "absolute",
+    left: "20px",
+    top: "30px",
+    width: "1280px",
+    height: "720px",
+    zIndex: "1",
+  });
+  assert.equal(Core.overlayLayout(video).position, "fixed");
+  assert.equal(Core.overlayLayout(video).zIndex, "2147483646");
 });
 
 test("site keys are origin scoped", () => {

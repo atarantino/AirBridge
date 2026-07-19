@@ -192,6 +192,12 @@ internal sealed class LetterSpacedLabel : Control, IThemeAware
 
     public void ApplyTheme(ThemePalette palette) { _palette = palette; Invalidate(); }
 
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        Invalidate();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         if (_palette.IsHighContrast)
@@ -201,7 +207,7 @@ internal sealed class LetterSpacedLabel : Control, IThemeAware
             return;
         }
 
-        e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+        e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         using var brush = new SolidBrush(_palette.SecondaryText);
         using var format = new StringFormat(StringFormat.GenericTypographic) { FormatFlags = StringFormatFlags.NoWrap };
         var x = 0f;
@@ -224,18 +230,18 @@ internal sealed class AntiAliasedLabel : Control
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw | ControlStyles.SupportsTransparentBackColor, true);
     }
 
+    protected override void OnTextChanged(EventArgs e)
+    {
+        base.OnTextChanged(e);
+        Invalidate();
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
-        e.Graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-        using var brush = new SolidBrush(ForeColor);
-        using var format = new StringFormat(StringFormat.GenericTypographic)
-        {
-            Alignment = StringAlignment.Near,
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        e.Graphics.DrawString(Text, Font, brush, ClientRectangle, format);
+        TextRenderer.DrawText(e.Graphics, Text, Font, ClientRectangle, ForeColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis |
+            TextFormatFlags.SingleLine | TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix |
+            TextFormatFlags.PreserveGraphicsClipping);
     }
 }
 

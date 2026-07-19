@@ -257,12 +257,12 @@
   const key = Core.siteKey(settingsUrl);
 
   async function loadSiteSettings() {
-    const stored = await chrome.storage.sync.get({ siteSettings: {} });
+    const stored = await browser.storage.sync.get({ siteSettings: {} });
     const settings = stored.siteSettings[key] || { enabled: false, delayMs: Core.DEFAULT_DELAY_MS };
     controller.configure(settings.enabled, settings.delayMs);
   }
 
-  chrome.storage.onChanged.addListener((changes, area) => {
+  browser.storage.onChanged.addListener((changes, area) => {
     if (area === "sync" && changes.siteSettings) loadSiteSettings();
   });
   window.addEventListener("pagehide", () => controller.stop(), { once: true });
