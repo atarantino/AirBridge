@@ -9,6 +9,7 @@ public sealed class ReceiverAlignmentPlanTests
     [InlineData(10, 1764)]
     [InlineData(120, 21168)]
     [InlineData(500, 88200)]
+    [InlineData(2000, 352800)]
     public void ConvertsMillisecondsToWholeCanonicalPcmFrames(int milliseconds, int expectedBytes)
     {
         var bytes = ReceiverAlignmentPlan.ToPcmByteCount(milliseconds);
@@ -41,16 +42,16 @@ public sealed class ReceiverAlignmentPlanTests
             ["slow"] = 1900
         });
 
-        Assert.Equal(500, proposal["fast"]);
+        Assert.Equal(900, proposal["fast"]);
         Assert.Equal(0, proposal["slow"]);
         Assert.Equal(0, ReceiverAlignmentPlan.Resolve("fast", new Dictionary<string, int> { ["fast"] = -20 }));
-        Assert.Equal(500, ReceiverAlignmentPlan.Resolve("slow", new Dictionary<string, int> { ["slow"] = 900 }));
+        Assert.Equal(900, ReceiverAlignmentPlan.Resolve("slow", new Dictionary<string, int> { ["slow"] = 900 }));
         Assert.Equal(0, ReceiverAlignmentPlan.Resolve("missing", null));
     }
 
     [Theory]
     [InlineData(-1)]
-    [InlineData(501)]
+    [InlineData(2001)]
     public void RejectsUnsupportedTrimForByteConversion(int milliseconds)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => ReceiverAlignmentPlan.ToPcmByteCount(milliseconds));
@@ -97,18 +98,18 @@ public sealed class ReceiverAlignmentPlanTests
     }
 
     [Fact]
-    public void ExistingTrimIsRemovedBeforeComputingAbsoluteReplacementProposal()
+    public void RepeatedMeasurementsProduceTheSameAbsoluteProposalWithoutStacking()
     {
-        var measured = new Dictionary<string, int> { ["speakerA"] = 1900, ["beam"] = 1900 };
-        var current = new Dictionary<string, int> { ["speakerA"] = 100, ["beam"] = 0 };
+        var measured = new Dictionary<string, int> { ["speakerA"] = 1760, ["beam"] = 710 };
 
-        var untrimmed = ReceiverAlignmentPlan.RemoveAppliedTrims(measured, current);
-        var proposal = ReceiverAlignmentPlan.ProposeTrims(untrimmed);
+        var firstProposal = ReceiverAlignmentPlan.ProposeTrims(measured);
+        var appliedTrims = new Dictionary<string, int>(firstProposal, StringComparer.Ordinal);
+        var repeatedProposal = ReceiverAlignmentPlan.ProposeTrims(measured);
 
-        Assert.Equal(1800, untrimmed["speakerA"]);
-        Assert.Equal(1900, untrimmed["beam"]);
-        Assert.Equal(100, proposal["speakerA"]);
-        Assert.Equal(0, proposal["beam"]);
+        Assert.Equal(firstProposal, repeatedProposal);
+        Assert.Equal(0, repeatedProposal["speakerA"]);
+        Assert.Equal(1050, repeatedProposal["beam"]);
+        Assert.Equal(repeatedProposal, appliedTrims);
     }
 
     [Fact]

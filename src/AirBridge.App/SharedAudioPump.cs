@@ -7,8 +7,10 @@ public interface IAudioPipeEndpoint
     string PipeName { get; }
     bool IsConnected { get; }
     bool CanAcceptWrite { get; }
-    bool TryWrite(byte[] pcm, bool tolerateBackpressure = false);
+    AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false);
 }
+
+public enum AudioPipeWriteResult { Accepted, Dropped, Unavailable }
 
 public sealed record GroupGateTimeoutEventArgs(IReadOnlyList<string> ReceiverIds);
 
@@ -23,6 +25,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
     public const int BytesPerSample = 2;
     public const int BlockMilliseconds = 20;
     public const int BlockBytes = SampleRate * Channels * BytesPerSample * BlockMilliseconds / 1000;
+    public const int CorrectionDebtResyncMilliseconds = 250;
 
     private sealed class Leg(string receiverId, BoundedPcmBuffer buffer, IAudioPipeEndpoint endpoint)
     {
@@ -36,6 +39,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
         public int AppliedAlignmentTrimMs { get; set; }
         public int PendingInsertBytes { get; set; }
         public int PendingDropBytes { get; set; }
+        public int CorrectionDebtBytes { get; set; }
     }
 
     private readonly object _gate = new();
@@ -50,7 +54,9 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private DateTimeOffset? _gateDeadlineUtc;
     private bool _groupGateOpen = true;
     private bool _standby;
+    private bool _calibrationMode;
     private bool _discardBufferedUntilGateOpen;
+    private int _groupResyncCount;
 
     public SharedAudioPump(BoundedPcmBuffer? monitorBuffer = null, Func<DateTimeOffset>? utcNow = null, Action? advanceCalibration = null)
     {
@@ -61,6 +67,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
 
     public event EventHandler<GroupGateTimeoutEventArgs>? GateTimedOut;
     public event EventHandler<bool>? CaptureActivityObserved;
+    internal int GroupResyncCount { get { lock (_gate) return _groupResyncCount; } }
 
     public void Start()
     {
@@ -75,7 +82,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
         {
             _legs.Add(receiverId, new(receiverId, buffer, endpoint)
             {
-                ConfiguredAlignmentTrimMs = Math.Clamp(alignmentTrimMs, 0, 500)
+                ConfiguredAlignmentTrimMs = Math.Clamp(alignmentTrimMs, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds)
             });
             ReapplyEffectiveAlignmentTrims();
         }
@@ -96,6 +103,21 @@ public sealed class SharedAudioPump : IAsyncDisposable
         lock (_gate) _standby = standby;
     }
 
+    public void SetCalibrationMode(bool active)
+    {
+        lock (_gate)
+        {
+            if (_calibrationMode == active) return;
+            _calibrationMode = active;
+            ResyncGroupCore();
+        }
+    }
+
+    public void ResyncGroup()
+    {
+        lock (_gate) ResyncGroupCore();
+    }
+
     public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null, bool discardBufferedUntilGateOpen = true)
     {
         lock (_gate)
@@ -112,11 +134,12 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 leg.ParticipatesInGate = _gateReceiverIds.Contains(leg.ReceiverId);
                 leg.PendingInsertBytes = 0;
                 leg.PendingDropBytes = 0;
+                leg.CorrectionDebtBytes = 0;
             }
         }
     }
 
-    public void MarkReady(string receiverId)
+    public void MarkReady(string receiverId, bool resyncGroup = false)
     {
         lock (_gate)
         {
@@ -129,6 +152,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 leg.Buffer.DiscardToLiveEdge(BlockBytes);
                 MakeLive(leg, EffectiveAlignmentTrim(leg));
             }
+            if (resyncGroup) ResyncGroupCore();
         }
     }
 
@@ -141,6 +165,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
             leg.Live = false;
             leg.PendingInsertBytes = 0;
             leg.PendingDropBytes = 0;
+            leg.CorrectionDebtBytes = 0;
             ReapplyEffectiveAlignmentTrims();
         }
     }
@@ -152,7 +177,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
 
     public void SetAlignmentTrim(string receiverId, int milliseconds)
     {
-        milliseconds = Math.Clamp(milliseconds, 0, 500);
+        milliseconds = Math.Clamp(milliseconds, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds);
         lock (_gate)
         {
             if (!_legs.TryGetValue(receiverId, out var leg)) return;
@@ -231,17 +256,33 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 if (leg.Live) FillLiveBlock(leg, block);
                 writes.Add((leg, block));
             }
+
+            if (NeedsGroupResync())
+            {
+                ResyncGroupCore();
+                foreach (var (_, block) in writes) block.AsSpan().Clear();
+            }
         }
 
         if (containsSignal is bool activity) CaptureActivityObserved?.Invoke(this, activity);
         if (timedOut is not null) GateTimedOut?.Invoke(this, timedOut);
-        foreach (var (leg, block) in writes) leg.Endpoint.TryWrite(block, tolerateBackpressure: !leg.Ready);
+        foreach (var (leg, block) in writes)
+        {
+            var result = leg.Endpoint.Write(block, tolerateBackpressure: !leg.Ready);
+            if (result != AudioPipeWriteResult.Dropped) continue;
+            lock (_gate)
+            {
+                if (_calibrationMode || !leg.Live || !_legs.TryGetValue(leg.ReceiverId, out var current) || !ReferenceEquals(current, leg)) continue;
+                AddCorrectionInsert(leg, block.Length);
+                if (NeedsGroupResync()) ResyncGroupCore();
+            }
+        }
         }
         finally { _iterationGate.Release(); }
     }
 
     private int EffectiveAlignmentTrim(Leg leg) =>
-        _legs.Values.Count(item => item.Ready) > 1 ? leg.ConfiguredAlignmentTrimMs : 0;
+        !_calibrationMode && _legs.Values.Count(item => item.Ready) > 1 ? leg.ConfiguredAlignmentTrimMs : 0;
 
     private void ReapplyEffectiveAlignmentTrims()
     {
@@ -256,41 +297,106 @@ public sealed class SharedAudioPump : IAsyncDisposable
         if (!leg.Live || deltaMilliseconds == 0) return;
         var deltaBytes = ReceiverAlignmentPlan.ToPcmByteCount(Math.Abs(deltaMilliseconds));
         if (deltaMilliseconds > 0)
-        {
-            var cancellation = Math.Min(deltaBytes, leg.PendingDropBytes);
-            leg.PendingDropBytes -= cancellation;
-            leg.PendingInsertBytes += deltaBytes - cancellation;
-        }
+            AddPendingInsert(leg, deltaBytes);
         else
-        {
-            var cancellation = Math.Min(deltaBytes, leg.PendingInsertBytes);
-            leg.PendingInsertBytes -= cancellation;
-            leg.PendingDropBytes += deltaBytes - cancellation;
-        }
+            AddPendingDrop(leg, deltaBytes);
+        ClampCorrectionDebtToPending(leg);
     }
 
-    private static void MakeLive(Leg leg, int effectiveAlignmentTrimMs)
+    private void MakeLive(Leg leg, int effectiveAlignmentTrimMs)
     {
         leg.Live = true;
         leg.AppliedAlignmentTrimMs = effectiveAlignmentTrimMs;
-        leg.PendingInsertBytes = ReceiverAlignmentPlan.ToPcmByteCount(effectiveAlignmentTrimMs);
+        var prefillMilliseconds = _calibrationMode ? 0 : leg.Buffer.TargetMilliseconds;
+        leg.PendingInsertBytes = ReceiverAlignmentPlan.ToPcmByteCount(prefillMilliseconds + effectiveAlignmentTrimMs);
         leg.PendingDropBytes = 0;
+        leg.CorrectionDebtBytes = 0;
     }
 
-    private static void FillLiveBlock(Leg leg, Span<byte> block)
+    private void FillLiveBlock(Leg leg, Span<byte> block)
     {
+        if (_calibrationMode)
+        {
+            leg.Buffer.Read(block, padWithSilence: true);
+            return;
+        }
+
         Span<byte> discard = stackalloc byte[BlockBytes];
         while (leg.PendingDropBytes > 0)
         {
             var discardLength = Math.Min(discard.Length, leg.PendingDropBytes);
+            var nonCorrectionBytes = leg.PendingDropBytes - Math.Max(0, -leg.CorrectionDebtBytes);
             var discarded = leg.Buffer.Read(discard[..discardLength], padWithSilence: false);
             leg.PendingDropBytes -= discarded;
+            var correctionBytes = Math.Max(0, discarded - nonCorrectionBytes);
+            if (leg.CorrectionDebtBytes < 0) leg.CorrectionDebtBytes = Math.Min(0, leg.CorrectionDebtBytes + correctionBytes);
             if (discarded < discardLength) break;
         }
 
         var silence = Math.Min(block.Length, leg.PendingInsertBytes);
+        var nonCorrectionSilence = leg.PendingInsertBytes - Math.Max(0, leg.CorrectionDebtBytes);
         leg.PendingInsertBytes -= silence;
-        if (silence < block.Length) leg.Buffer.Read(block[silence..], padWithSilence: true);
+        var correctionSilence = Math.Max(0, silence - nonCorrectionSilence);
+        if (leg.CorrectionDebtBytes > 0) leg.CorrectionDebtBytes = Math.Max(0, leg.CorrectionDebtBytes - correctionSilence);
+        if (silence < block.Length)
+        {
+            leg.Buffer.Read(block[silence..], padWithSilence: true, out var paddedBytes, out var producerActive);
+            if (producerActive && paddedBytes > 0) AddCorrectionDrop(leg, paddedBytes);
+        }
+    }
+
+    private static void AddPendingInsert(Leg leg, int bytes)
+    {
+        var cancellation = Math.Min(bytes, leg.PendingDropBytes);
+        leg.PendingDropBytes -= cancellation;
+        leg.PendingInsertBytes += bytes - cancellation;
+    }
+
+    private static void AddPendingDrop(Leg leg, int bytes)
+    {
+        var cancellation = Math.Min(bytes, leg.PendingInsertBytes);
+        leg.PendingInsertBytes -= cancellation;
+        leg.PendingDropBytes += bytes - cancellation;
+    }
+
+    private static void AddCorrectionInsert(Leg leg, int bytes)
+    {
+        leg.CorrectionDebtBytes += bytes;
+        AddPendingInsert(leg, bytes);
+        ClampCorrectionDebtToPending(leg);
+    }
+
+    private static void AddCorrectionDrop(Leg leg, int bytes)
+    {
+        leg.CorrectionDebtBytes -= bytes;
+        AddPendingDrop(leg, bytes);
+        ClampCorrectionDebtToPending(leg);
+    }
+
+    private static void ClampCorrectionDebtToPending(Leg leg)
+    {
+        if (leg.CorrectionDebtBytes > 0)
+            leg.CorrectionDebtBytes = Math.Min(leg.CorrectionDebtBytes, leg.PendingInsertBytes);
+        else if (leg.CorrectionDebtBytes < 0)
+            leg.CorrectionDebtBytes = -Math.Min(-leg.CorrectionDebtBytes, leg.PendingDropBytes);
+    }
+
+    private bool NeedsGroupResync()
+    {
+        var thresholdBytes = ReceiverAlignmentPlan.ToPcmByteCount(CorrectionDebtResyncMilliseconds);
+        return _legs.Values.Any(leg => Math.Abs((long)leg.CorrectionDebtBytes) > thresholdBytes);
+    }
+
+    private void ResyncGroupCore()
+    {
+        var liveLegs = _legs.Values.Where(item => item.Live).ToArray();
+        if (liveLegs.Length == 0) return;
+        _groupResyncCount++;
+        foreach (var leg in liveLegs)
+        {
+            leg.Buffer.DiscardToLiveEdge(BlockBytes);
+            MakeLive(leg, EffectiveAlignmentTrim(leg));
+        }
     }
 
     private async Task RunAsync(CancellationToken cancellationToken)

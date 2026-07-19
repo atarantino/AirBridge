@@ -25,7 +25,8 @@ public sealed class SettingsStore
                     : settings.ReceiverVolumes.ToDictionary(pair => pair.Key, pair => Math.Clamp(pair.Value, 0, 100), StringComparer.Ordinal),
                 ReceiverAlignmentTrimMs = settings.ReceiverAlignmentTrimMs is null
                     ? new(StringComparer.Ordinal)
-                    : settings.ReceiverAlignmentTrimMs.ToDictionary(pair => pair.Key, pair => Math.Clamp(pair.Value, 0, 500), StringComparer.Ordinal),
+                    : settings.ReceiverAlignmentTrimMs.ToDictionary(pair => pair.Key,
+                        pair => Math.Clamp(pair.Value, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds), StringComparer.Ordinal),
                 SpeakerGroups = settings.SpeakerGroups ?? [],
                 SilenceStandbySeconds = Math.Clamp(settings.SilenceStandbySeconds, 10, 600),
                 PushToTalkHoldThresholdMs = Math.Clamp(settings.PushToTalkHoldThresholdMs, 100, 1000)

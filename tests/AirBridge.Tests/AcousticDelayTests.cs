@@ -1,9 +1,19 @@
+using AirBridge.App;
 using AirBridge.Core;
 
 namespace AirBridge.Tests;
 
 public sealed class AcousticDelayTests
 {
+    [Theory]
+    [InlineData(true, 6.0, false)]
+    [InlineData(false, 1.0, false)]
+    [InlineData(false, 6.0, true)]
+    public void CaptureEligibilityRejectsSilentAndLowPeakSignals(bool effectivelySilent, double peakPercent, bool expected)
+    {
+        Assert.Equal(expected, AcousticDelayMeasurer.IsCaptureEligibleForDetection(effectivelySilent, peakPercent));
+    }
+
     [Fact]
     public void DetectorIgnoresLocalBleedAndReturnsMedianAcousticDelay()
     {

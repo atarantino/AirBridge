@@ -61,6 +61,22 @@ public sealed class BoundedPcmBufferTests
         Assert.Equal(2, active.Underruns);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReadReportsPaddingAndProducerStateWithoutChangingReturnContract(bool producerActive)
+    {
+        var buffer = new BoundedPcmBuffer(16);
+        buffer.Write([1, 2], producerActive);
+        var destination = new byte[8];
+
+        var read = buffer.Read(destination, padWithSilence: true, out var paddedBytes, out var reportedProducerActive);
+
+        Assert.Equal(8, read);
+        Assert.Equal(6, paddedBytes);
+        Assert.Equal(producerActive, reportedProducerActive);
+    }
+
     [Fact]
     public void SnapshotReportsFillPercent()
     {

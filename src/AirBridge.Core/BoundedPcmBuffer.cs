@@ -66,10 +66,15 @@ public sealed class BoundedPcmBuffer : IPcmSink
         }
     }
 
-    public int Read(Span<byte> destination, bool padWithSilence)
+    public int Read(Span<byte> destination, bool padWithSilence) =>
+        Read(destination, padWithSilence, out _, out _);
+
+    public int Read(Span<byte> destination, bool padWithSilence, out int paddedBytes, out bool producerActive)
     {
         lock (_gate)
         {
+            paddedBytes = 0;
+            producerActive = _producerActive;
             var available = Math.Min(destination.Length, _count);
             var first = Math.Min(available, _buffer.Length - _read);
             _buffer.AsSpan(_read, first).CopyTo(destination);
@@ -82,6 +87,7 @@ public sealed class BoundedPcmBuffer : IPcmSink
                 destination[available..].Clear();
                 _underruns++;
                 var padding = destination.Length - available;
+                paddedBytes = padding;
                 if (_producerActive) _starvedWhileActivePaddingBytes += padding;
                 else _producerIdlePaddingBytes += padding;
                 return destination.Length;

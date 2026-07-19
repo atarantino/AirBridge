@@ -57,10 +57,16 @@ public sealed class PipeAudioServerTests
         Assert.True(SpinWait.SpinUntil(() => server.IsConnected, TimeSpan.FromSeconds(2)));
         var silence = new byte[SharedAudioPump.BlockBytes];
 
+        var observedDrop = false;
         for (var index = 0; index < 500; index++)
-            Assert.True(server.TryWrite(silence, tolerateBackpressure: true));
+        {
+            var result = server.Write(silence, tolerateBackpressure: true);
+            Assert.NotEqual(AudioPipeWriteResult.Unavailable, result);
+            observedDrop |= result == AudioPipeWriteResult.Dropped;
+        }
 
         Assert.True(server.IsConnected);
+        Assert.True(observedDrop);
     }
 
     [Fact]
@@ -93,8 +99,8 @@ public sealed class PipeAudioServerTests
         beamServer.Start();
         await using var speakerAClient = await ConnectAsync(speakerAServer);
         await using var beamClient = await ConnectAsync(beamServer);
-        var speakerABuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4);
-        var beamBuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4);
+        var speakerABuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4, 0);
+        var beamBuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4, 0);
         var live = Enumerable.Repeat((byte)0x5A, SharedAudioPump.BlockBytes).ToArray();
         speakerABuffer.Write(live);
         beamBuffer.Write(live);

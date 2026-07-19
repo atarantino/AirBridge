@@ -78,7 +78,7 @@ public static class ReceiverResumePlan
         playback.Select(item => new ReceiverResumeSetting(
             item.Receiver.Id,
             Math.Clamp(item.Volume, 0, 100),
-            Math.Clamp(item.AlignmentTrimMilliseconds, 0, 500))).ToArray();
+            Math.Clamp(item.AlignmentTrimMilliseconds, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds))).ToArray();
 }
 
 public sealed record AudioSessionInfo(int ProcessId, string Application, string Executable, bool IsPlaying, float Volume);
@@ -130,6 +130,7 @@ public sealed record AirBridgeSettings
     public bool RestorePreviousRoute { get; init; }
     public string PushToTalkShortcut { get; init; } = "Ctrl+Alt+Space";
     public int PushToTalkHoldThresholdMs { get; init; } = 250;
+    public string? CalibrationMicrophoneName { get; init; }
     public int? VoiceHudX { get; init; }
     public int? VoiceHudY { get; init; }
     public int EstimatedAudioDelayMilliseconds { get; init; } = 2000;

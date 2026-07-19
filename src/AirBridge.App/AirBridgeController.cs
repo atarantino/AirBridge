@@ -26,6 +26,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private readonly SharedAudioPump _pump;
     private readonly SilenceStandbyTracker _standbyTracker = new();
     private readonly Dictionary<string, ReceiverLeg> _legs = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _resyncWhenReady = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _alignmentTrims = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim _routeGate = new(1, 1);
     private readonly object _legsGate = new();
@@ -74,6 +75,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
 
     public void ConfigureSettings(AirBridgeSettings settings)
     {
+        _delayMeasurer.Configure(settings.CalibrationMicrophoneName);
         lock (_legsGate)
         {
             _alignmentTrims.Clear();
@@ -215,7 +217,11 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             await leg.Pipe.DisposeAsync();
             _pump.RemoveLeg(receiverId);
             _hub.Unsubscribe(receiverId);
-            lock (_legsGate) _legs.Remove(receiverId);
+            lock (_legsGate)
+            {
+                _legs.Remove(receiverId);
+                _resyncWhenReady.Remove(receiverId);
+            }
             if (ReceiverPlayback.Count == 0)
             {
                 _capture.Stop();
@@ -375,6 +381,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         var targetLegs = legs.ToDictionary(leg => leg.Receiver.Id, StringComparer.Ordinal);
         var currentTrims = legs.ToDictionary(item => item.Receiver.Id, item => item.AlignmentTrimMs, StringComparer.Ordinal);
         IReadOnlyList<ReceiverDelayMeasurement> measurements;
+        _pump.SetCalibrationMode(true);
         try
         {
             measurements = await ReceiverMeasurementSequence.RunAsync(
@@ -391,13 +398,13 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
         finally
         {
+            _pump.SetCalibrationMode(false);
             lock (_legsGate) _measurementInProgress = false;
             _standbyTracker.Reset();
         }
 
         var measuredMedians = measurements.ToDictionary(item => item.ReceiverId, item => item.MedianMilliseconds, StringComparer.Ordinal);
-        var untrimmedMedians = ReceiverAlignmentPlan.RemoveAppliedTrims(measuredMedians, currentTrims);
-        var proposed = ReceiverAlignmentPlan.ProposeTrims(untrimmedMedians);
+        var proposed = ReceiverAlignmentPlan.ProposeTrims(measuredMedians);
         LastGroupAlignment = new(measurements, ReceiverAlignmentPlan.PairwiseSkews(measuredMedians), proposed, false)
         {
             RouteStreamId = routeStreamId,
@@ -517,6 +524,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private async Task AddLegInternalAsync(ReceiverInfo receiver, int volume, CancellationToken cancellationToken)
     {
         CreateLeg(receiver, volume);
+        lock (_legsGate) _resyncWhenReady.Add(receiver.Id);
         await StartExistingLegAsync(receiver.Id, cancellationToken);
     }
 
@@ -550,7 +558,12 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         try { await _raop.StopAllStreamsAsync(cancellationToken); }
         catch (Exception ex) { AppLog.Error("route", "RAOP host failed while stopping all streams.", ex); }
         ReceiverLeg[] legs;
-        lock (_legsGate) { legs = _legs.Values.ToArray(); _legs.Clear(); }
+        lock (_legsGate)
+        {
+            legs = _legs.Values.ToArray();
+            _legs.Clear();
+            _resyncWhenReady.Clear();
+        }
         foreach (var leg in legs)
         {
             _hub.Unsubscribe(leg.Receiver.Id);
@@ -565,14 +578,18 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private void OnReceiverStateChanged(object? sender, (string? ReceiverId, StreamState State, string? Error) value)
     {
         if (value.ReceiverId is null) return;
+        var resyncWhenReady = false;
         lock (_legsGate)
         {
             if (!_legs.TryGetValue(value.ReceiverId, out var leg)) return;
             leg.State = _isStandby && value.State == StreamState.Idle ? StreamState.Standby : value.State;
             leg.LastError = value.Error;
+            if (value.State == StreamState.Streaming) resyncWhenReady = _resyncWhenReady.Remove(value.ReceiverId);
+            else if (value.State == StreamState.Failed) _resyncWhenReady.Remove(value.ReceiverId);
         }
         AppLog.Info("receiver", $"{ReceiverPlayback.FirstOrDefault(item => item.Receiver.Id == value.ReceiverId)?.Receiver.Name ?? "Unknown receiver"}: {value.State}{(value.Error is null ? "." : $"; {value.Error}")}");
-        if (value.State == StreamState.Streaming) _pump.MarkReady(value.ReceiverId);
+        if (value.State == StreamState.Streaming)
+            _pump.MarkReady(value.ReceiverId, resyncWhenReady);
         else if (value.State is StreamState.Reconnecting or StreamState.Failed or StreamState.Idle) _pump.MarkNotReady(value.ReceiverId);
         var playback = ReceiverPlayback;
         if (IsResumingFromStandby && playback.Count > 0 && playback.All(item => item.State is StreamState.Streaming or StreamState.Failed))
@@ -954,7 +971,12 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         AppLog.Warning("lifecycle", "Controller force cleanup started.");
         _raop.ForceTerminate();
         ReceiverLeg[] legs;
-        lock (_legsGate) { legs = _legs.Values.ToArray(); _legs.Clear(); }
+        lock (_legsGate)
+        {
+            legs = _legs.Values.ToArray();
+            _legs.Clear();
+            _resyncWhenReady.Clear();
+        }
         foreach (var leg in legs)
         {
             _hub.Unsubscribe(leg.Receiver.Id);

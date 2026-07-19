@@ -12,11 +12,17 @@ public sealed class SharedAudioPumpTests
         public bool CanAcceptWrite { get; set; } = true;
         public List<byte[]> Writes { get; } = [];
         public bool AcceptWrites { get; set; } = true;
-        public bool TryWrite(byte[] pcm, bool tolerateBackpressure = false)
+        public int DropsRemaining { get; set; }
+        public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
         {
-            if (!AcceptWrites) return false;
+            if (!AcceptWrites) return AudioPipeWriteResult.Unavailable;
+            if (DropsRemaining > 0)
+            {
+                DropsRemaining--;
+                return AudioPipeWriteResult.Dropped;
+            }
             Writes.Add(pcm.ToArray());
-            return true;
+            return AudioPipeWriteResult.Accepted;
         }
     }
 
@@ -176,7 +182,7 @@ public sealed class SharedAudioPumpTests
     public async Task LiveTenMillisecondNudgeInsertsThenDropsExactly441StereoFrames()
     {
         var pump = new SharedAudioPump();
-        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8);
+        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8, 0);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 0);
         pump.AddLeg("sibling", BufferWithBlocks(0x30, 8), new FakeEndpoint("sibling"), 0);
@@ -199,10 +205,74 @@ public sealed class SharedAudioPumpTests
     }
 
     [Fact]
+    public async Task CalibrationModeSuppressesEffectiveTrimAndRestoresConfiguredTrim()
+    {
+        var pump = new SharedAudioPump();
+        var buffer = BufferWithBlocks(0x52, 6);
+        var endpoint = new FakeEndpoint("receiver");
+        pump.AddLeg("receiver", buffer, endpoint, 10);
+        pump.AddLeg("sibling", BufferWithBlocks(0x63, 6), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
+        pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
+        await pump.PumpOnceAsync();
+
+        buffer.Write(Enumerable.Repeat((byte)0x52, SharedAudioPump.BlockBytes).ToArray());
+        pump.SetCalibrationMode(true);
+        await pump.PumpOnceAsync();
+
+        Assert.All(endpoint.Writes[1], value => Assert.Equal(0x52, value));
+        Assert.Equal(10, pump.GetAlignmentTrim("receiver"));
+
+        buffer.Write(Enumerable.Repeat((byte)0x52, SharedAudioPump.BlockBytes).ToArray());
+        pump.SetCalibrationMode(false);
+        await pump.PumpOnceAsync();
+
+        Assert.All(endpoint.Writes[2][..1764], value => Assert.Equal(0, value));
+        Assert.All(endpoint.Writes[2][1764..], value => Assert.Equal(0x52, value));
+        Assert.Equal(10, pump.GetAlignmentTrim("receiver"));
+    }
+
+    [Fact]
+    public async Task CalibrationModeRestoresConfiguredTrimAfterMeasurementThrows()
+    {
+        var pump = new SharedAudioPump();
+        var buffer = BufferWithBlocks(0x74, 6);
+        var endpoint = new FakeEndpoint("receiver");
+        pump.AddLeg("receiver", buffer, endpoint, 10);
+        pump.AddLeg("sibling", BufferWithBlocks(0x35, 6), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
+        pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
+        await pump.PumpOnceAsync();
+
+        try
+        {
+            pump.SetCalibrationMode(true);
+            buffer.Write(Enumerable.Repeat((byte)0x74, SharedAudioPump.BlockBytes).ToArray());
+            await pump.PumpOnceAsync();
+            await Task.FromException(new InvalidOperationException("measurement failed"));
+        }
+        catch (InvalidOperationException)
+        {
+        }
+        finally
+        {
+            pump.SetCalibrationMode(false);
+        }
+        buffer.Write(Enumerable.Repeat((byte)0x74, SharedAudioPump.BlockBytes).ToArray());
+        await pump.PumpOnceAsync();
+
+        Assert.All(endpoint.Writes[2][..1764], value => Assert.Equal(0, value));
+        Assert.All(endpoint.Writes[2][1764..], value => Assert.Equal(0x74, value));
+        Assert.Equal(10, pump.GetAlignmentTrim("receiver"));
+    }
+
+    [Fact]
     public async Task StandbyDiscardsHistoryAndResumeReappliesGateAndTrimAtLiveEdge()
     {
         var pump = new SharedAudioPump();
-        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8);
+        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8, 0);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 10);
         pump.AddLeg("sibling", BufferWithBlocks(0x20, 8), new FakeEndpoint("sibling"), 0);
@@ -329,7 +399,7 @@ public sealed class SharedAudioPumpTests
 
     private static BoundedPcmBuffer BufferWithBlocks(byte value, int count)
     {
-        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8);
+        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8, 0);
         buffer.Write(Enumerable.Repeat(value, SharedAudioPump.BlockBytes * count).ToArray());
         return buffer;
     }

@@ -4,7 +4,7 @@ namespace AirBridge.Core;
 public static class ReceiverAlignmentPlan
 {
     public const int MinimumTrimMilliseconds = 0;
-    public const int MaximumTrimMilliseconds = 500;
+    public const int MaximumTrimMilliseconds = 2000;
     public const int ProposalQuantumMilliseconds = 10;
     public const int CanonicalSampleRate = 44100;
     public const int CanonicalChannels = 2;
@@ -68,18 +68,6 @@ public static class ReceiverAlignmentPlan
         return currentVolumes.ToDictionary(
             pair => pair.Key,
             pair => pair.Key == targetReceiverId ? Math.Clamp(pair.Value, 0, 100) : Math.Clamp(isolationFloor, 0, 100),
-            StringComparer.Ordinal);
-    }
-
-    public static IReadOnlyDictionary<string, int> RemoveAppliedTrims(
-        IReadOnlyDictionary<string, int> measuredMedianMilliseconds,
-        IReadOnlyDictionary<string, int> currentTrimMilliseconds)
-    {
-        ArgumentNullException.ThrowIfNull(measuredMedianMilliseconds);
-        ArgumentNullException.ThrowIfNull(currentTrimMilliseconds);
-        return measuredMedianMilliseconds.ToDictionary(
-            pair => pair.Key,
-            pair => pair.Value - (currentTrimMilliseconds.TryGetValue(pair.Key, out var trim) ? Math.Clamp(trim, 0, 500) : 0),
             StringComparer.Ordinal);
     }
 
