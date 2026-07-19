@@ -11,3 +11,23 @@ publish/
 TestResults/
 src/AirBridge.RaopHost/__pycache__/
 *.pyc
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.jks
+*.keystore
+credentials.json
+secrets.json
+secrets.*.json
+
+# Local tooling and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

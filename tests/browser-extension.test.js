@@ -76,3 +76,11 @@ test("YouTube player overlay stays below controls while viewport fallback remain
 test("site keys are origin scoped", () => {
   assert.equal(Core.siteKey("https://www.youtube.com/watch?v=1"), "https://www.youtube.com");
 });
+
+test("YouTube host matching rejects lookalike domains", () => {
+  assert.equal(Core.isYouTubeHostname("youtube.com"), true);
+  assert.equal(Core.isYouTubeHostname("www.youtube.com"), true);
+  assert.equal(Core.isYouTubeHostname("WWW.YOUTUBE.COM"), true);
+  assert.equal(Core.isYouTubeHostname("notyoutube.com"), false);
+  assert.equal(Core.isYouTubeHostname("youtube.com.example.org"), false);
+});

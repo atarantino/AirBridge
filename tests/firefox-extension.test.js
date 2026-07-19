@@ -30,3 +30,9 @@ test("Firefox capture and queue limits match the Chrome extension", () => {
   assert.equal(Core.MAX_BUFFER_MS, 4000);
   assert.deepEqual(Core.captureSize(3840, 2160), { width: 1920, height: 1080 });
 });
+
+test("Firefox rejects YouTube lookalike domains", () => {
+  assert.equal(Core.isYouTubeHostname("m.youtube.com"), true);
+  assert.equal(Core.isYouTubeHostname("notyoutube.com"), false);
+  assert.equal(Core.isYouTubeHostname("youtube.com.example.org"), false);
+});

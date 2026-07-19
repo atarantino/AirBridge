@@ -22,6 +22,11 @@
     }
   }
 
+  function isYouTubeHostname(hostname) {
+    const normalized = String(hostname || "").toLowerCase();
+    return normalized === "youtube.com" || normalized.endsWith(".youtube.com");
+  }
+
   function captureSize(videoWidth, videoHeight) {
     if (!videoWidth || !videoHeight) return { width: 0, height: 0 };
     const pixelRatio = Number(global.devicePixelRatio) || 1;
@@ -94,6 +99,7 @@
     MAX_FRAMES,
     clampDelay,
     siteKey,
+    isYouTubeHostname,
     captureSize,
     overlayLayout,
     BoundedFrameQueue,

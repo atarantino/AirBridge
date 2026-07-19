@@ -46,7 +46,7 @@
     }
 
     youtubeVideoContainer() {
-      return location.hostname.endsWith("youtube.com")
+      return Core.isYouTubeHostname(location.hostname)
         ? this.video.closest(".html5-video-container")
         : null;
     }
