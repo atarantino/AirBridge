@@ -109,7 +109,7 @@ public sealed class ReceiverRowControl : UserControl
     {
         _compact = true;
         MinimumSize = new Size(350, 44);
-        Height = UiGeometry.Scale(this, 44);
+        Height = UiGeometry.ScaleText(this, 44);
         Margin = new Padding(0, 0, 0, UiGeometry.Scale(this, 6));
         _action.Visible = false;
         _action.TabStop = false;
@@ -119,6 +119,19 @@ public sealed class ReceiverRowControl : UserControl
         PerformLayout();
         UpdateAccessibility();
         Invalidate();
+    }
+
+    internal void ApplyTextScale()
+    {
+        _trimValue.Font = UiGeometry.UiFont(8F, FontStyle.Bold);
+        if (_compact) UpdateCompactHeight(false);
+        else
+        {
+            Height = UiGeometry.ScaleText(this, 72);
+            MinimumSize = new Size(MinimumSize.Width, UiGeometry.ScaleText(this, 64));
+        }
+        PerformLayout();
+        Invalidate(true);
     }
 
     internal void SetCompactStreamActive(bool active)
@@ -225,6 +238,7 @@ public sealed class ReceiverRowControl : UserControl
     {
         base.OnLayout(e);
         var scale = DeviceDpi / 96f;
+        var verticalScale = scale * SystemTextScale.Current;
         var right = (int)(12 * scale);
         if (_compact)
         {
@@ -238,7 +252,7 @@ public sealed class ReceiverRowControl : UserControl
             var showStatus = _streamState is not StreamState.Idle and not StreamState.Streaming;
             var statusWidth = showStatus ? (int)(112 * scale) : 0;
             var sliderLeft = nameLeft + statusWidth;
-            _volume.SetBounds(sliderLeft, (int)(34 * scale), Math.Max((int)(80 * scale), trailingRight - sliderLeft), (int)(23 * scale));
+            _volume.SetBounds(sliderLeft, (int)(34 * verticalScale), Math.Max((int)(80 * scale), trailingRight - sliderLeft), (int)(23 * scale));
             return;
         }
         var showTrim = IsActive;
@@ -246,11 +260,11 @@ public sealed class ReceiverRowControl : UserControl
         _action.Visible = _dashboardStreamActive;
         var actionWidth = (int)(76 * scale);
         var actionRight = Width - right;
-        _action.SetBounds(actionRight - actionWidth, (Height - (int)(32 * scale)) / 2, actionWidth, (int)(32 * scale));
+        _action.SetBounds(actionRight - actionWidth, (Height - (int)(32 * verticalScale)) / 2, actionWidth, (int)(32 * verticalScale));
         var sliderWidth = Math.Max((int)(120 * scale), Math.Min((int)(178 * scale), Width / 3));
         var sliderRight = (_action.Visible ? _action.Left : actionRight) - (int)(10 * scale);
-        _volume.SetBounds(sliderRight - sliderWidth, (int)(8 * scale), sliderWidth, (int)(26 * scale));
-        if (showTrim) LayoutTrimControls(sliderRight, (int)(39 * scale), scale);
+        _volume.SetBounds(sliderRight - sliderWidth, (int)(8 * verticalScale), sliderWidth, (int)(26 * scale));
+        if (showTrim) LayoutTrimControls(sliderRight, (int)(39 * verticalScale), scale, verticalScale);
     }
 
     protected override void OnMouseEnter(EventArgs e) { _hovered = true; _hoverTimer.Start(); PerformLayout(); base.OnMouseEnter(e); }
@@ -306,6 +320,7 @@ public sealed class ReceiverRowControl : UserControl
             return;
         }
         var s = DeviceDpi / 96f;
+        var v = s * SystemTextScale.Current;
         var glyphBox = new Rectangle((int)(14 * s), (Height - (int)(34 * s)) / 2, (int)(34 * s), (int)(34 * s));
         using var iconFont = UiGeometry.IconFont(_compact ? 15F : 17F);
         TextRenderer.DrawText(e.Graphics, "\uE767", iconFont, glyphBox, _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText,
@@ -314,8 +329,8 @@ public sealed class ReceiverRowControl : UserControl
         var textLeft = glyphBox.Right + (int)(10 * s);
         var nameRight = _compact ? _action.Left - (int)(34 * s) : _volume.Left - (int)(34 * s);
         var statusRight = _compact ? _volume.Left - (int)(8 * s) : nameRight;
-        var nameBounds = new Rectangle(textLeft, _compact ? (int)(7 * s) : (int)(12 * s), Math.Max(40, nameRight - textLeft), (int)(23 * s));
-        var statusBounds = new Rectangle(textLeft + (int)(13 * s), nameBounds.Bottom + (_compact ? 0 : (int)(2 * s)), Math.Max(30, statusRight - textLeft - (int)(13 * s)), (int)(20 * s));
+        var nameBounds = new Rectangle(textLeft, _compact ? (int)(7 * v) : (int)(12 * v), Math.Max(40, nameRight - textLeft), (int)(23 * v));
+        var statusBounds = new Rectangle(textLeft + (int)(13 * s), nameBounds.Bottom + (_compact ? 0 : (int)(2 * v)), Math.Max(30, statusRight - textLeft - (int)(13 * s)), (int)(20 * v));
         using var nameFont = UiGeometry.UiFont(_compact ? 9.5F : 10F, FontStyle.Bold);
         using var secondaryFont = UiGeometry.UiFont(_compact ? 8.25F : 9F);
         TextRenderer.DrawText(e.Graphics, _receiver?.Name ?? "Speaker", nameFont, nameBounds, _palette.IsHighContrast ? SystemColors.WindowText : _palette.Text,
@@ -350,15 +365,16 @@ public sealed class ReceiverRowControl : UserControl
     {
         graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
         var s = DeviceDpi / 96f;
+        var v = s * SystemTextScale.Current;
         var left = (int)(12 * s);
         var glyphSize = (int)(30 * s);
-        var glyphTop = CompactEngaged ? (int)(5 * s) : (Height - glyphSize) / 2;
+        var glyphTop = CompactEngaged ? (int)(5 * v) : (Height - glyphSize) / 2;
         var glyphBox = new Rectangle(left, glyphTop, glyphSize, glyphSize);
         var nameLeft = glyphBox.Right + (int)(10 * s);
         var checkSize = (int)(22 * s);
-        var checkTop = CompactEngaged ? (int)(8 * s) : (Height - checkSize) / 2;
+        var checkTop = CompactEngaged ? (int)(8 * v) : (Height - checkSize) / 2;
         var checkBox = new Rectangle(Width - (int)(12 * s) - checkSize, checkTop, checkSize, checkSize);
-        var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * s) : 0, Math.Max(40, checkBox.Left - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * s) : Height);
+        var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * v) : 0, Math.Max(40, checkBox.Left - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * v) : Height);
 
         using var iconFont = UiGeometry.IconFont(14F);
         using var nameFont = UiGeometry.UiFont(9.5F, FontStyle.Bold);
@@ -383,17 +399,17 @@ public sealed class ReceiverRowControl : UserControl
         if (_streamState == StreamState.Streaming)
         {
             var measured = graphics.MeasureString(_receiver?.Name ?? string.Empty, nameFont, PointF.Empty, StringFormat.GenericTypographic).Width;
-            DrawEqualizer(graphics, (int)Math.Min(checkBox.Left - (int)(19 * s), nameLeft + measured + (int)(6 * s)), (int)(11 * s));
+            DrawEqualizer(graphics, (int)Math.Min(checkBox.Left - (int)(19 * s), nameLeft + measured + (int)(6 * s)), (int)(11 * v));
         }
 
         if (_streamState is not StreamState.Idle and not StreamState.Streaming)
         {
             var dotSize = UiGeometry.Scale(this, 6);
-            var dot = new Rectangle(nameLeft, (int)(44 * s) - dotSize / 2, dotSize, dotSize);
+            var dot = new Rectangle(nameLeft, (int)(44 * v) - dotSize / 2, dotSize, dotSize);
             using var stateBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.StateColor(_streamState));
             graphics.FillEllipse(stateBrush, dot);
             var statusText = _streamState == StreamState.Failed && !string.IsNullOrWhiteSpace(_detail) ? _detail! : StatusText(_streamState);
-            var statusBounds = new Rectangle(dot.Right + (int)(5 * s), (int)(34 * s), Math.Max(28, _volume.Left - dot.Right - (int)(8 * s)), (int)(20 * s));
+            var statusBounds = new Rectangle(dot.Right + (int)(5 * s), (int)(34 * v), Math.Max(28, _volume.Left - dot.Right - (int)(8 * s)), (int)(20 * v));
             using var statusBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText);
             using var statusFormat = new StringFormat(StringFormat.GenericTypographic)
             {
@@ -533,11 +549,11 @@ public sealed class ReceiverRowControl : UserControl
         UpdateAccessibility();
     }
 
-    private void LayoutTrimControls(int right, int top, float scale)
+    private void LayoutTrimControls(int right, int top, float scale, float verticalScale)
     {
         var buttonWidth = (int)(26 * scale);
         var valueWidth = (int)(68 * scale);
-        var height = (int)(24 * scale);
+        var height = (int)(24 * verticalScale);
         var total = buttonWidth * 2 + valueWidth;
         var left = right - total;
         _trimDown.SetBounds(left, top, buttonWidth, height);
@@ -558,7 +574,7 @@ public sealed class ReceiverRowControl : UserControl
     private void UpdateCompactHeight(bool animate)
     {
         if (!_compact) return;
-        var target = UiGeometry.Scale(this, CompactEngaged ? 64 : 44);
+        var target = UiGeometry.ScaleText(this, CompactEngaged ? 64 : 44);
         if (Height == target) return;
         if (!animate)
         {

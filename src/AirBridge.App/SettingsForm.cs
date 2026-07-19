@@ -5,6 +5,12 @@ namespace AirBridge.App;
 
 internal sealed class SettingsForm : Form
 {
+    private const int WmSettingChange = 0x001A;
+    private sealed record GroupReceiverChoice(string ReceiverId, string Label)
+    {
+        public override string ToString() => Label;
+    }
+
     private readonly ComboBox _theme = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _capture = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox _standby = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -15,7 +21,16 @@ internal sealed class SettingsForm : Form
     private readonly TextBox _apiKey = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly Button _removeApiKey = new() { Text = "Remove", AutoSize = true };
     private readonly Label _apiKeyStatus = new() { AutoSize = true };
+    private readonly FlowLayoutPanel _buttonBar = new();
     private readonly Dictionary<string, NumericUpDown> _alignmentTrims = new(StringComparer.Ordinal);
+    private readonly List<SpeakerGroup> _speakerGroups;
+    private readonly List<GroupReceiverChoice> _groupReceiverChoices = [];
+    private readonly ListBox _speakerGroupList = new() { Dock = DockStyle.Fill, DisplayMember = nameof(SpeakerGroup.Name), IntegralHeight = false };
+    private readonly TextBox _speakerGroupName = new() { Dock = DockStyle.Top, PlaceholderText = "Group name" };
+    private readonly CheckedListBox _speakerGroupMembers = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
+    private TabControl? _tabs;
+    private TabPage? _groupsPage;
+    private bool _updatingSpeakerGroup;
     private bool _removeApiKeyRequested;
     private string _shortcutBeforeCapture = HotkeyGesture.Default.ToString();
     private HotkeyGesture _capturedShortcut = HotkeyGesture.Default;
@@ -25,13 +40,17 @@ internal sealed class SettingsForm : Form
         ThemePalette palette,
         bool storedApiKeyConfigured,
         bool apiKeyManagedByEnvironment,
-        IReadOnlyList<ReceiverInfo>? receivers = null)
+        IReadOnlyList<ReceiverInfo>? receivers = null,
+        string? initialTab = null)
     {
+        _speakerGroups = settings.SpeakerGroups.ToList();
         Text = "AirBridge Settings";
         AccessibleName = "AirBridge settings";
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(700, 570);
-        MinimumSize = new Size(620, 500);
+        var textWidthScale = TextWidthScale(SystemTextScale.Current);
+        var textHeightScale = TextHeightScale(SystemTextScale.Current);
+        ClientSize = new Size((int)Math.Ceiling(700 * textWidthScale), (int)Math.Ceiling(570 * textHeightScale));
+        MinimumSize = new Size((int)Math.Ceiling(620 * textWidthScale), (int)Math.Ceiling(500 * textHeightScale));
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         MinimizeBox = false;
@@ -52,9 +71,17 @@ internal sealed class SettingsForm : Form
         };
         tabs.DrawItem += (_, args) => DrawTab(tabs, args, palette);
         tabs.TabPages.Add(BuildGeneralPage(palette));
+        _groupsPage = BuildGroupsPage(receivers ?? [], palette);
+        tabs.TabPages.Add(_groupsPage);
         tabs.TabPages.Add(BuildSyncPage(receivers ?? [], settings.ReceiverAlignmentTrimMs, palette));
         tabs.TabPages.Add(BuildAssistantPage(palette));
         tabs.TabPages.Add(BuildAdvancedPage(palette));
+        _tabs = tabs;
+        if (!string.IsNullOrWhiteSpace(initialTab))
+        {
+            var requested = tabs.TabPages.Cast<TabPage>().FirstOrDefault(page => page.Text.Equals(initialTab, StringComparison.OrdinalIgnoreCase));
+            if (requested is not null) tabs.SelectedTab = requested;
+        }
 
         var save = new Button { Text = "Save", AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
         var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
@@ -65,27 +92,29 @@ internal sealed class SettingsForm : Form
                 _pushToTalkShortcut.Focus();
                 return;
             }
+            if (!ValidateSpeakerGroups()) return;
             DialogResult = DialogResult.OK;
         };
         AcceptButton = save;
         CancelButton = cancel;
 
-        var buttons = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 58,
-            FlowDirection = FlowDirection.RightToLeft,
-            Padding = new Padding(16, 10, 16, 8),
-            WrapContents = false
-        };
-        buttons.Controls.AddRange([save, cancel]);
+        _buttonBar.Dock = DockStyle.Bottom;
+        _buttonBar.Height = UiGeometry.TextLogical(64);
+        _buttonBar.FlowDirection = FlowDirection.RightToLeft;
+        _buttonBar.Padding = new Padding(16, 10, 16, 8);
+        _buttonBar.WrapContents = false;
+        _buttonBar.Controls.AddRange([save, cancel]);
         Controls.Add(tabs);
-        Controls.Add(buttons);
+        Controls.Add(_buttonBar);
+        SystemTextScale.Changed += OnTextScaleChanged;
+        UiGeometry.ScaleInitialTextLayout(this);
         palette.Apply(this);
         ApplyColors(this, palette);
+        Shown += (_, _) => EnsureFitsWorkingArea();
     }
 
     public event EventHandler? OpenLogsRequested;
+    public event EventHandler? OpenActivityInspectorRequested;
 
     public AppThemeMode ThemeMode => _theme.SelectedIndex switch { 1 => AppThemeMode.Light, 2 => AppThemeMode.Dark, _ => AppThemeMode.System };
     public CaptureMode DefaultCaptureMode => _capture.SelectedIndex == 1 ? CaptureMode.ProcessTreeInclude : CaptureMode.SystemMix;
@@ -97,6 +126,11 @@ internal sealed class SettingsForm : Form
     public string? ReplacementApiKey => string.IsNullOrWhiteSpace(_apiKey.Text) ? null : _apiKey.Text.Trim();
     public bool RemoveApiKeyRequested => _removeApiKeyRequested && ReplacementApiKey is null;
     public IReadOnlyDictionary<string, int> ReceiverAlignmentTrims => _alignmentTrims.ToDictionary(pair => pair.Key, pair => (int)pair.Value.Value, StringComparer.Ordinal);
+    public IReadOnlyList<SpeakerGroup> SpeakerGroups => _speakerGroups.Select(item => item with
+    {
+        Name = item.Name.Trim(),
+        ReceiverIds = item.ReceiverIds.Distinct(StringComparer.Ordinal).ToArray()
+    }).ToArray();
 
     private void InitializeValues(AirBridgeSettings settings, ThemePalette palette, bool storedApiKeyConfigured, bool apiKeyManagedByEnvironment)
     {
@@ -235,6 +269,149 @@ internal sealed class SettingsForm : Form
         return page;
     }
 
+    private TabPage BuildGroupsPage(IReadOnlyList<ReceiverInfo> receivers, ThemePalette palette)
+    {
+        var page = CreatePage("Groups");
+        var knownIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var receiver in receivers.OrderBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase))
+        {
+            knownIds.Add(receiver.Id);
+            _groupReceiverChoices.Add(new(receiver.Id, receiver.Name));
+        }
+        var unavailableIndex = 1;
+        foreach (var receiverId in _speakerGroups.SelectMany(item => item.ReceiverIds).Distinct(StringComparer.Ordinal).Where(id => !knownIds.Contains(id)))
+            _groupReceiverChoices.Add(new(receiverId, $"Unavailable saved speaker {unavailableIndex++}"));
+        foreach (var choice in _groupReceiverChoices) _speakerGroupMembers.Items.Add(choice);
+
+        var add = new Button { Text = "New group", AutoSize = true };
+        var remove = new Button { Text = "Remove group", AutoSize = true, Enabled = false };
+        add.Click += (_, _) =>
+        {
+            var number = 1;
+            var name = "New group";
+            while (_speakerGroups.Any(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) name = $"New group {++number}";
+            var group = new SpeakerGroup($"group-{Guid.NewGuid():N}", name, []);
+            _speakerGroups.Add(group);
+            _speakerGroupList.Items.Add(group);
+            _speakerGroupList.SelectedIndex = _speakerGroupList.Items.Count - 1;
+            _speakerGroupName.Focus();
+            _speakerGroupName.SelectAll();
+        };
+        remove.Click += (_, _) =>
+        {
+            var index = _speakerGroupList.SelectedIndex;
+            if (index < 0) return;
+            _speakerGroups.RemoveAt(index);
+            _speakerGroupList.Items.RemoveAt(index);
+            if (_speakerGroupList.Items.Count > 0) _speakerGroupList.SelectedIndex = Math.Min(index, _speakerGroupList.Items.Count - 1);
+            else LoadSelectedSpeakerGroup();
+        };
+        _speakerGroupList.SelectedIndexChanged += (_, _) =>
+        {
+            remove.Enabled = _speakerGroupList.SelectedIndex >= 0;
+            LoadSelectedSpeakerGroup();
+        };
+        _speakerGroupName.TextChanged += (_, _) => UpdateSelectedSpeakerGroupName();
+        _speakerGroupName.Leave += (_, _) => RefreshSelectedSpeakerGroupListItem();
+        _speakerGroupMembers.ItemCheck += (_, args) => UpdateSelectedSpeakerGroupMembers(args);
+        foreach (var group in _speakerGroups) _speakerGroupList.Items.Add(group);
+
+        var leftButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false };
+        leftButtons.Controls.AddRange([add, remove]);
+        var left = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = new Padding(0, 0, 18, 0) };
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        left.Controls.Add(new Label { Text = "Saved groups", AutoSize = true, Font = UiGeometry.UiFont(9F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 7) }, 0, 0);
+        left.Controls.Add(_speakerGroupList, 0, 1);
+        left.Controls.Add(leftButtons, 0, 2);
+
+        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
+        details.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        details.RowStyles.Add(new RowStyle(SizeType.Absolute, 42));
+        details.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        details.Controls.Add(new Label { Text = "Group name", AutoSize = true, Margin = new Padding(0, 0, 0, 5) }, 0, 0);
+        details.Controls.Add(_speakerGroupName, 0, 1);
+        details.Controls.Add(new Label { Text = "Speakers — check to add, uncheck to remove", AutoSize = true, Margin = new Padding(0, 8, 0, 5) }, 0, 2);
+        details.Controls.Add(_speakerGroupMembers, 0, 3);
+
+        var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(24, 20, 24, 16) };
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
+        columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 60));
+        columns.Controls.Add(left, 0, 0);
+        columns.Controls.Add(details, 1, 0);
+        page.Controls.Add(columns);
+        if (_speakerGroupList.Items.Count > 0) _speakerGroupList.SelectedIndex = 0;
+        else LoadSelectedSpeakerGroup();
+        return page;
+    }
+
+    private void LoadSelectedSpeakerGroup()
+    {
+        if (_updatingSpeakerGroup) return;
+        _updatingSpeakerGroup = true;
+        try
+        {
+            var selected = _speakerGroupList.SelectedIndex >= 0 ? _speakerGroups[_speakerGroupList.SelectedIndex] : null;
+            _speakerGroupName.Enabled = _speakerGroupMembers.Enabled = selected is not null;
+            _speakerGroupName.Text = selected?.Name ?? string.Empty;
+            var ids = selected?.ReceiverIds.ToHashSet(StringComparer.Ordinal) ?? [];
+            for (var index = 0; index < _speakerGroupMembers.Items.Count; index++)
+                _speakerGroupMembers.SetItemChecked(index, ids.Contains(((GroupReceiverChoice)_speakerGroupMembers.Items[index]).ReceiverId));
+        }
+        finally { _updatingSpeakerGroup = false; }
+    }
+
+    private void UpdateSelectedSpeakerGroupName()
+    {
+        if (_updatingSpeakerGroup || _speakerGroupList.SelectedIndex < 0) return;
+        var index = _speakerGroupList.SelectedIndex;
+        var updated = _speakerGroups[index] with { Name = _speakerGroupName.Text };
+        _speakerGroups[index] = updated;
+    }
+
+    private void RefreshSelectedSpeakerGroupListItem()
+    {
+        var index = _speakerGroupList.SelectedIndex;
+        if (index < 0) return;
+        _updatingSpeakerGroup = true;
+        try
+        {
+            _speakerGroupList.Items[index] = _speakerGroups[index];
+            _speakerGroupList.SelectedIndex = index;
+        }
+        finally { _updatingSpeakerGroup = false; }
+    }
+
+    private void UpdateSelectedSpeakerGroupMembers(ItemCheckEventArgs args)
+    {
+        if (_updatingSpeakerGroup || _speakerGroupList.SelectedIndex < 0) return;
+        var receiverIds = _groupReceiverChoices.Where((_, index) =>
+            index == args.Index ? args.NewValue == CheckState.Checked : _speakerGroupMembers.GetItemChecked(index))
+            .Select(item => item.ReceiverId)
+            .ToArray();
+        var index = _speakerGroupList.SelectedIndex;
+        _speakerGroups[index] = _speakerGroups[index] with { ReceiverIds = receiverIds };
+    }
+
+    private bool ValidateSpeakerGroups()
+    {
+        var invalidIndex = _speakerGroups.FindIndex(item => string.IsNullOrWhiteSpace(item.Name) || item.ReceiverIds.Count == 0);
+        var duplicate = _speakerGroups.GroupBy(item => item.Name.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
+        if (invalidIndex < 0 && duplicate is null) return true;
+        if (duplicate is not null) invalidIndex = _speakerGroups.FindIndex(item => item.Name.Equals(duplicate.Key, StringComparison.OrdinalIgnoreCase));
+        if (_tabs is not null && _groupsPage is not null) _tabs.SelectedTab = _groupsPage;
+        if (invalidIndex >= 0) _speakerGroupList.SelectedIndex = invalidIndex;
+        var message = duplicate is not null
+            ? "Give every speaker group a unique name."
+            : string.IsNullOrWhiteSpace(_speakerGroups[invalidIndex].Name)
+                ? "Enter a name for every speaker group."
+                : "Choose at least one speaker for every group.";
+        MessageBox.Show(this, message, "Speaker groups", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        return false;
+    }
+
     private TabPage BuildAssistantPage(ThemePalette palette)
     {
         var page = CreatePage("Assistant");
@@ -268,16 +445,21 @@ internal sealed class SettingsForm : Form
         var content = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(24, 22, 24, 16) };
         content.Controls.Add(new Label { Text = "Troubleshooting", AutoSize = true, Font = UiGeometry.UiFont(10F, FontStyle.Bold) });
         content.Controls.Add(SecondaryText("Runtime logs include receiver state and transport errors. Audio is never logged.", palette));
-        var logs = new Button { Text = "Open logs folder", AutoSize = true, Margin = new Padding(0, 12, 0, 26) };
+        var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 26) };
+        var activity = new Button { Text = "Open AI Activity Inspector", AutoSize = true };
+        activity.AccessibleDescription = "View sanitized, in-memory transcription, OpenAI API, policy, and tool activity.";
+        activity.Click += (_, _) => OpenActivityInspectorRequested?.Invoke(this, EventArgs.Empty);
+        var logs = new Button { Text = "Open logs folder", AutoSize = true, Margin = new Padding(8, 0, 0, 0) };
         logs.Click += (_, _) => OpenLogsRequested?.Invoke(this, EventArgs.Empty);
-        content.Controls.Add(logs);
+        actions.Controls.AddRange([activity, logs]);
+        content.Controls.Add(actions);
         content.Controls.Add(new Label { Text = "About", AutoSize = true, Font = UiGeometry.UiFont(10F, FontStyle.Bold) });
         content.Controls.Add(SecondaryText($"AirBridge for Windows  ·  {Application.ProductVersion}\nWindows 10 19045 or newer", palette));
         page.Controls.Add(content);
         return page;
     }
 
-    private static TabPage CreatePage(string text) => new(text) { Padding = Padding.Empty, UseVisualStyleBackColor = false };
+    private static TabPage CreatePage(string text) => new(text) { Padding = Padding.Empty, UseVisualStyleBackColor = false, AutoScroll = true };
 
     private static void DrawTab(TabControl tabs, DrawItemEventArgs args, ThemePalette palette)
     {
@@ -354,6 +536,42 @@ internal sealed class SettingsForm : Form
         _pushToTalkShortcut.Text = gesture.ToString();
         _pushToTalkError.Text = string.Empty;
     }
+
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg == WmSettingChange && IsHandleCreated && !IsDisposed)
+            BeginInvoke(SystemTextScale.Refresh);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) SystemTextScale.Changed -= OnTextScaleChanged;
+        base.Dispose(disposing);
+    }
+
+    private void OnTextScaleChanged(object? sender, TextScaleChangedEventArgs args)
+    {
+        var widthRatio = TextWidthScale(args.Current) / TextWidthScale(args.Previous);
+        var heightRatio = TextHeightScale(args.Current) / TextHeightScale(args.Previous);
+        MinimumSize = new((int)Math.Ceiling(MinimumSize.Width * widthRatio), (int)Math.Ceiling(MinimumSize.Height * heightRatio));
+        ClientSize = new((int)Math.Ceiling(ClientSize.Width * widthRatio), (int)Math.Ceiling(ClientSize.Height * heightRatio));
+        UiGeometry.RescaleText(this, args.Previous, args.Current);
+        _buttonBar.Height = UiGeometry.TextLogical(64);
+        EnsureFitsWorkingArea();
+    }
+
+    private void EnsureFitsWorkingArea()
+    {
+        var area = Screen.FromControl(this).WorkingArea;
+        var maxWidth = Math.Max(420, area.Width - UiGeometry.Scale(this, 32));
+        var maxHeight = Math.Max(360, area.Height - UiGeometry.Scale(this, 32));
+        MinimumSize = new(Math.Min(MinimumSize.Width, maxWidth), Math.Min(MinimumSize.Height, maxHeight));
+        Size = new(Math.Min(Width, maxWidth), Math.Min(Height, maxHeight));
+    }
+
+    private static float TextWidthScale(float textScale) => 1f + (Math.Clamp(textScale, 1f, 2.25f) - 1f) * 0.4f;
+    private static float TextHeightScale(float textScale) => 1f + (Math.Clamp(textScale, 1f, 2.25f) - 1f) * 0.25f;
 
     [DllImport("user32.dll")]
     private static extern short GetKeyState(int virtualKey);

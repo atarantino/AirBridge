@@ -84,7 +84,12 @@ internal static class Program
             };
             var previewSettings = new AirBridge.Core.AirBridgeSettings
             {
-                ReceiverAlignmentTrimMs = new(StringComparer.Ordinal) { ["output-a"] = 60, ["output-b"] = 20 }
+                ReceiverAlignmentTrimMs = new(StringComparer.Ordinal) { ["output-a"] = 60, ["output-b"] = 20 },
+                SpeakerGroups =
+                [
+                    new("group-work", "Workday", ["output-a", "output-c"]),
+                    new("group-home", "Whole home", ["output-a", "output-b", "output-c"])
+                ]
             };
             using var settings = new SettingsForm(previewSettings, ThemePalette.Current(theme), storedApiKeyConfigured: true, apiKeyManagedByEnvironment: false, previewReceivers);
             settings.Show();
@@ -111,6 +116,30 @@ internal static class Program
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(hudPath))!);
             bitmap.Save(hudPath, System.Drawing.Imaging.ImageFormat.Png);
             hud.Close();
+            return;
+        }
+        if (args.Length >= 2 && args[0] == "--snapshot-activity")
+        {
+            var activityPath = args[1];
+            var theme = args.Length >= 3 && Enum.TryParse<AppThemeMode>(args[2], true, out var parsedTheme) ? parsedTheme : AppThemeMode.Dark;
+            var store = new AgentActivityStore();
+            var now = DateTimeOffset.Now;
+            store.Publish(new(now, AirBridge.Core.AgentActivityKind.Transcription, "Audio transcription", "gpt-4o-transcribe · 84 KB in memory", "Audio is never logged."));
+            store.Publish(new(now.AddMilliseconds(842), AirBridge.Core.AgentActivityKind.Transcription, "Transcript ready", "Text returned to the local AirBridge assistant", "Why does the media room speaker keep dropping out?", 842, AirBridge.Core.AgentActivityTone.Success));
+            store.Publish(new(now.AddMilliseconds(850), AirBridge.Core.AgentActivityKind.ApiRequest, "Responses API", "gpt-5.6 · high reasoning · turn 1", "New conversation response"));
+            store.Publish(new(now.AddSeconds(2.2), AirBridge.Core.AgentActivityKind.ApiResponse, "Responses API", "Completed · 1,284 input / 96 output tokens", "Response resp_demo_123456…", 1350, AirBridge.Core.AgentActivityTone.Success));
+            store.Publish(new(now.AddSeconds(2.3), AirBridge.Core.AgentActivityKind.ToolCall, "get_stream_health", "Tool requested by GPT-5.6", "{}"));
+            store.Publish(new(now.AddSeconds(2.31), AirBridge.Core.AgentActivityKind.Policy, "get_stream_health", "Allowed by local policy", "Allowed.", Tone: AirBridge.Core.AgentActivityTone.Success));
+            store.Publish(new(now.AddSeconds(2.32), AirBridge.Core.AgentActivityKind.ToolResult, "get_stream_health", "Local tool completed", "{\"state\":\"Streaming\",\"buffer_fill_percent\":72,\"new_underruns\":0}", 8, AirBridge.Core.AgentActivityTone.Success));
+            store.Publish(new(now.AddSeconds(3), AirBridge.Core.AgentActivityKind.AssistantResponse, "Assistant response", "Returned to AirBridge", "The stream is healthy and no new underruns were observed.", Tone: AirBridge.Core.AgentActivityTone.Success));
+            using var activity = new ActivityInspectorForm(store, ThemePalette.Current(theme));
+            activity.Show();
+            Application.DoEvents();
+            using var bitmap = new Bitmap(activity.Width, activity.Height);
+            activity.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(activityPath))!);
+            bitmap.Save(activityPath, System.Drawing.Imaging.ImageFormat.Png);
+            activity.Close();
             return;
         }
         if (args.Length >= 1 && args[0] == "--stress-flyout")

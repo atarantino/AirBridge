@@ -557,7 +557,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
         AppLog.Info("receiver", $"{ReceiverPlayback.FirstOrDefault(item => item.Receiver.Id == value.ReceiverId)?.Receiver.Name ?? "Unknown receiver"}: {value.State}{(value.Error is null ? "." : $"; {value.Error}")}");
         if (value.State == StreamState.Streaming) _pump.MarkReady(value.ReceiverId);
-        else if (value.State == StreamState.Reconnecting) _pump.MarkNotReady(value.ReceiverId);
+        else if (value.State is StreamState.Reconnecting or StreamState.Failed or StreamState.Idle) _pump.MarkNotReady(value.ReceiverId);
         var playback = ReceiverPlayback;
         if (IsResumingFromStandby && playback.Count > 0 && playback.All(item => item.State is StreamState.Streaming or StreamState.Failed))
             IsResumingFromStandby = false;

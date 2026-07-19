@@ -8,6 +8,8 @@ namespace AirBridge.App;
 internal static class UiGeometry
 {
     public static int Scale(Control control, int value) => Math.Max(1, (int)Math.Round(value * control.DeviceDpi / 96f));
+    public static int TextLogical(int value) => Math.Max(1, (int)Math.Ceiling(value * SystemTextScale.Current));
+    public static int ScaleText(Control control, int value) => Scale(control, TextLogical(value));
 
     public static GraphicsPath Rounded(Rectangle bounds, int radius)
     {
@@ -28,10 +30,11 @@ internal static class UiGeometry
 
     public static Font UiFont(float size, FontStyle style = FontStyle.Regular)
     {
-        using var candidate = new Font("Segoe UI Variable Text", size, style);
+        var scaledSize = size * SystemTextScale.Current;
+        using var candidate = new Font("Segoe UI Variable Text", scaledSize, style);
         return candidate.Name.Contains("Segoe UI Variable", StringComparison.OrdinalIgnoreCase)
-            ? new Font(candidate.FontFamily, size, style)
-            : new Font("Segoe UI", size, style);
+            ? new Font(candidate.FontFamily, scaledSize, style)
+            : new Font("Segoe UI", scaledSize, style);
     }
 
     public static Font IconFont(float size)
@@ -40,6 +43,46 @@ internal static class UiGeometry
         return candidate.Name.Equals("Segoe Fluent Icons", StringComparison.OrdinalIgnoreCase)
             ? new Font(candidate.FontFamily, size)
             : new Font("Segoe MDL2 Assets", size);
+    }
+
+    public static void RescaleText(Control root, float previous, float current)
+    {
+        if (previous <= 0 || current <= 0) return;
+        var ratio = current / previous;
+        RescaleFontsCore(root, ratio);
+        RescaleTextLayoutCore(root, ratio);
+        root.PerformLayout();
+        root.Invalidate(true);
+    }
+
+    public static void ScaleInitialTextLayout(Control root)
+    {
+        if (Math.Abs(SystemTextScale.Current - 1f) < 0.001f) return;
+        RescaleTextLayoutCore(root, SystemTextScale.Current);
+        root.PerformLayout();
+    }
+
+    private static void RescaleFontsCore(Control control, float ratio)
+    {
+        if (control.Font is { } font)
+            control.Font = new Font(font.FontFamily, Math.Max(1f, font.SizeInPoints * ratio), font.Style, GraphicsUnit.Point);
+
+        foreach (Control child in control.Controls) RescaleFontsCore(child, ratio);
+    }
+
+    private static void RescaleTextLayoutCore(Control control, float ratio)
+    {
+        if (control is TableLayoutPanel table)
+        {
+            foreach (RowStyle style in table.RowStyles)
+                if (style.SizeType == SizeType.Absolute) style.Height = Math.Max(1, style.Height * ratio);
+            foreach (ColumnStyle style in table.ColumnStyles)
+                if (style.SizeType == SizeType.Absolute) style.Width = Math.Max(1, style.Width * ratio);
+        }
+        if (control is TabControl tabs)
+            tabs.ItemSize = new(Math.Max(1, (int)Math.Ceiling(tabs.ItemSize.Width * ratio)), Math.Max(1, (int)Math.Ceiling(tabs.ItemSize.Height * ratio)));
+
+        foreach (Control child in control.Controls) RescaleTextLayoutCore(child, ratio);
     }
 }
 
@@ -53,6 +96,7 @@ internal sealed class LoadingIndicator : Control, IThemeAware
     private readonly System.Windows.Forms.Timer _animation = new() { Interval = 50 };
     private ThemePalette _palette = ThemePalette.Current();
     private int _angle;
+    private bool _active;
 
     internal LoadingIndicator()
     {
@@ -70,10 +114,24 @@ internal sealed class LoadingIndicator : Control, IThemeAware
 
     public void ApplyTheme(ThemePalette palette) { _palette = palette; Invalidate(); }
 
+    internal void SetActive(bool active)
+    {
+        _active = active;
+        if (active) _angle = 0;
+        UpdateAnimationState();
+        Invalidate();
+    }
+
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
-        _animation.Enabled = Visible;
+        UpdateAnimationState();
+    }
+
+    protected override void OnParentChanged(EventArgs e)
+    {
+        base.OnParentChanged(e);
+        UpdateAnimationState();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -116,6 +174,8 @@ internal sealed class LoadingIndicator : Control, IThemeAware
         if (disposing) _animation.Dispose();
         base.Dispose(disposing);
     }
+
+    private void UpdateAnimationState() => _animation.Enabled = _active && Parent is not null && Visible;
 }
 
 internal sealed class LetterSpacedLabel : Control, IThemeAware

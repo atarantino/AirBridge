@@ -13,6 +13,7 @@ public sealed class TrayFlyoutForm : Form
     private readonly FlowLayoutPanel _receivers = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, 4, 0, 0) };
     private readonly LoadingIndicator _receiverLoading = new();
     private readonly PillButton _toggle = new() { Text = "Start", Primary = true, Width = 92, Height = 36 };
+    private readonly PillButton _groups = new() { Text = "Groups", Quiet = true, Width = 96, Height = 36 };
     private readonly PillButton _refresh = new() { IconGlyph = "\uE72C", Quiet = true, Width = 36, Height = 36 };
     private readonly PillButton _settings = new() { IconGlyph = "\uE713", Quiet = true, Width = 36, Height = 36 };
     private readonly PillButton _quit = new() { IconGlyph = "\uE7E8", Quiet = true, Width = 36, Height = 36 };
@@ -22,6 +23,7 @@ public sealed class TrayFlyoutForm : Form
     private readonly TableLayoutPanel _root;
     private ThemePalette _palette;
     private StreamState _streamState;
+    private Rectangle? _trayWorkingArea;
 
     public TrayFlyoutForm(AppThemeMode themeMode = AppThemeMode.System)
     {
@@ -30,10 +32,11 @@ public sealed class TrayFlyoutForm : Form
         _themeMode = themeMode;
         var requested = ThemePalette.Current(themeMode);
         _palette = requested;
+        var textWidthScale = TextWidthScale(SystemTextScale.Current);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size(420, 344);
-        MinimumSize = new Size(380, 180);
-        MaximumSize = new Size(480, 600);
+        ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 344);
+        MinimumSize = new Size((int)Math.Ceiling(380 * textWidthScale), 180);
+        MaximumSize = new Size((int)Math.Ceiling(480 * textWidthScale), 600);
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -47,14 +50,18 @@ public sealed class TrayFlyoutForm : Form
         _status.Font = UiGeometry.UiFont(10F, FontStyle.Bold);
         _status.AccessibleName = "Streaming status";
         _toggle.AccessibleName = "Start selected speakers";
+        _groups.AccessibleName = "Choose a speaker group";
+        _groups.AccessibleDescription = "Choose a saved speaker group or manage groups in Settings.";
         _refresh.AccessibleName = "Refresh speakers";
         _settings.AccessibleName = "Open settings";
         _quit.AccessibleName = "Quit AirBridge";
         _quit.AccessibleDescription = "Stop AirBridge and close the application.";
         _toolTip.SetToolTip(_refresh, "Refresh speakers");
+        _toolTip.SetToolTip(_groups, "Speaker groups");
         _toolTip.SetToolTip(_settings, "Settings");
         _toolTip.SetToolTip(_quit, "Quit AirBridge");
         _toggle.GrayscaleText = true;
+        _groups.GrayscaleText = true;
         _refresh.GrayscaleText = true;
         _settings.GrayscaleText = true;
         _quit.GrayscaleText = true;
@@ -71,7 +78,7 @@ public sealed class TrayFlyoutForm : Form
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var quiet = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty };
-        quiet.Controls.AddRange([_refresh, _settings, _quit]);
+        quiet.Controls.AddRange([_groups, _refresh, _settings, _quit]);
         actions.Controls.Add(_toggle, 0, 0);
         actions.Controls.Add(quiet, 2, 0);
 
@@ -92,6 +99,7 @@ public sealed class TrayFlyoutForm : Form
             else StopRequested?.Invoke(this, EventArgs.Empty);
         };
         _refresh.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
+        _groups.Click += (_, _) => GroupsRequested?.Invoke(this, EventArgs.Empty);
         _settings.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _quit.Click += (_, _) => QuitRequested?.Invoke(this, EventArgs.Empty);
         KeyDown += (_, args) => { if (args.KeyCode == Keys.Escape) Hide(); };
@@ -99,6 +107,9 @@ public sealed class TrayFlyoutForm : Form
         _receivers.Layout += (_, _) => ResizeRows();
         _receivers.ClientSizeChanged += (_, _) => ResizeRows();
         Shown += (_, _) => WindowEffects.TryEnableRoundedCorners(this);
+        SystemTextScale.Changed += OnTextScaleChanged;
+        UiGeometry.ScaleInitialTextLayout(this);
+        UpdateTextSizedControls();
         ApplyTheme(_palette);
         UpdateStatus(StreamState.Idle, "Not streaming", "System audio");
     }
@@ -106,6 +117,7 @@ public sealed class TrayFlyoutForm : Form
     public event EventHandler? StartSystemRequested;
     public event EventHandler? StopRequested;
     public event EventHandler? RefreshRequested;
+    public event EventHandler? GroupsRequested;
     public event EventHandler? SettingsRequested;
     public event EventHandler? QuitRequested;
     public event EventHandler<ReceiverSelectionChangedEventArgs>? ReceiverSelectionChanged;
@@ -165,10 +177,12 @@ public sealed class TrayFlyoutForm : Form
             _receiverLoading.ApplyTheme(_palette);
             if (!_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Add(_receiverLoading);
             _receivers.Controls.SetChildIndex(_receiverLoading, 0);
+            _receiverLoading.SetActive(true);
         }
-        else if (_receivers.Controls.Contains(_receiverLoading))
+        else
         {
-            _receivers.Controls.Remove(_receiverLoading);
+            _receiverLoading.SetActive(false);
+            if (_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Remove(_receiverLoading);
         }
         ResizeRows();
     }
@@ -204,6 +218,7 @@ public sealed class TrayFlyoutForm : Form
         _palette = palette;
         _palette.Apply(this);
         _toggle.ApplyTheme(_palette);
+        _groups.ApplyTheme(_palette);
         _refresh.ApplyTheme(_palette);
         _settings.ApplyTheme(_palette);
         _quit.ApplyTheme(_palette);
@@ -216,10 +231,8 @@ public sealed class TrayFlyoutForm : Form
 
     public void ShowNearTrayIcon()
     {
-        var workingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
-        var x = Math.Clamp(workingArea.Right - Width - 8, workingArea.Left, workingArea.Right - Width);
-        var y = Math.Clamp(workingArea.Bottom - Height - 8, workingArea.Top, workingArea.Bottom - Height);
-        Location = new Point(x, y);
+        _trayWorkingArea = Screen.FromPoint(Cursor.Position).WorkingArea;
+        RepositionToTrayAnchor();
         Show();
         ReflowReceiverRows();
         Activate();
@@ -256,13 +269,18 @@ public sealed class TrayFlyoutForm : Form
     {
         base.WndProc(ref message);
         if (message.Msg == WmSettingChange && IsHandleCreated && !IsDisposed)
-            BeginInvoke(() => ApplyTheme(ThemePalette.Current(_themeMode)));
+            BeginInvoke(() =>
+            {
+                SystemTextScale.Refresh();
+                ApplyTheme(ThemePalette.Current(_themeMode));
+            });
     }
 
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            SystemTextScale.Changed -= OnTextScaleChanged;
             _toolTip.Dispose();
             _receiverLoading.Dispose();
         }
@@ -285,6 +303,38 @@ public sealed class TrayFlyoutForm : Form
 
     private bool IsGlobalStreamActive => _streamState is not StreamState.Idle and not StreamState.Failed;
 
+    private void OnTextScaleChanged(object? sender, TextScaleChangedEventArgs args)
+    {
+        var widthRatio = TextWidthScale(args.Current) / TextWidthScale(args.Previous);
+        MinimumSize = new((int)Math.Ceiling(MinimumSize.Width * widthRatio), MinimumSize.Height);
+        MaximumSize = new((int)Math.Ceiling(MaximumSize.Width * widthRatio), MaximumSize.Height);
+        ClientSize = new((int)Math.Ceiling(ClientSize.Width * widthRatio), ClientSize.Height);
+        UiGeometry.RescaleText(this, args.Previous, args.Current);
+        UpdateTextSizedControls();
+        foreach (var row in _rows.Values) row.ApplyTextScale();
+        UpdateContentHeight();
+        RepositionToTrayAnchor();
+    }
+
+    private void UpdateTextSizedControls()
+    {
+        var maximum = Math.Max(UiGeometry.Scale(this, 110), ClientSize.Width / 3);
+        _toggle.Width = Math.Min(maximum, Math.Max(UiGeometry.Scale(this, 92), TextRenderer.MeasureText(_toggle.Text, _toggle.Font).Width + UiGeometry.Scale(this, 24)));
+        _groups.Width = Math.Min(maximum, Math.Max(UiGeometry.Scale(this, 96), TextRenderer.MeasureText(_groups.Text, _groups.Font).Width + UiGeometry.Scale(this, 24)));
+    }
+
+    private static float TextWidthScale(float textScale) => 1f + (Math.Min(2.25f, Math.Max(1f, textScale)) - 1f) * 0.4f;
+
+    public void UpdateGroups(string? selectedName, int count)
+    {
+        _groups.Text = string.IsNullOrWhiteSpace(selectedName) ? "Groups" : selectedName;
+        _groups.AccessibleDescription = selectedName is null
+            ? $"Choose from {count} saved speaker groups or manage groups in Settings."
+            : $"{selectedName} is selected. Choose another saved group or manage groups in Settings.";
+        _toolTip.SetToolTip(_groups, selectedName is null ? $"Speaker groups ({count})" : $"Selected group: {selectedName}");
+        UpdateTextSizedControls();
+    }
+
     private void UpdateContentHeight()
     {
         _receivers.AutoScroll = _rows.Count > 6;
@@ -294,6 +344,16 @@ public sealed class TrayFlyoutForm : Form
             .Sum(style => (int)Math.Ceiling(style.Height));
         var desired = Padding.Vertical + chromeHeight + _receivers.Padding.Vertical + rowsHeight;
         ClientSize = new Size(ClientSize.Width, Math.Min(MaximumSize.Height, Math.Max(MinimumSize.Height, desired)));
+        if (Visible) RepositionToTrayAnchor();
+    }
+
+    private void RepositionToTrayAnchor()
+    {
+        var workingArea = _trayWorkingArea ?? Screen.FromRectangle(Bounds).WorkingArea;
+        var margin = UiGeometry.Scale(this, 8);
+        var x = Math.Clamp(workingArea.Right - Width - margin, workingArea.Left, workingArea.Right - Width);
+        var y = Math.Clamp(workingArea.Bottom - Height - margin, workingArea.Top, workingArea.Bottom - Height);
+        Location = new Point(x, y);
     }
 
 }

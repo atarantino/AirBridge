@@ -13,3 +13,7 @@ The confirmation-required `measure_acoustic_delay` tool targets one already-stre
 The diagnosis prompt requires observe → classify → gather → explain → act → verify. A buffer change records the pre-change underrun counter. A later health read waits for the ten-second measurement window when needed, compares fresh counters, and marks the fix verified only when no new underrun occurred and the stream remained in `Streaming`. This makes verification deterministic rather than a prose convention.
 
 Persistent tools require explicit confirmation and are rejected without it. Streaming remains completely functional when no API key or OpenAI connection is available.
+
+## Activity Inspector
+
+The AI Activity Inspector observes the explicit boundaries around transcription, Responses API turns, policy evaluation, local tool execution, and assistant output. It uses a bounded 250-event in-memory store and does not scrape or tail the runtime log. Each event is sanitized before it enters the store, and copied JSON respects the transcript-visibility control. Raw microphone audio, authorization headers, full credentials, network addresses, hardware identifiers, and pipe names are never inspector fields.

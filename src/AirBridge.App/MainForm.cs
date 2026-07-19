@@ -7,8 +7,10 @@ public sealed class MainForm : Form
 {
     private const int HotkeyId = 0xA17B;
     private const int WmHotkey = 0x0312;
+    private const int WmSettingChange = 0x001A;
     private readonly AirBridgeController _controller = new();
     private readonly PushToTalkRecorder _recorder = new();
+    private readonly AgentActivityStore _activityStore = new();
     private readonly SettingsStore _settingsStore = new();
     private readonly IOpenAiCredentialStore _openAiCredentials = new WindowsOpenAiCredentialStore();
     private readonly SegmentedControl _sourceMode = new() { Width = 156, Height = 36 };
@@ -51,6 +53,7 @@ public sealed class MainForm : Form
     private AirBridgeSettings _settings;
     private ThemePalette _palette;
     private OpenAiAgent? _agent;
+    private ActivityInspectorForm? _activityInspector;
     private Icon? _ownedTrayIcon;
     private StreamState? _trayIconState;
     private StreamState _lastDisplayedState = StreamState.Idle;
@@ -87,12 +90,14 @@ public sealed class MainForm : Form
 
         Text = "AirBridge for Windows";
         AutoScaleMode = AutoScaleMode.Dpi;
+        Font = UiGeometry.UiFont(9F);
         ClientSize = new Size(920, 860);
         MinimumSize = new Size(720, 650);
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = previewMode;
         Opacity = previewMode ? 1D : 0D;
         BuildLayout();
+        UiGeometry.ScaleInitialTextLayout(this);
         BuildTraySurface();
         _tray.Visible = !previewMode;
         WireEvents();
@@ -107,6 +112,7 @@ public sealed class MainForm : Form
             await InitializeAsync();
         };
         FormClosing += OnFormClosing;
+        SystemTextScale.Changed += OnTextScaleChanged;
         if (!previewMode)
         {
             var (modifiers, virtualKey) = _hotkeyGesture.ToRegisterHotKeyArgs();
@@ -137,6 +143,7 @@ public sealed class MainForm : Form
         _trayFlyout.StartSystemRequested += async (_, _) => await StartSelectedAsync();
         _trayFlyout.StopRequested += async (_, _) => await RunUiActionAsync(() => _controller.StopAsync());
         _trayFlyout.RefreshRequested += async (_, _) => await RunUiActionAsync(RefreshReceiversAsync);
+        _trayFlyout.GroupsRequested += (_, _) => ShowGroupsMenu();
         _trayFlyout.SettingsRequested += (_, _) => ShowSettingsDialog();
         _trayFlyout.QuitRequested += (_, _) => RequestQuit();
         _trayFlyout.ReceiverSelectionChanged += (_, args) => SetReceiverSelected(args.ReceiverId, args.Selected);
@@ -224,9 +231,9 @@ public sealed class MainForm : Form
         _refreshButton.AccessibleName = "Refresh speakers";
         _refreshButton.AccessibleDescription = "Refresh the available AirPlay speakers.";
         _refreshButton.Click += async (_, _) => await RunUiActionAsync(RefreshReceiversAsync);
-        _groupsButton.Click += (_, _) => ShowGroupsMenu();
+        _groupsButton.Click += (_, _) => ShowGroupsMenu(_groupsButton);
         _groupsButton.AccessibleName = "Speaker groups";
-        _groupsButton.AccessibleDescription = "Choose, save, or delete a speaker group.";
+        _groupsButton.AccessibleDescription = "Choose a saved speaker group or manage groups in Settings.";
 
         var heading = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 1, Padding = new Padding(12, 9, 12, 6) };
         var titleRow = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 2 };
@@ -256,6 +263,7 @@ public sealed class MainForm : Form
         _diagnosticsMenu.Items.Add("Align selected group", null, async (_, _) => await AlignSelectedGroupAsync());
         _diagnosticsMenu.Items.Add(BuildSilenceStandbyMenu());
         _diagnosticsMenu.Items.Add(new ToolStripSeparator());
+        _diagnosticsMenu.Items.Add("AI activity inspector", null, (_, _) => ShowActivityInspector());
         _diagnosticsMenu.Items.Add("Open logs folder", null, (_, _) => OpenLogsFolder());
         overflow.Click += (_, _) => _diagnosticsMenu.Show(overflow, new Point(0, overflow.Height));
         var metricsRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty };
@@ -342,7 +350,7 @@ public sealed class MainForm : Form
             RefreshSessions();
             RefreshGroups();
             var apiKey = ResolveOpenAiApiKey();
-            if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller);
+            if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller, activity: _activityStore);
             else AppendConversation("System", "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
         });
     }
@@ -386,10 +394,12 @@ public sealed class MainForm : Form
             _receiverLoading.ApplyTheme(_palette);
             if (!_receiverPanel.Controls.Contains(_receiverLoading)) _receiverPanel.Controls.Add(_receiverLoading);
             _receiverPanel.Controls.SetChildIndex(_receiverLoading, 0);
+            _receiverLoading.SetActive(true);
         }
-        else if (_receiverPanel.Controls.Contains(_receiverLoading))
+        else
         {
-            _receiverPanel.Controls.Remove(_receiverLoading);
+            _receiverLoading.SetActive(false);
+            if (_receiverPanel.Controls.Contains(_receiverLoading)) _receiverPanel.Controls.Remove(_receiverLoading);
         }
     }
 
@@ -449,25 +459,29 @@ public sealed class MainForm : Form
         _groups.DataSource = null;
         _groups.DataSource = _settings.SpeakerGroups.ToList();
         _groups.DisplayMember = nameof(SpeakerGroup.Name);
-        _groupsButton.Text = _settings.SpeakerGroups.Count == 0 ? "Groups  ▾" : $"Groups ({_settings.SpeakerGroups.Count})  ▾";
+        var selected = _settings.SpeakerGroups.FirstOrDefault(group =>
+            group.ReceiverIds.ToHashSet(StringComparer.Ordinal).SetEquals(_selectedReceiverIds));
+        _groupsButton.Text = selected is null ? "Groups  ▾" : $"{selected.Name}  ▾";
+        _trayFlyout.UpdateGroups(selected?.Name, _settings.SpeakerGroups.Count);
     }
 
-    private void ShowGroupsMenu()
+    private void ShowGroupsMenu(Control? anchor = null)
     {
         _groupsMenu.Items.Clear();
         if (_settings.SpeakerGroups.Count == 0) _groupsMenu.Items.Add(new ToolStripMenuItem("No saved groups") { Enabled = false });
         foreach (var group in _settings.SpeakerGroups)
         {
-            var item = new ToolStripMenuItem(group.Name);
+            var item = new ToolStripMenuItem(group.Name)
+            {
+                Checked = group.ReceiverIds.ToHashSet(StringComparer.Ordinal).SetEquals(_selectedReceiverIds)
+            };
             item.Click += (_, _) => { _groups.SelectedItem = group; ApplySelectedGroup(); };
             _groupsMenu.Items.Add(item);
         }
         _groupsMenu.Items.Add(new ToolStripSeparator());
-        _groupsMenu.Items.Add("Save current selection…", null, (_, _) => SaveCurrentGroup());
-        var delete = new ToolStripMenuItem("Delete selected group") { Enabled = _groups.SelectedItem is SpeakerGroup };
-        delete.Click += (_, _) => DeleteSelectedGroup();
-        _groupsMenu.Items.Add(delete);
-        _groupsMenu.Show(_groupsButton, new Point(0, _groupsButton.Height));
+        _groupsMenu.Items.Add("Manage groups…", null, (_, _) => ShowSettingsDialog("Groups"));
+        if (anchor is null) _groupsMenu.Show(Cursor.Position);
+        else _groupsMenu.Show(anchor, new Point(0, anchor.Height));
     }
 
     private async Task StartSelectedAsync()
@@ -514,6 +528,7 @@ public sealed class MainForm : Form
         _trayFlyout.UpdateReceiver(receiverId, GetReceiverState(receiverId), selected: selected);
         UpdateDashboardPresentation(IsDashboardStreamActive);
         PersistUiSettings();
+        RefreshGroups();
     }
 
     private async Task ChangeReceiverVolumeAsync(string receiverId, int volume)
@@ -535,47 +550,7 @@ public sealed class MainForm : Form
         foreach (var receiver in _controller.Receivers) _trayFlyout.UpdateReceiver(receiver.Id, GetReceiverState(receiver.Id), selected: _selectedReceiverIds.Contains(receiver.Id));
         UpdateDashboardPresentation(IsDashboardStreamActive);
         PersistUiSettings();
-    }
-
-    private void SaveCurrentGroup()
-    {
-        if (_selectedReceiverIds.Count == 0) { AppendConversation("System", "Select speakers before saving a group."); return; }
-        var name = PromptForGroupName();
-        if (string.IsNullOrWhiteSpace(name)) return;
-        var groups = _settings.SpeakerGroups.ToList();
-        var existing = groups.FindIndex(item => item.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
-        var group = new SpeakerGroup(existing >= 0 ? groups[existing].Id : $"group-{Guid.NewGuid():N}", name.Trim(), _selectedReceiverIds.ToArray());
-        if (existing >= 0) groups[existing] = group; else groups.Add(group);
-        _settings = _settings with { SpeakerGroups = groups };
-        PersistUiSettings();
         RefreshGroups();
-        _groups.SelectedItem = group;
-    }
-
-    private void DeleteSelectedGroup()
-    {
-        if (_groups.SelectedItem is not SpeakerGroup selected) return;
-        _settings = _settings with { SpeakerGroups = _settings.SpeakerGroups.Where(item => item.Id != selected.Id).ToArray() };
-        PersistUiSettings();
-        RefreshGroups();
-    }
-
-    private string? PromptForGroupName()
-    {
-        using var dialog = new Form { Text = "Save speaker group", Width = 390, Height = 165, StartPosition = FormStartPosition.CenterParent, FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
-        var name = new TextBox { Dock = DockStyle.Top, PlaceholderText = "Group name", Margin = new Padding(12) };
-        var save = new Button { Text = "Save", DialogResult = DialogResult.OK, AutoSize = true };
-        var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
-        var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(8) };
-        buttons.Controls.AddRange([save, cancel]);
-        var content = new Panel { Dock = DockStyle.Fill, Padding = new Padding(12) };
-        content.Controls.Add(name);
-        dialog.Controls.Add(content);
-        dialog.Controls.Add(buttons);
-        dialog.AcceptButton = save;
-        dialog.CancelButton = cancel;
-        _palette.Apply(dialog);
-        return dialog.ShowDialog(this) == DialogResult.OK ? name.Text : null;
     }
 
     private void RebuildTrayMenu()
@@ -584,50 +559,10 @@ public sealed class MainForm : Form
         var route = _controller.Coordinator.Route;
         var summary = new ToolStripMenuItem(route.StreamId is null ? "AirBridge — idle" : $"● {route.State}: {route.ReceiverName}") { Enabled = false };
         _trayMenu.Items.Add(summary);
-        if (route.StartedUtc is { } started) _trayMenu.Items.Add(new ToolStripMenuItem($"{route.Mode} · {FormatDuration(DateTimeOffset.UtcNow - started)}") { Enabled = false });
         _trayMenu.Items.Add(new ToolStripSeparator());
-        _trayMenu.Items.Add("Start selected speakers", null, async (_, _) => await StartSelectedAsync());
-        if (route.StreamId is not null) _trayMenu.Items.Add("Stop all", null, async (_, _) => await RunUiActionAsync(() => _controller.StopAsync()));
-
-        var speakers = new ToolStripMenuItem("Speakers");
-        var active = _controller.ReceiverPlayback.ToDictionary(item => item.Receiver.Id, StringComparer.Ordinal);
-        foreach (var receiver in _controller.Receivers)
-        {
-            var item = new ToolStripMenuItem(receiver.Name) { Checked = active.ContainsKey(receiver.Id), CheckOnClick = false };
-            item.Click += async (_, _) =>
-            {
-                if (_controller.ReceiverPlayback.Any(value => value.Receiver.Id == receiver.Id)) await RunUiActionAsync(() => _controller.StopReceiverAsync(receiver.Id));
-                else await ConnectReceiverAsync(receiver.Id);
-            };
-            if (active.TryGetValue(receiver.Id, out var playback))
-            {
-                item.ToolTipText = playback.State.ToString();
-                item.DropDownItems.Add(new ToolStripMenuItem($"Status: {playback.State}") { Enabled = false });
-                var volume = new ToolStripMenuItem($"Volume: {playback.Volume}%");
-                foreach (var value in new[] { 0, 25, 50, 75, 100 }) volume.DropDownItems.Add($"{value}%", null, async (_, _) => await ChangeReceiverVolumeAsync(receiver.Id, value));
-                item.DropDownItems.Add(volume);
-                item.DropDownItems.Add("Stop", null, async (_, _) => await RunUiActionAsync(() => _controller.StopReceiverAsync(receiver.Id)));
-            }
-            speakers.DropDownItems.Add(item);
-        }
-        _trayMenu.Items.Add(speakers);
-
-        if (_settings.SpeakerGroups.Count > 0)
-        {
-            var groups = new ToolStripMenuItem("Groups");
-            foreach (var group in _settings.SpeakerGroups)
-                groups.DropDownItems.Add(group.Name, null, async (_, _) => { _groups.SelectedItem = group; ApplySelectedGroup(); await StartSelectedAsync(); });
-            _trayMenu.Items.Add(groups);
-        }
-
-        var applications = new ToolStripMenuItem("Stream an application");
-        foreach (var session in WasapiCaptureService.ListSessions().Where(item => item.IsPlaying).Take(12))
-            applications.DropDownItems.Add(session.Application, null, async (_, _) => { _sourceMode.SelectedIndex = 1; _sessions.SelectedItem = session; await StartSelectedAsync(); });
-        if (applications.DropDownItems.Count == 0) applications.DropDownItems.Add(new ToolStripMenuItem("No active audio applications") { Enabled = false });
-        _trayMenu.Items.Add(applications);
+        if (route.StreamId is null) _trayMenu.Items.Add("Start selected speakers", null, async (_, _) => await StartSelectedAsync());
+        else _trayMenu.Items.Add("Stop all speakers", null, async (_, _) => await RunUiActionAsync(() => _controller.StopAsync()));
         _trayMenu.Items.Add(new ToolStripSeparator());
-        _trayMenu.Items.Add("Measure delay", null, async (_, _) => await MeasureSelectedDelayAsync());
-        _trayMenu.Items.Add("Refresh speakers", null, async (_, _) => await RunUiActionAsync(RefreshReceiversAsync));
         _trayMenu.Items.Add("Settings", null, (_, _) => ShowSettingsDialog());
         _trayMenu.Items.Add(new ToolStripSeparator());
         _trayMenu.Items.Add("Quit", null, (_, _) => RequestQuit());
@@ -748,7 +683,7 @@ public sealed class MainForm : Form
         if (!_previewMode) _voiceHud.ShowTranscribing();
         try
         {
-            var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token);
+            var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token, _activityStore);
             if (!_previewMode) _voiceHud.HideHud();
             await AskAsync(text);
         }
@@ -963,6 +898,7 @@ public sealed class MainForm : Form
         ApplyThemedControls(_root);
         _trayFlyout.ApplyTheme(_palette);
         _voiceHud.ApplyTheme(_palette);
+        _activityInspector?.ApplyTheme(_palette);
         foreach (var row in _receiverRows.Values) row.ApplyTheme(_palette);
         _conversation.BackColor = _palette.Surface;
         _conversation.ForeColor = _palette.Text;
@@ -972,7 +908,7 @@ public sealed class MainForm : Form
         _idleTelemetryHint.ForeColor = _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText;
     }
 
-    private void ShowSettingsDialog()
+    private void ShowSettingsDialog(string? initialTab = null)
     {
         _trayFlyout.Hide();
         var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
@@ -984,8 +920,9 @@ public sealed class MainForm : Form
             MessageBox.Show(this, ex.Message, "AirBridge settings", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
-        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers);
+        using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey), _controller.Receivers, initialTab);
         dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
+        dialog.OpenActivityInspectorRequested += (_, _) => ShowActivityInspector();
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
         var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
         if (result != DialogResult.OK) return;
@@ -1013,6 +950,7 @@ public sealed class MainForm : Form
             PushToTalkShortcut = dialog.PushToTalkShortcut,
             PushToTalkHoldThresholdMs = dialog.PushToTalkHoldThresholdMs,
             ReceiverAlignmentTrimMs = alignmentTrims,
+            SpeakerGroups = dialog.SpeakerGroups,
             AiEnabled = dialog.AiEnabled
         };
         var previousGesture = _hotkeyGesture;
@@ -1040,6 +978,7 @@ public sealed class MainForm : Form
         _settings = next;
         _settingsStore.Save(_settings);
         _controller.ConfigureSettings(_settings);
+        RefreshGroups();
         _sourceMode.SelectedIndex = _settings.DefaultCaptureMode == CaptureMode.ProcessTreeInclude ? 1 : 0;
 
         var themeMode = ParseTheme(_settings.ThemeMode);
@@ -1049,7 +988,7 @@ public sealed class MainForm : Form
 
         var apiKey = ResolveOpenAiApiKey();
         _agent = _settings.AiEnabled && !string.IsNullOrWhiteSpace(apiKey)
-            ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller)
+            ? new OpenAiAgent(apiKey, new AgentPolicy(), _controller, activity: _activityStore)
             : null;
         UpdateTelemetry();
     }
@@ -1072,6 +1011,21 @@ public sealed class MainForm : Form
         {
             UseShellExecute = true
         });
+    }
+
+    private void ShowActivityInspector()
+    {
+        if (_activityInspector is { IsDisposed: false })
+        {
+            if (_activityInspector.WindowState == FormWindowState.Minimized) _activityInspector.WindowState = FormWindowState.Normal;
+            _activityInspector.Show();
+            _activityInspector.BringToFront();
+            _activityInspector.Activate();
+            return;
+        }
+        _activityInspector = new ActivityInspectorForm(_activityStore, _palette);
+        _activityInspector.FormClosed += (_, _) => _activityInspector = null;
+        _activityInspector.Show();
     }
 
     private void ReplaceTrayIcon(StreamState state)
@@ -1231,6 +1185,8 @@ public sealed class MainForm : Form
             BeginHotkeyGesture();
         }
         base.WndProc(ref m);
+        if (m.Msg == WmSettingChange && IsHandleCreated && !IsDisposed)
+            BeginInvoke(SystemTextScale.Refresh);
     }
 
     private void OnFormClosing(object? sender, FormClosingEventArgs args)
@@ -1290,6 +1246,7 @@ public sealed class MainForm : Form
     {
         if (_uiResourcesDisposed) return;
         _uiResourcesDisposed = true;
+        SystemTextScale.Changed -= OnTextScaleChanged;
         _shutdownWatchdog?.Dispose();
         _shutdownWatchdog = null;
         _timer.Stop();
@@ -1297,6 +1254,9 @@ public sealed class MainForm : Form
         _tray.Visible = false;
         _trayFlyout.Close();
         _trayFlyout.Dispose();
+        _activityInspector?.Close();
+        _activityInspector?.Dispose();
+        _activityInspector = null;
         _voiceHud.Close();
         _voiceHud.Dispose();
         _ownedTrayIcon?.Dispose();
@@ -1311,6 +1271,13 @@ public sealed class MainForm : Form
         _transcriptionCancellation?.Cancel();
         _transcriptionCancellation?.Dispose();
         _transcriptionCancellation = null;
+    }
+
+    private void OnTextScaleChanged(object? sender, TextScaleChangedEventArgs args)
+    {
+        UiGeometry.RescaleText(this, args.Previous, args.Current);
+        foreach (var row in _receiverRows.Values) row.ApplyTextScale();
+        ResizeReceiverRows();
     }
 
     [DllImport("user32.dll")] private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint modifiers, uint virtualKey);

@@ -80,8 +80,10 @@ public sealed class SharedAudioPumpTests
         var buffer = BufferWithBlocks(0x55, 2);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 10);
-        pump.BeginGroup(["receiver"]);
+        pump.AddLeg("sibling", BufferWithBlocks(0x66, 2), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
         pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
 
         await pump.PumpOnceAsync();
 
@@ -93,12 +95,12 @@ public sealed class SharedAudioPumpTests
     }
 
     [Fact]
-    public async Task OneLegGateOpensOnFirstIterationAfterReady()
+    public async Task OneLegGateOpensWithoutItsSavedAlignmentDelay()
     {
         var pump = new SharedAudioPump();
         var buffer = BufferWithBlocks(0x6A, 1);
         var endpoint = new FakeEndpoint("solo");
-        pump.AddLeg("solo", buffer, endpoint, 0);
+        pump.AddLeg("solo", buffer, endpoint, 60);
         pump.BeginGroup(["solo"]);
         pump.MarkReady("solo");
 
@@ -106,6 +108,38 @@ public sealed class SharedAudioPumpTests
 
         Assert.Single(endpoint.Writes);
         Assert.All(endpoint.Writes[0], value => Assert.Equal(0x6A, value));
+    }
+
+    [Fact]
+    public async Task SavedAlignmentDelayActivatesOnJoinAndIsRemovedWhenRouteReturnsToOneLeg()
+    {
+        var pump = new SharedAudioPump();
+        var buffer = BufferWithBlocks(0x5A, 3);
+        var endpoint = new FakeEndpoint("first");
+        pump.AddLeg("first", buffer, endpoint, 10);
+        pump.BeginGroup(["first"]);
+        pump.MarkReady("first");
+        await pump.PumpOnceAsync();
+        Assert.All(endpoint.Writes[0], value => Assert.Equal(0x5A, value));
+
+        pump.AddLeg("second", BufferWithBlocks(0x33, 3), new FakeEndpoint("second"), 0);
+        buffer.Write(Enumerable.Repeat((byte)0x5A, SharedAudioPump.BlockBytes).ToArray());
+        await pump.PumpOnceAsync();
+        Assert.All(endpoint.Writes[1], value => Assert.Equal(0x5A, value));
+
+        buffer.Write(Enumerable.Repeat((byte)0x5A, SharedAudioPump.BlockBytes).ToArray());
+        pump.MarkReady("second");
+        await pump.PumpOnceAsync();
+        var silenceBytes = ReceiverAlignmentPlan.ToPcmByteCount(10);
+        Assert.All(endpoint.Writes[2][..silenceBytes], value => Assert.Equal(0, value));
+        Assert.All(endpoint.Writes[2][silenceBytes..], value => Assert.Equal(0x5A, value));
+
+        pump.RemoveLeg("second");
+        buffer.Clear();
+        buffer.Write(Enumerable.Repeat((byte)0x7C, SharedAudioPump.BlockBytes * 2).ToArray());
+        await pump.PumpOnceAsync();
+        Assert.All(endpoint.Writes[3], value => Assert.Equal(0x7C, value));
+        Assert.Equal(10, pump.GetAlignmentTrim("first"));
     }
 
     [Fact]
@@ -145,8 +179,10 @@ public sealed class SharedAudioPumpTests
         var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 0);
-        pump.BeginGroup(["receiver"]);
+        pump.AddLeg("sibling", BufferWithBlocks(0x30, 8), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
         pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
         buffer.Write(Enumerable.Repeat((byte)0x10, SharedAudioPump.BlockBytes * 2).ToArray());
         await pump.PumpOnceAsync();
 
@@ -169,8 +205,10 @@ public sealed class SharedAudioPumpTests
         var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 10);
-        pump.BeginGroup(["receiver"]);
+        pump.AddLeg("sibling", BufferWithBlocks(0x20, 8), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
         pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
         buffer.Write(Enumerable.Repeat((byte)0x10, SharedAudioPump.BlockBytes).ToArray());
         await pump.PumpOnceAsync();
 
@@ -184,6 +222,7 @@ public sealed class SharedAudioPumpTests
         buffer.Write(Enumerable.Repeat((byte)0x44, SharedAudioPump.BlockBytes).ToArray());
         buffer.Write(Enumerable.Repeat((byte)0x77, SharedAudioPump.BlockBytes).ToArray());
         pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
         await pump.PumpOnceAsync();
 
         Assert.Equal(2, endpoint.Writes.Count);
@@ -235,8 +274,10 @@ public sealed class SharedAudioPumpTests
         var buffer = BufferWithBlocks(0x10, 1);
         var endpoint = new FakeEndpoint("receiver");
         pump.AddLeg("receiver", buffer, endpoint, 0);
-        pump.BeginGroup(["receiver"]);
+        pump.AddLeg("sibling", BufferWithBlocks(0x20, 4), new FakeEndpoint("sibling"), 0);
+        pump.BeginGroup(["receiver", "sibling"]);
         pump.MarkReady("receiver");
+        pump.MarkReady("sibling");
         await pump.PumpOnceAsync();
 
         pump.MarkNotReady("receiver");

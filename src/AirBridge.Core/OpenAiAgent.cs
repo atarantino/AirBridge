@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
@@ -10,14 +11,16 @@ public sealed class OpenAiAgent
     private readonly HttpClient _http;
     private readonly AgentPolicy _policy;
     private readonly IAgentToolRuntime _runtime;
+    private readonly IAgentActivitySink? _activity;
     private readonly ToolConfirmationStore _pendingConfirmations = new();
     private string? _previousResponseId;
 
-    public OpenAiAgent(string apiKey, AgentPolicy policy, IAgentToolRuntime runtime, HttpClient? httpClient = null)
+    public OpenAiAgent(string apiKey, AgentPolicy policy, IAgentToolRuntime runtime, HttpClient? httpClient = null, IAgentActivitySink? activity = null)
     {
         if (string.IsNullOrWhiteSpace(apiKey)) throw new ArgumentException("An OpenAI API key is required.", nameof(apiKey));
         _policy = policy;
         _runtime = runtime;
+        _activity = activity;
         _http = httpClient ?? new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
     }
@@ -29,38 +32,75 @@ public sealed class OpenAiAgent
         object input = userText;
         for (var turn = 0; turn < 8; turn++)
         {
+            var reasoningEffort = diagnostic ? "high" : "low";
             var payload = new Dictionary<string, object?>
             {
                 ["model"] = Model,
                 ["instructions"] = Instructions,
                 ["input"] = input,
                 ["tools"] = ToolDefinitions,
-                ["reasoning"] = new { effort = diagnostic ? "high" : "low" },
+                ["reasoning"] = new { effort = reasoningEffort },
                 ["max_output_tokens"] = 4000,
                 ["store"] = true
             };
             if (_previousResponseId is not null) payload["previous_response_id"] = _previousResponseId;
 
+            Publish(AgentActivityKind.ApiRequest, "Responses API", $"{Model} · {reasoningEffort} reasoning · turn {turn + 1}",
+                _previousResponseId is null ? "New conversation response" : $"Continues {ShortId(_previousResponseId)}");
+            var requestTimer = Stopwatch.StartNew();
             using var response = await _http.PostAsync("v1/responses", new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), cancellationToken);
             var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-            if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"OpenAI returned {(int)response.StatusCode}: {ReadError(raw)}");
+            requestTimer.Stop();
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = ReadError(raw);
+                Publish(AgentActivityKind.Error, "Responses API failed", $"HTTP {(int)response.StatusCode}", error, requestTimer.ElapsedMilliseconds, AgentActivityTone.Error);
+                throw new InvalidOperationException($"OpenAI returned {(int)response.StatusCode}: {error}");
+            }
             using var document = JsonDocument.Parse(raw);
             var root = document.RootElement;
             _previousResponseId = root.GetProperty("id").GetString();
+            Publish(AgentActivityKind.ApiResponse, "Responses API", ResponseSummary(root),
+                $"Response {ShortId(_previousResponseId)}", requestTimer.ElapsedMilliseconds, AgentActivityTone.Success);
             var calls = ReadFunctionCalls(root).ToArray();
-            if (calls.Length == 0) return ReadOutputText(root) ?? "The agent returned no text.";
+            if (calls.Length == 0)
+            {
+                var text = ReadOutputText(root) ?? "The agent returned no text.";
+                Publish(AgentActivityKind.AssistantResponse, "Assistant response", "Returned to AirBridge", text, tone: AgentActivityTone.Success);
+                return text;
+            }
 
             var outputs = new List<object>();
             foreach (var call in calls)
             {
                 using var argsDocument = JsonDocument.Parse(call.Arguments);
+                Publish(AgentActivityKind.ToolCall, call.Name, "Tool requested by GPT-5.6", call.Arguments);
                 var userConfirmed = directMicrophoneAuthorization.TryConsume(call.Name) ||
                     (confirmsPending && _pendingConfirmations.TryConsume(call.Name, argsDocument.RootElement));
                 var decision = _policy.Evaluate(call.Name, argsDocument.RootElement, userConfirmed);
                 if (decision.RequiresConfirmation) _pendingConfirmations.Request(call.Name, argsDocument.RootElement);
-                object? result = decision.Allowed
-                    ? await _runtime.ExecuteAsync(call.Name, argsDocument.RootElement.Clone(), cancellationToken)
-                    : new { error = decision.Reason, requires_confirmation = decision.RequiresConfirmation };
+                Publish(AgentActivityKind.Policy, call.Name,
+                    decision.Allowed ? "Allowed by local policy" : decision.RequiresConfirmation ? "Awaiting user confirmation" : "Blocked by local policy",
+                    decision.Reason, tone: decision.Allowed ? AgentActivityTone.Success : AgentActivityTone.Warning);
+                object? result;
+                var toolTimer = Stopwatch.StartNew();
+                try
+                {
+                    result = decision.Allowed
+                        ? await _runtime.ExecuteAsync(call.Name, argsDocument.RootElement.Clone(), cancellationToken)
+                        : new { error = decision.Reason, requires_confirmation = decision.RequiresConfirmation };
+                }
+                catch (Exception ex)
+                {
+                    toolTimer.Stop();
+                    Publish(AgentActivityKind.Error, call.Name, "Local tool execution failed", ex.Message, toolTimer.ElapsedMilliseconds, AgentActivityTone.Error);
+                    throw;
+                }
+                toolTimer.Stop();
+                var serializedResult = JsonSerializer.Serialize(result);
+                Publish(AgentActivityKind.ToolResult, call.Name,
+                    decision.Allowed ? "Local tool completed" : "Policy result returned to model", serializedResult,
+                    toolTimer.ElapsedMilliseconds, decision.Allowed ? AgentActivityTone.Success : AgentActivityTone.Warning);
                 outputs.Add(new { type = "function_call_output", call_id = call.CallId, output = JsonSerializer.Serialize(result) });
             }
             input = outputs;
@@ -93,6 +133,23 @@ public sealed class OpenAiAgent
     {
         try { using var doc = JsonDocument.Parse(raw); return doc.RootElement.GetProperty("error").GetProperty("message").GetString() ?? "Unknown error"; }
         catch (JsonException) { return "Unparseable API error"; }
+    }
+
+    private void Publish(AgentActivityKind kind, string title, string summary, string? details = null,
+        long? durationMilliseconds = null, AgentActivityTone tone = AgentActivityTone.Neutral) =>
+        _activity?.Publish(new(DateTimeOffset.Now, kind, title, summary,
+            AgentActivitySanitizer.Sanitize(details), durationMilliseconds, tone));
+
+    private static string ShortId(string? value) => string.IsNullOrWhiteSpace(value)
+        ? "unavailable"
+        : value.Length <= 18 ? value : value[..18] + "…";
+
+    private static string ResponseSummary(JsonElement root)
+    {
+        if (!root.TryGetProperty("usage", out var usage)) return "Completed";
+        var input = usage.TryGetProperty("input_tokens", out var inputTokens) ? inputTokens.GetInt32() : 0;
+        var output = usage.TryGetProperty("output_tokens", out var outputTokens) ? outputTokens.GetInt32() : 0;
+        return $"Completed · {input:N0} input / {output:N0} output tokens";
     }
 
     private static bool IsExplicitConfirmation(string text)

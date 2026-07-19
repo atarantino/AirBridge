@@ -34,9 +34,9 @@ dotnet run --project src\AirBridge.App\AirBridge.App.csproj
 
 On first launch, refresh the output list, select one or more of your discovered speakers, and choose **Start**. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
 
-Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there.
+Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout selects a saved group for playback and links directly to that Settings page.
 
-To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge.
+To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge. Saved speaker trims are ignored while only one speaker is active and automatically take effect again when the route has multiple speakers.
 
 The five chirps enter in memory through the normalized capture fanout on the same 20 ms sender clock, so their measured medians include the bounded rings, alignment trim, named pipe, RAOP session, receiver latency, and room acoustic return. While measuring, synthetic chirp blocks temporarily replace concurrent capture blocks at one-times rate and can advance even when a silent endpoint emits no callback. No calibration or microphone media file is created.
 
@@ -60,6 +60,12 @@ The extension leaves the real `<video>` playing so its audio continues into WASA
 ## Runtime logs
 
 AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`. Open them from **Settings → Advanced → Open logs folder**. The logs include receiver state changes, RAOP subprocess stderr, and exception stack traces. Network addresses, hardware addresses, and pipe identifiers are redacted, and audio is never logged.
+
+## AI Activity Inspector
+
+Open **Settings → Advanced → Open AI Activity Inspector** (or use the dashboard diagnostics menu) to see the optional assistant work in real time. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and whether a local action was allowed, blocked, or awaiting confirmation. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
+
+The inspector never stores microphone audio or displays API keys. Credentials, network addresses, hardware identifiers, and pipe identifiers are redacted before an event enters its bounded buffer. Transcript text is hidden in the detail pane unless the user explicitly enables it, and inspector events are not written to disk.
 
 ## Verify and package
 

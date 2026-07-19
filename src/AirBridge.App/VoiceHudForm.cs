@@ -8,6 +8,7 @@ internal sealed class VoiceHudForm : Form
     private const int WsExNoActivate = 0x08000000;
     private const int WsExToolWindow = 0x00000080;
     private const int CsDropShadow = 0x00020000;
+    private const int WmSettingChange = 0x001A;
     private readonly RoundedPanel _surface = new() { Dock = DockStyle.Fill, Radius = 18, Padding = new Padding(14, 10, 10, 10) };
     private readonly VoiceMicIndicator _mic = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 8, 4) };
     private readonly Label _status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.BottomLeft };
@@ -57,6 +58,8 @@ internal sealed class VoiceHudForm : Form
         root.Controls.Add(_cancel, 2, 0);
         _surface.Controls.Add(root);
         Controls.Add(_surface);
+        SystemTextScale.Changed += OnTextScaleChanged;
+        UiGeometry.ScaleInitialTextLayout(this);
 
         _cancel.Click += (_, _) => CancelRequested?.Invoke(this, EventArgs.Empty);
         _updateTimer.Tick += (_, _) => UpdateAnimation();
@@ -170,10 +173,26 @@ internal sealed class VoiceHudForm : Form
     {
         if (disposing)
         {
+            SystemTextScale.Changed -= OnTextScaleChanged;
             _updateTimer.Dispose();
             _errorTimer.Dispose();
         }
         base.Dispose(disposing);
+    }
+
+    protected override void WndProc(ref Message message)
+    {
+        base.WndProc(ref message);
+        if (message.Msg == WmSettingChange && IsHandleCreated && !IsDisposed)
+            BeginInvoke(SystemTextScale.Refresh);
+    }
+
+    private void OnTextScaleChanged(object? sender, TextScaleChangedEventArgs args)
+    {
+        var ratio = args.Current / args.Previous;
+        UiGeometry.RescaleText(this, args.Previous, args.Current);
+        ClientSize = new(Math.Max(1, (int)Math.Ceiling(ClientSize.Width * ratio)), Math.Max(1, (int)Math.Ceiling(ClientSize.Height * ratio)));
+        UpdateWindowRegion();
     }
 
     protected override void OnResize(EventArgs e)

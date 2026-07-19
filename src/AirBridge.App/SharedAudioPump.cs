@@ -32,7 +32,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
         public bool Ready { get; set; }
         public bool ParticipatesInGate { get; set; }
         public bool Live { get; set; }
-        public int AlignmentTrimMs { get; set; }
+        public int ConfiguredAlignmentTrimMs { get; set; }
+        public int AppliedAlignmentTrimMs { get; set; }
         public int PendingInsertBytes { get; set; }
         public int PendingDropBytes { get; set; }
     }
@@ -74,8 +75,9 @@ public sealed class SharedAudioPump : IAsyncDisposable
         {
             _legs.Add(receiverId, new(receiverId, buffer, endpoint)
             {
-                AlignmentTrimMs = Math.Clamp(alignmentTrimMs, 0, 500)
+                ConfiguredAlignmentTrimMs = Math.Clamp(alignmentTrimMs, 0, 500)
             });
+            ReapplyEffectiveAlignmentTrims();
         }
     }
 
@@ -85,6 +87,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
         {
             _legs.Remove(receiverId);
             _gateReceiverIds.Remove(receiverId);
+            ReapplyEffectiveAlignmentTrims();
         }
     }
 
@@ -119,11 +122,12 @@ public sealed class SharedAudioPump : IAsyncDisposable
         {
             if (!_legs.TryGetValue(receiverId, out var leg)) return;
             leg.Ready = true;
+            ReapplyEffectiveAlignmentTrims();
             if (_groupGateOpen && !leg.Live)
             {
                 // A late join starts at the live edge, never from buffered history.
                 leg.Buffer.DiscardToLiveEdge(BlockBytes);
-                MakeLive(leg);
+                MakeLive(leg, EffectiveAlignmentTrim(leg));
             }
         }
     }
@@ -137,12 +141,13 @@ public sealed class SharedAudioPump : IAsyncDisposable
             leg.Live = false;
             leg.PendingInsertBytes = 0;
             leg.PendingDropBytes = 0;
+            ReapplyEffectiveAlignmentTrims();
         }
     }
 
     public int GetAlignmentTrim(string receiverId)
     {
-        lock (_gate) return _legs.TryGetValue(receiverId, out var leg) ? leg.AlignmentTrimMs : 0;
+        lock (_gate) return _legs.TryGetValue(receiverId, out var leg) ? leg.ConfiguredAlignmentTrimMs : 0;
     }
 
     public void SetAlignmentTrim(string receiverId, int milliseconds)
@@ -151,22 +156,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
         lock (_gate)
         {
             if (!_legs.TryGetValue(receiverId, out var leg)) return;
-            var deltaMilliseconds = milliseconds - leg.AlignmentTrimMs;
-            var deltaBytes = ReceiverAlignmentPlan.ToPcmByteCount(Math.Abs(deltaMilliseconds));
-            leg.AlignmentTrimMs = milliseconds;
-            if (!leg.Live) return;
-            if (deltaMilliseconds > 0)
-            {
-                var cancellation = Math.Min(deltaBytes, leg.PendingDropBytes);
-                leg.PendingDropBytes -= cancellation;
-                leg.PendingInsertBytes += deltaBytes - cancellation;
-            }
-            else if (deltaMilliseconds < 0)
-            {
-                var cancellation = Math.Min(deltaBytes, leg.PendingInsertBytes);
-                leg.PendingInsertBytes -= cancellation;
-                leg.PendingDropBytes += deltaBytes - cancellation;
-            }
+            leg.ConfiguredAlignmentTrimMs = milliseconds;
+            ApplyEffectiveAlignmentTrim(leg, EffectiveAlignmentTrim(leg));
         }
     }
 
@@ -208,12 +199,12 @@ public sealed class SharedAudioPump : IAsyncDisposable
                         if (_legs.TryGetValue(id, out var leg) && leg.Ready && leg.Endpoint.CanAcceptWrite)
                         {
                             if (_discardBufferedUntilGateOpen) leg.Buffer.DiscardToLiveEdge(BlockBytes);
-                            MakeLive(leg);
+                            MakeLive(leg, EffectiveAlignmentTrim(leg));
                         }
                     foreach (var leg in _legs.Values.Where(item => item.Ready && !item.Live))
                     {
                         leg.Buffer.DiscardToLiveEdge(BlockBytes);
-                        MakeLive(leg);
+                        MakeLive(leg, EffectiveAlignmentTrim(leg));
                     }
                     _discardBufferedUntilGateOpen = false;
                 }
@@ -223,7 +214,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 foreach (var leg in _legs.Values.Where(item => item.Ready && !item.Live && item.Endpoint.CanAcceptWrite))
                 {
                     leg.Buffer.DiscardToLiveEdge(BlockBytes);
-                    MakeLive(leg);
+                    MakeLive(leg, EffectiveAlignmentTrim(leg));
                 }
 
             writes = [];
@@ -249,10 +240,40 @@ public sealed class SharedAudioPump : IAsyncDisposable
         finally { _iterationGate.Release(); }
     }
 
-    private static void MakeLive(Leg leg)
+    private int EffectiveAlignmentTrim(Leg leg) =>
+        _legs.Values.Count(item => item.Ready) > 1 ? leg.ConfiguredAlignmentTrimMs : 0;
+
+    private void ReapplyEffectiveAlignmentTrims()
+    {
+        foreach (var leg in _legs.Values)
+            ApplyEffectiveAlignmentTrim(leg, EffectiveAlignmentTrim(leg));
+    }
+
+    private static void ApplyEffectiveAlignmentTrim(Leg leg, int milliseconds)
+    {
+        var deltaMilliseconds = milliseconds - leg.AppliedAlignmentTrimMs;
+        leg.AppliedAlignmentTrimMs = milliseconds;
+        if (!leg.Live || deltaMilliseconds == 0) return;
+        var deltaBytes = ReceiverAlignmentPlan.ToPcmByteCount(Math.Abs(deltaMilliseconds));
+        if (deltaMilliseconds > 0)
+        {
+            var cancellation = Math.Min(deltaBytes, leg.PendingDropBytes);
+            leg.PendingDropBytes -= cancellation;
+            leg.PendingInsertBytes += deltaBytes - cancellation;
+        }
+        else
+        {
+            var cancellation = Math.Min(deltaBytes, leg.PendingInsertBytes);
+            leg.PendingInsertBytes -= cancellation;
+            leg.PendingDropBytes += deltaBytes - cancellation;
+        }
+    }
+
+    private static void MakeLive(Leg leg, int effectiveAlignmentTrimMs)
     {
         leg.Live = true;
-        leg.PendingInsertBytes = ReceiverAlignmentPlan.ToPcmByteCount(leg.AlignmentTrimMs);
+        leg.AppliedAlignmentTrimMs = effectiveAlignmentTrimMs;
+        leg.PendingInsertBytes = ReceiverAlignmentPlan.ToPcmByteCount(effectiveAlignmentTrimMs);
         leg.PendingDropBytes = 0;
     }
 

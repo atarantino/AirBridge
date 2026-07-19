@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
+using System.Diagnostics;
 using System.Text.Json;
+using AirBridge.Core;
 using NAudio.Wave;
 
 namespace AirBridge.App;
@@ -72,9 +74,13 @@ public sealed class PushToTalkRecorder : IDisposable
         }
     }
 
-    public static async Task<string> TranscribeAsync(byte[] wav, string apiKey, CancellationToken cancellationToken = default)
+    public static async Task<string> TranscribeAsync(byte[] wav, string apiKey, CancellationToken cancellationToken = default, IAgentActivitySink? activity = null)
     {
         if (wav.Length < 100) throw new InvalidOperationException("No microphone audio was captured.");
+        activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "Audio transcription",
+            $"gpt-4o-transcribe · {Math.Max(1, wav.Length / 1024):N0} KB in memory",
+            "Microphone audio is sent only for this user-initiated transcription and is never added to the activity log."));
+        var timer = Stopwatch.StartNew();
         using var http = new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
         using var form = new MultipartFormDataContent();
@@ -85,9 +91,18 @@ public sealed class PushToTalkRecorder : IDisposable
         form.Add(audio, "file", "push-to-talk.wav");
         using var response = await http.PostAsync("v1/audio/transcriptions", form, cancellationToken);
         var raw = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"Transcription failed ({(int)response.StatusCode}).");
+        timer.Stop();
+        if (!response.IsSuccessStatusCode)
+        {
+            activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Error, "Audio transcription failed",
+                $"HTTP {(int)response.StatusCode}", DurationMilliseconds: timer.ElapsedMilliseconds, Tone: AgentActivityTone.Error));
+            throw new InvalidOperationException($"Transcription failed ({(int)response.StatusCode}).");
+        }
         using var document = JsonDocument.Parse(raw);
-        return document.RootElement.GetProperty("text").GetString() ?? string.Empty;
+        var text = document.RootElement.GetProperty("text").GetString() ?? string.Empty;
+        activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "Transcript ready",
+            "Text returned to the local AirBridge assistant", AgentActivitySanitizer.Sanitize(text), timer.ElapsedMilliseconds, AgentActivityTone.Success));
+        return text;
     }
 
     public void Dispose()
