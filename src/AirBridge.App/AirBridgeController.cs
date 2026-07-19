@@ -134,6 +134,22 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
     }
 
+    public async Task PairReceiverAsync(string receiverId, string pin, CancellationToken cancellationToken = default)
+    {
+        await _raop.FinishPairingAsync(receiverId, pin, cancellationToken);
+        _receivers = await _raop.DiscoverAsync(cancellationToken);
+        PlaybackChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    public Task<JsonElement> BeginPairingAsync(string receiverId, bool controlPairing = false, CancellationToken cancellationToken = default) =>
+        _raop.BeginPairingAsync(receiverId, controlPairing, cancellationToken);
+
+    public async Task CancelPairingAsync(string receiverId, CancellationToken cancellationToken = default) =>
+        await _raop.CancelPairingAsync(receiverId, cancellationToken);
+
+    public async Task SleepReceiverAsync(string receiverId, CancellationToken cancellationToken = default) =>
+        await _raop.SleepAsync(receiverId, cancellationToken);
+
     public Task StartSystemAsync(ReceiverInfo receiver, CancellationToken cancellationToken = default) =>
         StartSystemAsync([receiver], cancellationToken);
 

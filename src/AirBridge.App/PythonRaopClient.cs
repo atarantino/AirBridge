@@ -49,8 +49,25 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         var result = await SendAsync("discover", new { timeout = 5 }, cancellationToken);
         return result.EnumerateArray().Select(item => new ReceiverInfo(
             item.GetProperty("id").GetString()!, item.GetProperty("name").GetString()!, "local-network-receiver",
-            item.GetProperty("requires_password").GetBoolean(), DateTimeOffset.UtcNow)).ToArray();
+            item.GetProperty("requires_password").GetBoolean(), DateTimeOffset.UtcNow,
+            item.GetProperty("device_type").GetString() ?? "speaker",
+            item.GetProperty("requires_pairing").GetBoolean(),
+            item.GetProperty("supports_pairing").GetBoolean(),
+            item.GetProperty("supports_power_control").GetBoolean(),
+            item.GetProperty("requires_control_pairing").GetBoolean(),
+            item.TryGetProperty("connection_issue", out var issue) && issue.ValueKind == JsonValueKind.String
+                ? issue.GetString()
+                : null)).ToArray();
     }
+
+    public Task<JsonElement> BeginPairingAsync(string receiverId, bool controlPairing = false, CancellationToken cancellationToken = default) =>
+        SendAsync("begin_pairing", new { receiver_id = receiverId, pairing_kind = controlPairing ? "control" : "raop" }, cancellationToken);
+    public Task<JsonElement> FinishPairingAsync(string receiverId, string pin, CancellationToken cancellationToken = default) =>
+        SendAsync("finish_pairing", new { receiver_id = receiverId, pin }, cancellationToken);
+    public Task<JsonElement> CancelPairingAsync(string receiverId, CancellationToken cancellationToken = default) =>
+        SendAsync("cancel_pairing", new { receiver_id = receiverId }, cancellationToken);
+    public Task<JsonElement> SleepAsync(string receiverId, CancellationToken cancellationToken = default) =>
+        SendAsync("sleep", new { receiver_id = receiverId }, cancellationToken);
 
     public Task<JsonElement> StartStreamAsync(ReceiverInfo receiver, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default) =>
         SendAsync("start", new { receiver_id = receiver.Id, receiver_name = receiver.Name, pipe_name = pipeName, initial_volume = Math.Clamp(initialVolume, 0, 100) }, cancellationToken);

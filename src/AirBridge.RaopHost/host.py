@@ -4,13 +4,16 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import random
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import pyatv
-from pyatv.const import Protocol
+from pyatv.const import DeviceModel, OperatingSystem, PairingRequirement, Protocol
+from pyatv.storage.file_storage import FileStorage
 
 from live_stream import DiagnosticToneSource, LivePcmSource, install_pyatv_adapter, stream_with_initial_volume
 
@@ -36,11 +39,24 @@ class Host:
     def __init__(self) -> None:
         self.devices = {}
         self.sessions: dict[str, Session] = {}
+        self.pairings: dict[str, Any] = {}
+        storage_root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AirBridge"
+        storage_root.mkdir(parents=True, exist_ok=True)
+        self.storage = FileStorage((storage_root / "pyatv.conf").as_posix(), asyncio.get_running_loop())
+
+    async def initialize(self) -> None:
+        await self.storage.load()
+
+    async def close(self) -> None:
+        await self.stop_all()
+        pending = list(self.pairings.values())
+        self.pairings.clear()
+        await asyncio.gather(*(pairing.close() for pairing in pending), return_exceptions=True)
 
     async def discover(self, timeout: int = 5) -> list[dict]:
         # Scan all protocols so AirPlay 2/Companion properties are merged into the
         # configuration used by HomePods; filtering the scan to RAOP loses that context.
-        configs = await pyatv.scan(asyncio.get_running_loop(), timeout=timeout)
+        configs = await pyatv.scan(asyncio.get_running_loop(), timeout=timeout, storage=self.storage)
         receivers = []
         self.devices.clear()
         for config in configs:
@@ -49,13 +65,85 @@ class Host:
                 continue
             stable_id = service.identifier or config.identifier or f"raop-{config.name.casefold()}"
             self.devices[stable_id] = config
+            pairing = getattr(service, "pairing", PairingRequirement.Unsupported)
+            has_credentials = bool(getattr(service, "credentials", None))
+            power_protocol = control_protocol(config)
+            power_service = config.get_service(power_protocol) if power_protocol is not None else None
+            connection_issue = streaming_connection_issue(config)
             receivers.append({
                 "id": stable_id,
                 "name": config.name,
                 "address": str(config.address),
-                "requires_password": bool(service.password),
+                "requires_password": bool(getattr(service, "requires_password", False)),
+                "device_type": device_type(config),
+                "requires_pairing": pairing == PairingRequirement.Mandatory and not has_credentials,
+                "supports_pairing": pairing in (PairingRequirement.Optional, PairingRequirement.Mandatory),
+                "supports_power_control": power_protocol is not None and device_type(config) == "apple-tv",
+                "requires_control_pairing": power_service is not None and not bool(getattr(power_service, "credentials", None)),
+                "connection_issue": connection_issue,
             })
         return sorted(receivers, key=lambda value: value["name"].casefold())
+
+    async def begin_pairing(self, receiver_id: str, pairing_kind: str = "raop") -> dict:
+        if not self.devices:
+            await self.discover()
+        config = self.devices.get(receiver_id)
+        if config is None:
+            raise RuntimeError("Receiver was not found; refresh discovery and try again")
+        protocol = Protocol.RAOP if pairing_kind == "raop" else control_protocol(config)
+        service = config.get_service(protocol) if protocol is not None else None
+        if service is None or service.pairing not in (PairingRequirement.Optional, PairingRequirement.Mandatory):
+            raise RuntimeError("This receiver does not support AirPlay pairing")
+        old = self.pairings.pop(receiver_id, None)
+        if old is not None:
+            await old.close()
+        pairing = await pyatv.pair(config, protocol, asyncio.get_running_loop(), storage=self.storage, name="AirBridge")
+        self.pairings[receiver_id] = pairing
+        try:
+            await pairing.begin()
+        except Exception:
+            self.pairings.pop(receiver_id, None)
+            await pairing.close()
+            raise
+        return {"receiver_id": receiver_id, "protocol": protocol.name.lower(), "device_provides_pin": pairing.device_provides_pin}
+
+    async def finish_pairing(self, receiver_id: str, pin: str) -> dict:
+        pairing = self.pairings.pop(receiver_id, None)
+        if pairing is None:
+            raise RuntimeError("Pairing was not started")
+        try:
+            pairing.pin(pin)
+            await pairing.finish()
+            if not pairing.has_paired:
+                raise RuntimeError("The receiver did not accept the pairing code")
+            await self.storage.save()
+            return {"receiver_id": receiver_id, "paired": True}
+        finally:
+            await pairing.close()
+
+    async def cancel_pairing(self, receiver_id: str) -> dict:
+        pairing = self.pairings.pop(receiver_id, None)
+        if pairing is not None:
+            await pairing.close()
+        return {"receiver_id": receiver_id, "cancelled": True}
+
+    async def sleep(self, receiver_id: str) -> dict:
+        if not self.devices:
+            await self.discover()
+        config = self.devices.get(receiver_id)
+        if config is None:
+            raise RuntimeError("Receiver was not found; refresh discovery and try again")
+        protocol = control_protocol(config)
+        if protocol is None or device_type(config) != "apple-tv":
+            raise RuntimeError("This receiver does not support Apple TV power control")
+        atv = await pyatv.connect(
+            config, asyncio.get_running_loop(), protocol=protocol, storage=self.storage
+        )
+        try:
+            await atv.power.turn_off()
+        finally:
+            atv.close()
+        return {"receiver_id": receiver_id, "sleeping": True}
 
     async def start(self, receiver_id: str | None, receiver_name: str | None, pipe_name: str, initial_volume: int = 30) -> dict:
         if not self.devices:
@@ -76,7 +164,7 @@ class Host:
             receiver_name=config.name,
             config=config,
             pipe_name=pipe_name,
-            atv=await pyatv.connect(config, asyncio.get_running_loop()),
+            atv=await pyatv.connect(config, asyncio.get_running_loop(), storage=self.storage),
             desired_volume=max(0, min(100, int(initial_volume))),
             stream_ready=asyncio.Event(),
         )
@@ -133,7 +221,7 @@ class Host:
                 try:
                     if session.atv:
                         session.atv.close()
-                    replacement = await pyatv.connect(session.config, asyncio.get_running_loop())
+                    replacement = await pyatv.connect(session.config, asyncio.get_running_loop(), storage=self.storage)
                     if session.stopping:
                         replacement.close()
                         return
@@ -211,7 +299,7 @@ class Host:
         matches = [item for item in self.devices.values() if item.name.casefold() == receiver_name.casefold()]
         if len(matches) != 1:
             raise RuntimeError(f"Expected one receiver named {receiver_name!r}, found {len(matches)}")
-        atv = await pyatv.connect(matches[0], asyncio.get_running_loop())
+        atv = await pyatv.connect(matches[0], asyncio.get_running_loop(), storage=self.storage)
         try:
             source = DiagnosticToneSource(seconds)
             await atv.stream.stream_file(source, metadata=await source.get_metadata())
@@ -227,6 +315,46 @@ def sanitize_error(ex: Exception) -> str:
     return f"{type(ex).__name__}: receiver transport operation failed{status_text}"
 
 
+def device_type(config: Any) -> str:
+    info = getattr(config, "device_info", None)
+    model = getattr(info, "model", DeviceModel.Unknown)
+    if model in {
+        DeviceModel.Gen2, DeviceModel.Gen3, DeviceModel.Gen4, DeviceModel.Gen4K,
+        DeviceModel.AppleTV4KGen2, DeviceModel.AppleTV4KGen3, DeviceModel.AppleTVGen1,
+    }:
+        return "apple-tv"
+    if model in {DeviceModel.HomePod, DeviceModel.HomePodMini, DeviceModel.HomePodGen2}:
+        return "homepod"
+    if model in {DeviceModel.AirPortExpress, DeviceModel.AirPortExpressGen2}:
+        return "speaker"
+    if getattr(info, "operating_system", OperatingSystem.Unknown) == OperatingSystem.MacOS:
+        return "computer"
+    identity = f"{getattr(info, 'model_str', '')} {getattr(info, 'raw_model', '')}".casefold()
+    if "apple tv" in identity or "appletv" in identity:
+        return "apple-tv"
+    return "speaker"
+
+
+def control_protocol(config: Any) -> Protocol | None:
+    for protocol in (Protocol.Companion, Protocol.MRP):
+        service = config.get_service(protocol)
+        if service is not None and getattr(service, "pairing", PairingRequirement.Unsupported) not in {
+            PairingRequirement.Disabled, PairingRequirement.Unsupported
+        }:
+            return protocol
+    return None
+
+
+def streaming_connection_issue(config: Any) -> str | None:
+    """Explain advertised access-control modes that a Windows sender cannot satisfy."""
+    if device_type(config) != "computer":
+        return None
+    airplay = config.get_service(Protocol.AirPlay)
+    if airplay is not None and airplay.properties.get("act", "0") == "2":
+        return "On the Mac, change AirPlay Receiver access from Current User to Anyone on the Same Network"
+    return None
+
+
 async def emit(value: dict) -> None:
     async with _emit_lock:
         print(json.dumps(value, separators=(",", ":")), flush=True)
@@ -237,10 +365,11 @@ _emit_lock = asyncio.Lock()
 
 async def main() -> None:
     host = Host()
+    await host.initialize()
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
         if not line:
-            await host.stop_all()
+            await host.close()
             return
         request = json.loads(line)
         request_id = request.get("request_id")
@@ -250,6 +379,14 @@ async def main() -> None:
                 result = await host.discover(int(request.get("timeout", 5)))
             elif command == "start":
                 result = await host.start(request.get("receiver_id"), request.get("receiver_name"), request["pipe_name"], int(request.get("initial_volume", 30)))
+            elif command == "begin_pairing":
+                result = await host.begin_pairing(request["receiver_id"], request.get("pairing_kind", "raop"))
+            elif command == "finish_pairing":
+                result = await host.finish_pairing(request["receiver_id"], request["pin"])
+            elif command == "cancel_pairing":
+                result = await host.cancel_pairing(request["receiver_id"])
+            elif command == "sleep":
+                result = await host.sleep(request["receiver_id"])
             elif command == "stop":
                 result = await host.stop(request.get("receiver_id"))
             elif command == "stop_all":

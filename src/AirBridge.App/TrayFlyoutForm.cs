@@ -1,4 +1,5 @@
 using System.Drawing.Drawing2D;
+using System.Runtime.InteropServices;
 using AirBridge.Core;
 
 namespace AirBridge.App;
@@ -7,6 +8,10 @@ namespace AirBridge.App;
 public sealed class TrayFlyoutForm : Form
 {
     private const int WmSettingChange = 0x001A;
+    private const int WmSetRedraw = 0x000B;
+    private const uint RdwInvalidate = 0x0001;
+    private const uint RdwUpdatenow = 0x0100;
+    private const uint RdwAllchildren = 0x0080;
     private readonly AntiAliasedLabel _status = new() { Dock = DockStyle.Fill };
     private readonly LetterSpacedLabel _wordmark = new() { Text = "AIRBRIDGE", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8F, FontStyle.Bold), Tracking = 1.5f };
     private readonly LetterSpacedLabel _outputLabel = new() { Text = "OUTPUT", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8.5F, FontStyle.Regular), Tracking = 1.2f, Padding = new Padding(0, 2, 0, 0) };
@@ -24,6 +29,8 @@ public sealed class TrayFlyoutForm : Form
     private ThemePalette _palette;
     private StreamState _streamState;
     private Rectangle? _trayWorkingArea;
+    private bool _receiverLoadingActive;
+    private bool _receiverRowsPending;
 
     public TrayFlyoutForm(AppThemeMode themeMode = AppThemeMode.System)
     {
@@ -34,7 +41,7 @@ public sealed class TrayFlyoutForm : Form
         _palette = requested;
         var textWidthScale = TextWidthScale(SystemTextScale.Current);
         AutoScaleMode = AutoScaleMode.Dpi;
-        ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 344);
+        ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 180);
         MinimumSize = new Size((int)Math.Ceiling(380 * textWidthScale), 180);
         MaximumSize = new Size((int)Math.Ceiling(480 * textWidthScale), 600);
         FormBorderStyle = FormBorderStyle.None;
@@ -125,6 +132,7 @@ public sealed class TrayFlyoutForm : Form
     public event EventHandler<ReceiverAlignmentTrimChangedEventArgs>? ReceiverAlignmentTrimChanged;
     public event EventHandler<ReceiverActionEventArgs>? ReceiverConnectRequested;
     public event EventHandler<ReceiverActionEventArgs>? ReceiverDisconnectRequested;
+    public event EventHandler<ReceiverActionEventArgs>? ReceiverSleepRequested;
 
     internal bool AutoHide = true;
     public IReadOnlyCollection<string> ReceiverIds => _rows.Keys;
@@ -135,9 +143,11 @@ public sealed class TrayFlyoutForm : Form
         IReadOnlyDictionary<string, int>? volumes = null,
         IReadOnlyDictionary<string, int>? alignmentTrims = null)
     {
+        var redrawSuspended = SuspendFlyoutRedraw();
         _receivers.SuspendLayout();
         try
         {
+            _receiverRowsPending = _receiverLoadingActive;
             _receivers.Controls.Clear();
             foreach (var row in _rows.Values) row.Dispose();
             _rows.Clear();
@@ -157,34 +167,63 @@ public sealed class TrayFlyoutForm : Form
                 row.AlignmentTrimChanged += (_, args) => ReceiverAlignmentTrimChanged?.Invoke(this, args);
                 row.ConnectRequested += (_, args) => ReceiverConnectRequested?.Invoke(this, args);
                 row.DisconnectRequested += (_, args) => ReceiverDisconnectRequested?.Invoke(this, args);
+                row.SleepRequested += (_, args) => ReceiverSleepRequested?.Invoke(this, args);
+                row.Visible = !_receiverRowsPending;
                 _rows.Add(receiver.Id, row);
                 _receivers.Controls.Add(row);
             }
+
+            if (_receiverLoadingActive)
+            {
+                _receivers.Controls.Add(_receiverLoading);
+                _receivers.Controls.SetChildIndex(_receiverLoading, 0);
+                _receiverLoading.SetActive(true);
+            }
         }
-        finally { _receivers.ResumeLayout(true); ResizeRows(); UpdateContentHeight(); }
+        finally
+        {
+            _receivers.ResumeLayout(true);
+            ResizeRows();
+            UpdateContentHeight();
+            ResumeFlyoutRedraw(redrawSuspended);
+        }
     }
 
     public void SetReceiverLoading(bool loading)
     {
-        _refresh.Enabled = !loading;
-        _refresh.AccessibleDescription = loading
-            ? "Refreshing the available AirPlay speakers."
-            : "Refresh the available AirPlay speakers.";
-        _toolTip.SetToolTip(_refresh, loading ? "Refreshing speakers…" : "Refresh speakers");
+        var redrawSuspended = SuspendFlyoutRedraw();
+        _receivers.SuspendLayout();
+        try
+        {
+            _receiverLoadingActive = loading;
+            _refresh.Enabled = !loading;
+            _refresh.AccessibleDescription = loading
+                ? "Refreshing the available AirPlay speakers."
+                : "Refresh the available AirPlay speakers.";
+            _toolTip.SetToolTip(_refresh, loading ? "Refreshing speakers…" : "Refresh speakers");
 
-        if (loading)
-        {
-            _receiverLoading.ApplyTheme(_palette);
-            if (!_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Add(_receiverLoading);
-            _receivers.Controls.SetChildIndex(_receiverLoading, 0);
-            _receiverLoading.SetActive(true);
+            if (loading)
+            {
+                _receiverLoading.ApplyTheme(_palette);
+                if (!_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Add(_receiverLoading);
+                _receivers.Controls.SetChildIndex(_receiverLoading, 0);
+                _receiverLoading.SetActive(true);
+            }
+            else
+            {
+                _receiverRowsPending = false;
+                _receiverLoading.SetActive(false);
+                if (_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Remove(_receiverLoading);
+                foreach (var row in _rows.Values) row.Visible = true;
+            }
         }
-        else
+        finally
         {
-            _receiverLoading.SetActive(false);
-            if (_receivers.Controls.Contains(_receiverLoading)) _receivers.Controls.Remove(_receiverLoading);
+            _receivers.ResumeLayout(true);
+            ResizeRows();
+            UpdateContentHeight();
+            ResumeFlyoutRedraw(redrawSuspended);
         }
-        ResizeRows();
     }
 
     public void UpdateReceiver(
@@ -338,14 +377,50 @@ public sealed class TrayFlyoutForm : Form
     private void UpdateContentHeight()
     {
         _receivers.AutoScroll = _rows.Count > 6;
-        var rowsHeight = _rows.Values.Take(6).Sum(row => row.Height + row.Margin.Vertical);
+        var loadingHeight = _receiverLoadingActive ? _receiverLoading.Height + _receiverLoading.Margin.Vertical : 0;
+        var rowsHeight = _receiverRowsPending ? 0 : _rows.Values.Take(6).Sum(row => row.Height + row.Margin.Vertical);
         var chromeHeight = _root.RowStyles.Cast<RowStyle>()
             .Where(style => style.SizeType == SizeType.Absolute)
             .Sum(style => (int)Math.Ceiling(style.Height));
-        var desired = Padding.Vertical + chromeHeight + _receivers.Padding.Vertical + rowsHeight;
-        ClientSize = new Size(ClientSize.Width, Math.Min(MaximumSize.Height, Math.Max(MinimumSize.Height, desired)));
-        if (Visible) RepositionToTrayAnchor();
+        var desired = Padding.Vertical + chromeHeight + _receivers.Padding.Vertical + loadingHeight + rowsHeight;
+        SetAnchoredClientHeight(Math.Min(MaximumSize.Height, Math.Max(MinimumSize.Height, desired)));
     }
+
+    private void SetAnchoredClientHeight(int clientHeight)
+    {
+        if (!Visible)
+        {
+            ClientSize = new Size(ClientSize.Width, clientHeight);
+            return;
+        }
+
+        var targetSize = SizeFromClientSize(new Size(ClientSize.Width, clientHeight));
+        var workingArea = _trayWorkingArea ?? Screen.FromRectangle(Bounds).WorkingArea;
+        var margin = UiGeometry.Scale(this, 8);
+        var x = Math.Clamp(workingArea.Right - targetSize.Width - margin, workingArea.Left, workingArea.Right - targetSize.Width);
+        var y = Math.Clamp(workingArea.Bottom - targetSize.Height - margin, workingArea.Top, workingArea.Bottom - targetSize.Height);
+        SetBounds(x, y, targetSize.Width, targetSize.Height, BoundsSpecified.All);
+    }
+
+    private bool SuspendFlyoutRedraw()
+    {
+        if (!Visible || !IsHandleCreated) return false;
+        _ = SendMessage(Handle, WmSetRedraw, IntPtr.Zero, IntPtr.Zero);
+        return true;
+    }
+
+    private void ResumeFlyoutRedraw(bool suspended)
+    {
+        if (!suspended || !IsHandleCreated) return;
+        _ = SendMessage(Handle, WmSetRedraw, new IntPtr(1), IntPtr.Zero);
+        _ = RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, RdwInvalidate | RdwUpdatenow | RdwAllchildren);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool RedrawWindow(IntPtr window, IntPtr updateRectangle, IntPtr updateRegion, uint flags);
 
     private void RepositionToTrayAnchor()
     {

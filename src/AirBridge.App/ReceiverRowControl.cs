@@ -31,12 +31,14 @@ public sealed class ReceiverRowControl : UserControl
 {
     private readonly OwnerDrawnSlider _volume = new() { Anchor = AnchorStyles.Top | AnchorStyles.Right };
     private readonly PillButton _action = new() { Anchor = AnchorStyles.Top | AnchorStyles.Right, Width = 76, Height = 32 };
+    private readonly PillButton _sleep = new() { Anchor = AnchorStyles.Top | AnchorStyles.Right, Text = "Sleep", Quiet = true, Width = 68, Height = 32, Visible = false };
     private readonly PillButton _trimDown = new() { Text = "-", Quiet = true, Width = 26, Height = 24 };
     private readonly PillButton _trimUp = new() { Text = "+", Quiet = true, Width = 26, Height = 24 };
     private readonly Label _trimValue = new() { AutoSize = false, Text = "Sync 0 ms", TextAlign = ContentAlignment.MiddleCenter, BackColor = Color.Transparent };
     private readonly System.Windows.Forms.Timer _hoverTimer = new() { Interval = 15 };
     private readonly System.Windows.Forms.Timer _equalizerTimer = new() { Interval = 90 };
     private readonly System.Windows.Forms.Timer _heightTimer = new() { Interval = 15 };
+    private readonly ToolTip _toolTip = new();
     private ThemePalette _palette = ThemePalette.Current();
     private ReceiverInfo? _receiver;
     private StreamState _streamState;
@@ -74,7 +76,9 @@ public sealed class ReceiverRowControl : UserControl
         _trimDown.TabIndex = 1;
         _trimUp.TabIndex = 2;
         _action.TabIndex = 3;
+        _sleep.TabIndex = 4;
         _action.AccessibleName = "Connect speaker";
+        _sleep.AccessibleName = "Sleep Apple TV";
         _trimDown.AccessibleName = "Decrease speaker alignment trim by 10 milliseconds";
         _trimDown.AccessibleDescription = "Decreases this speaker's additional delay by 10 milliseconds.";
         _trimUp.AccessibleName = "Increase speaker alignment trim by 10 milliseconds";
@@ -84,10 +88,13 @@ public sealed class ReceiverRowControl : UserControl
         _trimDown.TransparentQuiet = true;
         _trimUp.TransparentQuiet = true;
         _action.TransparentQuiet = true;
+        _sleep.TransparentQuiet = true;
         _action.BackColor = Color.Transparent;
+        _sleep.BackColor = Color.Transparent;
         _trimDown.BackColor = Color.Transparent;
         _trimUp.BackColor = Color.Transparent;
-        Controls.AddRange([_volume, _trimDown, _trimValue, _trimUp, _action]);
+        Controls.AddRange([_volume, _trimDown, _trimValue, _trimUp, _action, _sleep]);
+        _toolTip.SetToolTip(_sleep, "Sleep Apple TV");
 
         _volume.ValueCommitted += (_, _) => CommitVolume();
         _trimDown.Click += (_, _) => AdjustAlignmentTrim(-10);
@@ -97,6 +104,10 @@ public sealed class ReceiverRowControl : UserControl
             if (_receiver is null) return;
             if (IsActive) DisconnectRequested?.Invoke(this, new(_receiver.Id));
             else ConnectRequested?.Invoke(this, new(_receiver.Id));
+        };
+        _sleep.Click += (_, _) =>
+        {
+            if (_receiver is not null) SleepRequested?.Invoke(this, new(_receiver.Id));
         };
         _hoverTimer.Tick += (_, _) => AnimateHover();
         _equalizerTimer.Tick += (_, _) => { _equalizerFrame = (_equalizerFrame + 1) % 6; Invalidate(); };
@@ -113,6 +124,9 @@ public sealed class ReceiverRowControl : UserControl
         Margin = new Padding(0, 0, 0, UiGeometry.Scale(this, 6));
         _action.Visible = false;
         _action.TabStop = false;
+        _sleep.Text = string.Empty;
+        _sleep.IconGlyph = "\uE7E8";
+        _sleep.Width = 34;
         _volume.ShowThumbAtRest = false;
         _volume.TrackThickness = 5;
         _volume.HorizontalInset = 0;
@@ -154,6 +168,7 @@ public sealed class ReceiverRowControl : UserControl
     public event EventHandler<ReceiverAlignmentTrimChangedEventArgs>? AlignmentTrimChanged;
     public event EventHandler<ReceiverActionEventArgs>? ConnectRequested;
     public event EventHandler<ReceiverActionEventArgs>? DisconnectRequested;
+    public event EventHandler<ReceiverActionEventArgs>? SleepRequested;
 
     public string? ReceiverId => _receiver?.Id;
     public bool IsSelected => _selected;
@@ -171,6 +186,8 @@ public sealed class ReceiverRowControl : UserControl
         _trimUp.AccessibleName = $"Increase {receiver.Name} alignment trim by 10 milliseconds";
         _trimValue.AccessibleName = $"{receiver.Name} alignment trim";
         _action.AccessibleName = $"Connect {receiver.Name}";
+        _sleep.AccessibleName = $"Sleep {receiver.Name}";
+        _sleep.Visible = receiver.SupportsPowerControl;
         _updating = true;
         _selected = selected;
         _volume.Value = volume;
@@ -230,7 +247,9 @@ public sealed class ReceiverRowControl : UserControl
         _trimUp.BackColor = Color.Transparent;
         _trimValue.ForeColor = palette.SecondaryText;
         _action.ApplyTheme(palette);
+        _sleep.ApplyTheme(palette);
         _action.BackColor = Color.Transparent;
+        _sleep.BackColor = Color.Transparent;
         Invalidate(true);
     }
 
@@ -242,13 +261,21 @@ public sealed class ReceiverRowControl : UserControl
         var right = (int)(12 * scale);
         if (_compact)
         {
+            _sleep.Visible = _receiver?.SupportsPowerControl == true;
+            if (_sleep.Visible)
+            {
+                var checkSize = (int)(22 * scale);
+                var sleepSize = (int)(34 * scale);
+                _sleep.SetBounds(Width - right - checkSize - (int)(7 * scale) - sleepSize,
+                    (int)(5 * verticalScale), sleepSize, (int)(32 * verticalScale));
+            }
             _volume.Visible = CompactEngaged;
             _trimDown.Visible = false;
             _trimValue.Visible = false;
             _trimUp.Visible = false;
             if (!CompactEngaged) return;
             var nameLeft = (int)(52 * scale);
-            var trailingRight = Width - right;
+            var trailingRight = _sleep.Visible ? _sleep.Left - (int)(6 * scale) : Width - right;
             var showStatus = _streamState is not StreamState.Idle and not StreamState.Streaming;
             var statusWidth = showStatus ? (int)(112 * scale) : 0;
             var sliderLeft = nameLeft + statusWidth;
@@ -258,11 +285,18 @@ public sealed class ReceiverRowControl : UserControl
         var showTrim = IsActive;
         _trimDown.Visible = _trimValue.Visible = _trimUp.Visible = showTrim;
         _action.Visible = _dashboardStreamActive;
+        _sleep.Visible = _receiver?.SupportsPowerControl == true;
         var actionWidth = (int)(76 * scale);
         var actionRight = Width - right;
         _action.SetBounds(actionRight - actionWidth, (Height - (int)(32 * verticalScale)) / 2, actionWidth, (int)(32 * verticalScale));
+        if (_sleep.Visible)
+        {
+            var sleepRight = _action.Visible ? _action.Left - (int)(8 * scale) : actionRight;
+            _sleep.SetBounds(sleepRight - (int)(68 * scale), (Height - (int)(32 * verticalScale)) / 2,
+                (int)(68 * scale), (int)(32 * verticalScale));
+        }
         var sliderWidth = Math.Max((int)(120 * scale), Math.Min((int)(178 * scale), Width / 3));
-        var sliderRight = (_action.Visible ? _action.Left : actionRight) - (int)(10 * scale);
+        var sliderRight = (_sleep.Visible ? _sleep.Left : _action.Visible ? _action.Left : actionRight) - (int)(10 * scale);
         _volume.SetBounds(sliderRight - sliderWidth, (int)(8 * verticalScale), sliderWidth, (int)(26 * scale));
         if (showTrim) LayoutTrimControls(sliderRight, (int)(39 * verticalScale), scale, verticalScale);
     }
@@ -277,7 +311,8 @@ public sealed class ReceiverRowControl : UserControl
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left && !_volume.Bounds.Contains(e.Location) && (!_action.Visible || !_action.Bounds.Contains(e.Location))) ActivateRow();
+        if (e.Button == MouseButtons.Left && !_volume.Bounds.Contains(e.Location) &&
+            (!_action.Visible || !_action.Bounds.Contains(e.Location)) && (!_sleep.Visible || !_sleep.Bounds.Contains(e.Location))) ActivateRow();
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -357,7 +392,7 @@ public sealed class ReceiverRowControl : UserControl
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _hoverTimer.Dispose(); _equalizerTimer.Dispose(); _heightTimer.Dispose(); }
+        if (disposing) { _hoverTimer.Dispose(); _equalizerTimer.Dispose(); _heightTimer.Dispose(); _toolTip.Dispose(); }
         base.Dispose(disposing);
     }
 
@@ -374,7 +409,8 @@ public sealed class ReceiverRowControl : UserControl
         var checkSize = (int)(22 * s);
         var checkTop = CompactEngaged ? (int)(8 * v) : (Height - checkSize) / 2;
         var checkBox = new Rectangle(Width - (int)(12 * s) - checkSize, checkTop, checkSize, checkSize);
-        var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * v) : 0, Math.Max(40, checkBox.Left - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * v) : Height);
+        var nameRight = _sleep.Visible ? _sleep.Left : checkBox.Left;
+        var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * v) : 0, Math.Max(40, nameRight - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * v) : Height);
 
         using var iconFont = UiGeometry.IconFont(14F);
         using var nameFont = UiGeometry.UiFont(9.5F, FontStyle.Bold);
@@ -655,6 +691,9 @@ public sealed class ReceiverRowControl : UserControl
 
     private string DeviceGlyph()
     {
+        if (_receiver?.DeviceType.Equals("apple-tv", StringComparison.OrdinalIgnoreCase) == true) return "\uE7F4";
+        if (_receiver?.DeviceType.Equals("computer", StringComparison.OrdinalIgnoreCase) == true) return "\uE770";
+        if (_receiver?.DeviceType.Equals("homepod", StringComparison.OrdinalIgnoreCase) == true) return "\uE767";
         var identity = $"{_receiver?.Name} {_receiver?.Address}";
         if (identity.Contains("laptop", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("computer", StringComparison.OrdinalIgnoreCase) ||
@@ -667,7 +706,7 @@ public sealed class ReceiverRowControl : UserControl
         if (identity.Contains("homepod", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("sonos", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("echo", StringComparison.OrdinalIgnoreCase) ||
-            identity.Contains("smart", StringComparison.OrdinalIgnoreCase)) return "\uE7F5";
+            identity.Contains("smart", StringComparison.OrdinalIgnoreCase)) return "\uE767";
         if (identity.Contains("mini", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("small", StringComparison.OrdinalIgnoreCase)) return "\uE767";
         return "\uE767";

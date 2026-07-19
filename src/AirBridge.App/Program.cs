@@ -180,7 +180,8 @@ internal static class Program
             new AirBridge.Core.ReceiverInfo("output-b", "Media Room", "smart-speaker", false, now),
             new AirBridge.Core.ReceiverInfo("output-c", "Portable Speaker", "speaker", false, now),
             new AirBridge.Core.ReceiverInfo("output-d", "Upstairs Speaker", "smart-speaker", false, now),
-            new AirBridge.Core.ReceiverInfo("output-e", "TV", "media-box", false, now)
+            new AirBridge.Core.ReceiverInfo("output-e", "TV", "media-box", false, now,
+                DeviceType: "apple-tv", SupportsPowerControl: true, RequiresControlPairing: true)
         };
         flyout.SetReceivers(receivers, new HashSet<string>(["output-a", "output-b", "output-c"]), new Dictionary<string, int>
         {

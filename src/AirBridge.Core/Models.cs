@@ -11,7 +11,21 @@ public enum CaptureMode { SystemMix, ProcessTreeInclude, ProcessTreeExclude, End
 [JsonConverter(typeof(JsonStringEnumConverter<QualityProfile>))]
 public enum QualityProfile { Balanced, Stable, LowLatency }
 
-public sealed record ReceiverInfo(string Id, string Name, string Address, bool RequiresPassword, DateTimeOffset LastSeenUtc);
+public sealed record ReceiverInfo(
+    string Id,
+    string Name,
+    string Address,
+    bool RequiresPassword,
+    DateTimeOffset LastSeenUtc,
+    string DeviceType = "speaker",
+    bool RequiresPairing = false,
+    bool SupportsPairing = false,
+    bool SupportsPowerControl = false,
+    bool RequiresControlPairing = false,
+    string? ConnectionIssue = null)
+{
+    public bool CanConnect => string.IsNullOrWhiteSpace(ConnectionIssue);
+}
 
 public sealed record ReceiverPlaybackInfo(
     ReceiverInfo Receiver,

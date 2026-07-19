@@ -4,6 +4,7 @@ import struct
 import unittest
 
 import pyatv.protocols.raop as raop
+from pyatv.protocols.airplay.auth import hap_transient
 from pyatv.protocols.raop.audio_source import AudioSource, _to_audio_samples
 
 from live_stream import (
@@ -34,6 +35,10 @@ class LivePcmSourceTests(unittest.TestCase):
         parameters = inspect.signature(raop.RaopAudio.set_volume).parameters
         self.assertIn("output_device", parameters)
         self.assertIsNone(parameters["output_device"].default)
+
+    def test_adapter_names_sender_in_mac_approval_prompt(self):
+        install_pyatv_adapter()
+        self.assertEqual("AirBridge", hap_transient._AIRPLAY_HEADERS["X-Apple-Client-Name"])
 
     def test_s16le_is_converted_to_raop_byte_order(self):
         # -32768, -1, 0, 1, 32767 encoded as little-endian signed 16-bit.

@@ -23,6 +23,7 @@ _source_patch_installed = False
 _volume_patch_installed = False
 _stream_volume_patch_installed = False
 _airplay2_alac_patch_installed = False
+SENDER_NAME = "AirBridge"
 
 
 class _DeferVolumeUntilRecord(Exception):
@@ -172,12 +173,17 @@ def install_pyatv_adapter() -> None:
     global _airplay2_alac_patch_installed
     import pyatv.protocols.raop as raop
     from pyatv import exceptions
+    from pyatv.protocols.airplay.auth import hap_transient
     from pyatv.protocols.raop.packets import AudioPacketHeader
     from pyatv.protocols.raop.protocols import airplayv2
     from pyatv.protocols.raop.stream_client import StreamClient
     from pyatv.support.chacha20 import Chacha20Cipher8byteNonce
     from pyatv.support.http import decode_bplist_from_body
     from pyatv.support.rtsp import FRAMES_PER_PACKET
+
+    # macOS uses this header for the sender label in its first-use approval
+    # prompt. pyatv 0.18 omits it, which produces an empty quoted device name.
+    hap_transient._AIRPLAY_HEADERS["X-Apple-Client-Name"] = SENDER_NAME
 
     if not _source_patch_installed:
         original_open_source = raop.open_source

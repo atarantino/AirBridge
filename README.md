@@ -34,9 +34,13 @@ py -3.12 -m venv .venv
 dotnet run --project src\AirBridge.App\AirBridge.App.csproj
 ```
 
-On first launch, refresh the output list, select one or more of your discovered speakers, and choose **Start**. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
+On first launch, refresh the output list, select one or more discovered AirPlay receivers, and choose **Start**. If an Apple TV requires first-time pairing, AirBridge prompts for the code shown on the TV and remembers the resulting credentials for later connections. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
+
+A Mac advertising itself as an AirPlay Receiver is usable when **Allow AirPlay for** is set to **Anyone on the Same Network**. The **Current User** setting only accepts devices signed into the same Apple Account, which a Windows sender cannot satisfy; AirBridge detects that mode, leaves the Mac unselected, and points to the setting that must be changed.
 
 Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout applies a group's saved speaker selection; choose **Start** separately to begin playback. The same menu links directly to the Groups settings page.
+
+Discovered Apple TVs include a **Sleep Apple TV** action in their receiver row. AirBridge always asks for confirmation, stops its active stream to prevent an automatic reconnect, and then places the Apple TV in standby. The first use can require a separate on-screen code for Apple TV control authorization. HDMI-CEC may also turn off the connected display or receiver.
 
 To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge. Saved speaker trims are ignored while only one speaker is active and automatically take effect again when the route has multiple speakers.
 

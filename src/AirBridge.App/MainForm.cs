@@ -155,6 +155,7 @@ public sealed class MainForm : Form
             await RunUiActionAsync(() => _controller.StopReceiverAsync(args.ReceiverId));
             SetReceiverSelected(args.ReceiverId, false);
         };
+        _trayFlyout.ReceiverSleepRequested += async (_, args) => await SleepAppleTvAsync(args.ReceiverId);
     }
 
     private void BuildLayout()
@@ -367,8 +368,10 @@ public sealed class MainForm : Form
             {
                 var preferred = discovered.FirstOrDefault(item => item.Id == _settings.DefaultReceiverId)
                     ?? discovered.FirstOrDefault(item => item.Name.Equals(_settings.DefaultReceiverName, StringComparison.OrdinalIgnoreCase));
-                if (preferred is not null) _selectedReceiverIds.Add(preferred.Id);
+                if (preferred?.CanConnect == true) _selectedReceiverIds.Add(preferred.Id);
             }
+            foreach (var unavailable in discovered.Where(item => !item.CanConnect))
+                _selectedReceiverIds.Remove(unavailable.Id);
             RebuildReceiverRows(discovered);
             if (discovered.Count == 0) AppendConversation("System", "No AirPlay receivers found. Confirm Windows and the speakers share the same private local network.");
             PersistUiSettings();
@@ -418,7 +421,8 @@ public sealed class MainForm : Form
                 var volume = _receiverVolumes.TryGetValue(receiver.Id, out var saved) ? saved : 30;
                 var state = playback.TryGetValue(receiver.Id, out var active) ? active.State : StreamState.Idle;
                 var trim = _controller.GetReceiverAlignmentTrim(receiver.Id);
-                row.Bind(receiver, _selectedReceiverIds.Contains(receiver.Id), volume, state, receiver.RequiresPassword ? "Password required" : null, trim);
+                row.Bind(receiver, _selectedReceiverIds.Contains(receiver.Id), volume, state,
+                    receiver.ConnectionIssue ?? (receiver.RequiresPairing ? "Pairing required" : receiver.RequiresPassword ? "Password required" : null), trim);
                 row.SetDashboardStreamActive(IsDashboardStreamActive);
                 row.ApplyTheme(_palette);
                 row.SelectionChanged += (_, args) => SetReceiverSelected(args.ReceiverId, args.Selected);
@@ -426,6 +430,7 @@ public sealed class MainForm : Form
                 row.AlignmentTrimChanged += (_, args) => _controller.SetReceiverAlignmentTrim(args.ReceiverId, args.Milliseconds);
                 row.ConnectRequested += async (_, args) => await ConnectReceiverAsync(args.ReceiverId);
                 row.DisconnectRequested += async (_, args) => await RunUiActionAsync(() => _controller.StopReceiverAsync(args.ReceiverId));
+                row.SleepRequested += async (_, args) => await SleepAppleTvAsync(args.ReceiverId);
                 _receiverRows.Add(receiver.Id, row);
                 _receiverPanel.Controls.Add(row);
             }
@@ -488,6 +493,10 @@ public sealed class MainForm : Form
     {
         var receivers = _controller.Receivers.Where(item => _selectedReceiverIds.Contains(item.Id)).ToArray();
         if (receivers.Length == 0) { AppendConversation("System", "Select at least one available speaker."); return; }
+        var unavailable = receivers.FirstOrDefault(item => !item.CanConnect);
+        if (unavailable is not null) { ShowConnectionIssue(unavailable); return; }
+        foreach (var receiver in receivers)
+            if (!await EnsureReceiverPairedAsync(receiver)) return;
         await RunUiActionAsync(async () =>
         {
             var startVolumes = receivers.ToDictionary(
@@ -507,6 +516,8 @@ public sealed class MainForm : Form
     {
         var receiver = _controller.Receivers.SingleOrDefault(item => item.Id == receiverId);
         if (receiver is null) return;
+        if (!receiver.CanConnect) { ShowConnectionIssue(receiver); SetReceiverSelected(receiverId, false); return; }
+        if (!await EnsureReceiverPairedAsync(receiver)) return;
         SetReceiverSelected(receiverId, true);
         await RunUiActionAsync(async () =>
         {
@@ -521,8 +532,88 @@ public sealed class MainForm : Form
         });
     }
 
+    private async Task<bool> EnsureReceiverPairedAsync(ReceiverInfo receiver)
+    {
+        if (!receiver.RequiresPairing) return true;
+        try
+        {
+            await _controller.BeginPairingAsync(receiver.Id);
+            using var dialog = new PairingCodeDialog(receiver.Name, _palette);
+            var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
+            if (result != DialogResult.OK)
+            {
+                await _controller.CancelPairingAsync(receiver.Id);
+                return false;
+            }
+            await _controller.PairReceiverAsync(receiver.Id, dialog.PairingCode);
+            RebuildReceiverRows(_controller.Receivers);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            try { await _controller.CancelPairingAsync(receiver.Id); } catch { }
+            AppLog.Error("pairing", $"Could not pair receiver {receiver.Id}.", ex);
+            MessageBox.Show(this, "AirBridge could not complete pairing. Check the code shown on the TV and try again.",
+                "AirBridge pairing", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    private async Task<bool> EnsureControlPairedAsync(ReceiverInfo receiver)
+    {
+        if (!receiver.RequiresControlPairing) return true;
+        try
+        {
+            await _controller.BeginPairingAsync(receiver.Id, controlPairing: true);
+            using var dialog = new PairingCodeDialog(receiver.Name, _palette);
+            var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
+            if (result != DialogResult.OK)
+            {
+                await _controller.CancelPairingAsync(receiver.Id);
+                return false;
+            }
+            await _controller.PairReceiverAsync(receiver.Id, dialog.PairingCode);
+            RebuildReceiverRows(_controller.Receivers);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            try { await _controller.CancelPairingAsync(receiver.Id); } catch { }
+            AppLog.Error("control-pairing", $"Could not pair Apple TV control for receiver {receiver.Id}.", ex);
+            MessageBox.Show(this, "AirBridge could not authorize Apple TV controls. Check the code shown on the TV and try again.",
+                "AirBridge pairing", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+    }
+
+    private async Task SleepAppleTvAsync(string receiverId)
+    {
+        var receiver = _controller.Receivers.SingleOrDefault(item => item.Id == receiverId);
+        if (receiver is null || !receiver.SupportsPowerControl) return;
+        var confirmation = MessageBox.Show(this,
+            $"Put {receiver.Name} to sleep?\n\nAirBridge will stop streaming to it. HDMI-CEC may also turn off the connected TV or receiver.",
+            "Sleep Apple TV", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+        if (confirmation != DialogResult.Yes) return;
+        if (!await EnsureControlPairedAsync(receiver)) return;
+        await RunUiActionAsync(async () =>
+        {
+            if (_controller.ReceiverPlayback.Any(item => item.Receiver.Id == receiverId))
+                await _controller.StopReceiverAsync(receiverId);
+            await _controller.SleepReceiverAsync(receiverId);
+            SetReceiverSelected(receiverId, false);
+        });
+    }
+
     private void SetReceiverSelected(string receiverId, bool selected)
     {
+        var receiver = _controller.Receivers.SingleOrDefault(item => item.Id == receiverId);
+        if (selected && receiver is { CanConnect: false })
+        {
+            if (_receiverRows.TryGetValue(receiverId, out var unavailableRow)) unavailableRow.SetSelected(false);
+            _trayFlyout.UpdateReceiver(receiverId, GetReceiverState(receiverId), selected: false);
+            ShowConnectionIssue(receiver);
+            return;
+        }
         if (selected) _selectedReceiverIds.Add(receiverId); else _selectedReceiverIds.Remove(receiverId);
         if (_receiverRows.TryGetValue(receiverId, out var row)) row.SetSelected(selected);
         _trayFlyout.UpdateReceiver(receiverId, GetReceiverState(receiverId), selected: selected);
@@ -545,12 +636,21 @@ public sealed class MainForm : Form
     {
         if (_groups.SelectedItem is not SpeakerGroup group) return;
         _selectedReceiverIds.Clear();
-        foreach (var id in group.ReceiverIds) _selectedReceiverIds.Add(id);
+        var connectableIds = _controller.Receivers.Where(item => item.CanConnect).Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var id in group.ReceiverIds.Where(connectableIds.Contains)) _selectedReceiverIds.Add(id);
         foreach (var pair in _receiverRows) pair.Value.SetSelected(_selectedReceiverIds.Contains(pair.Key));
         foreach (var receiver in _controller.Receivers) _trayFlyout.UpdateReceiver(receiver.Id, GetReceiverState(receiver.Id), selected: _selectedReceiverIds.Contains(receiver.Id));
         UpdateDashboardPresentation(IsDashboardStreamActive);
         PersistUiSettings();
         RefreshGroups();
+    }
+
+    private void ShowConnectionIssue(ReceiverInfo receiver)
+    {
+        AppLog.Warning("receiver", $"Receiver {receiver.Id} is not connectable with its advertised AirPlay access control.");
+        MessageBox.Show(this,
+            $"{receiver.Name} is set to allow AirPlay for Current User only. A Windows sender cannot use that Apple Account-only mode.\n\nOn the Mac, open System Settings → General → AirDrop & Continuity, then change Allow AirPlay for to Anyone on the Same Network. Refresh AirBridge afterward.",
+            "Mac AirPlay access", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private void RebuildTrayMenu()
