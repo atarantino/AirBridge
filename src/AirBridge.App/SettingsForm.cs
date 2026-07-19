@@ -6,6 +6,9 @@ namespace AirBridge.App;
 internal sealed class SettingsForm : Form
 {
     private const int WmSettingChange = 0x001A;
+    private const string ControlFrameTag = "AirBridge.ControlFrame";
+    private const string SecondaryTextTag = "AirBridge.SecondaryText";
+    private const string ErrorTextTag = "AirBridge.ErrorText";
     private sealed record GroupReceiverChoice(string ReceiverId, string Label)
     {
         public override string ToString() => Label;
@@ -110,7 +113,12 @@ internal sealed class SettingsForm : Form
         UiGeometry.ScaleInitialTextLayout(this);
         palette.Apply(this);
         ApplyColors(this, palette);
-        Shown += (_, _) => EnsureFitsWorkingArea();
+        WindowEffects.ApplyTheme(this, palette);
+        Shown += (_, _) =>
+        {
+            WindowEffects.ApplyTheme(this, palette);
+            EnsureFitsWorkingArea();
+        };
     }
 
     public event EventHandler? OpenLogsRequested;
@@ -154,6 +162,7 @@ internal sealed class SettingsForm : Form
         _pushToTalkShortcut.Enter += (_, _) => _shortcutBeforeCapture = _pushToTalkShortcut.Text;
         _pushToTalkShortcut.KeyDown += CapturePushToTalkShortcut;
         _pushToTalkError.ForeColor = palette.Error;
+        _pushToTalkError.Tag = ErrorTextTag;
         _holdThreshold.Value = Math.Clamp(settings.PushToTalkHoldThresholdMs, 100, 1000);
         _holdThreshold.AccessibleName = "Push-to-talk hold threshold in milliseconds";
 
@@ -170,6 +179,7 @@ internal sealed class SettingsForm : Form
             ? "Managed by the OPENAI_API_KEY environment variable"
             : storedApiKeyConfigured ? "A key is securely saved for this Windows user" : "No key is saved";
         _apiKeyStatus.ForeColor = palette.SecondaryText;
+        _apiKeyStatus.Tag = SecondaryTextTag;
         _removeApiKey.Click += (_, _) =>
         {
             _removeApiKeyRequested = true;
@@ -323,7 +333,7 @@ internal sealed class SettingsForm : Form
         left.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         left.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         left.Controls.Add(new Label { Text = "Saved groups", AutoSize = true, Font = UiGeometry.UiFont(9F, FontStyle.Bold), Margin = new Padding(0, 0, 0, 7) }, 0, 0);
-        left.Controls.Add(_speakerGroupList, 0, 1);
+        left.Controls.Add(FrameControl(_speakerGroupList, palette), 0, 1);
         left.Controls.Add(leftButtons, 0, 2);
 
         var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4 };
@@ -332,9 +342,9 @@ internal sealed class SettingsForm : Form
         details.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         details.Controls.Add(new Label { Text = "Group name", AutoSize = true, Margin = new Padding(0, 0, 0, 5) }, 0, 0);
-        details.Controls.Add(_speakerGroupName, 0, 1);
+        details.Controls.Add(FrameControl(_speakerGroupName, palette), 0, 1);
         details.Controls.Add(new Label { Text = "Speakers — check to add, uncheck to remove", AutoSize = true, Margin = new Padding(0, 8, 0, 5) }, 0, 2);
-        details.Controls.Add(_speakerGroupMembers, 0, 3);
+        details.Controls.Add(FrameControl(_speakerGroupMembers, palette), 0, 3);
 
         var columns = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, Padding = new Padding(24, 20, 24, 16) };
         columns.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 40));
@@ -469,6 +479,11 @@ internal sealed class SettingsForm : Form
         using var border = new Pen(palette.Border);
         args.Graphics.FillRectangle(fill, bounds);
         args.Graphics.DrawRectangle(border, bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        if (selected)
+        {
+            using var accent = new SolidBrush(palette.Accent);
+            args.Graphics.FillRectangle(accent, bounds.Left + 1, bounds.Bottom - 3, bounds.Width - 2, 3);
+        }
         TextRenderer.DrawText(
             args.Graphics,
             tabs.TabPages[args.Index].Text,
@@ -485,8 +500,25 @@ internal sealed class SettingsForm : Form
         AutoSize = true,
         MaximumSize = new Size(580, 0),
         ForeColor = palette.SecondaryText,
-        Margin = new Padding(0, 6, 0, 0)
+        Margin = new Padding(0, 6, 0, 0),
+        Tag = SecondaryTextTag
     };
+
+    private static Panel FrameControl(Control control, ThemePalette palette)
+    {
+        control.Dock = DockStyle.Fill;
+        control.Margin = Padding.Empty;
+        if (control is TextBoxBase textBox) textBox.BorderStyle = BorderStyle.None;
+        if (control is ListBox listBox) listBox.BorderStyle = BorderStyle.None;
+        var frame = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Margin = Padding.Empty, Tag = ControlFrameTag };
+        frame.Paint += (_, args) =>
+        {
+            using var border = new Pen(palette.Border);
+            args.Graphics.DrawRectangle(border, 0, 0, frame.ClientSize.Width - 1, frame.ClientSize.Height - 1);
+        };
+        frame.Controls.Add(control);
+        return frame;
+    }
 
     private static void AddField(TableLayoutPanel panel, int row, string label, Control control)
     {
@@ -500,10 +532,39 @@ internal sealed class SettingsForm : Form
 
     private static void ApplyColors(Control root, ThemePalette palette)
     {
-        if (root is ComboBox or CheckBox or Label or NumericUpDown) root.ForeColor = palette.Text;
-        if (root is ComboBox or NumericUpDown or TextBox) root.BackColor = palette.Surface;
+        root.ForeColor = root.Tag switch
+        {
+            SecondaryTextTag => palette.SecondaryText,
+            ErrorTextTag => palette.Error,
+            _ => palette.Text
+        };
+        if (root is ComboBox or NumericUpDown or TextBox or ListBox or CheckedListBox) root.BackColor = palette.Surface;
+        if (root is ComboBox combo)
+        {
+            combo.FlatStyle = FlatStyle.Flat;
+            combo.DrawMode = DrawMode.OwnerDrawFixed;
+            combo.DrawItem += (_, args) => DrawComboItem(combo, args, palette);
+        }
         if (root is TabPage) root.BackColor = palette.Window;
+        if (root is Panel { Tag: ControlFrameTag }) root.BackColor = palette.Surface;
         foreach (Control child in root.Controls) ApplyColors(child, palette);
+    }
+
+    private static void DrawComboItem(ComboBox combo, DrawItemEventArgs args, ThemePalette palette)
+    {
+        if (args.Index < 0) return;
+        var selected = (args.State & DrawItemState.Selected) != 0;
+        using var fill = new SolidBrush(selected ? palette.SurfaceSelected : palette.Surface);
+        args.Graphics.FillRectangle(fill, args.Bounds);
+        TextRenderer.DrawText(
+            args.Graphics,
+            combo.GetItemText(combo.Items[args.Index]),
+            combo.Font,
+            Rectangle.Inflate(args.Bounds, -6, 0),
+            palette.Text,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if ((args.State & DrawItemState.Focus) != 0)
+            ControlPaint.DrawFocusRectangle(args.Graphics, Rectangle.Inflate(args.Bounds, -1, -1), palette.Focus, selected ? palette.SurfaceSelected : palette.Surface);
     }
 
     private void CapturePushToTalkShortcut(object? sender, KeyEventArgs args)

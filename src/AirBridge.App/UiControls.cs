@@ -575,7 +575,20 @@ internal sealed class OwnerDrawnSlider : Control, IThemeAware
 internal static class WindowEffects
 {
     private const int DwmwaWindowCornerPreference = 33;
+    private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
+    private const int DwmwaUseImmersiveDarkMode = 20;
+    private const int DwmwaBorderColor = 34;
+    private const int DwmwaCaptionColor = 35;
+    private const int DwmwaTextColor = 36;
     private const int DwmwcpRound = 2;
+
+    public static void ApplyTheme(Form form, ThemePalette palette)
+    {
+        ApplyNativeTheme(form, palette);
+        TrySetDarkTitleBar(form, palette.IsDark && !palette.IsHighContrast);
+        TrySetCaptionColors(form, palette);
+        TryEnableRoundedCorners(form);
+    }
 
     public static void TryEnableRoundedCorners(Form form)
     {
@@ -585,6 +598,77 @@ internal static class WindowEffects
         catch (EntryPointNotFoundException) { }
     }
 
+    private static void ApplyNativeTheme(Control root, ThemePalette palette)
+    {
+        var theme = palette.IsHighContrast ? null : palette.IsDark ? "DarkMode_Explorer" : "Explorer";
+        try { _ = SetWindowTheme(root.Handle, theme, null); }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+
+        switch (root)
+        {
+            case Button button when !palette.IsHighContrast:
+                button.UseVisualStyleBackColor = false;
+                button.FlatStyle = FlatStyle.Flat;
+                button.FlatAppearance.BorderSize = 1;
+                button.FlatAppearance.BorderColor = palette.Border;
+                button.FlatAppearance.MouseOverBackColor = palette.SurfaceHover;
+                button.FlatAppearance.MouseDownBackColor = palette.SurfacePressed;
+                button.BackColor = palette.Surface;
+                button.ForeColor = palette.Text;
+                break;
+            case TextBoxBase or ListBox or ComboBox or NumericUpDown:
+                root.BackColor = palette.Surface;
+                root.ForeColor = palette.Text;
+                break;
+        }
+
+        foreach (Control child in root.Controls) ApplyNativeTheme(child, palette);
+    }
+
+    private static void TrySetDarkTitleBar(Form form, bool dark)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17763)) return;
+        try
+        {
+            if (dark) _ = SetProp(form.Handle, "UseImmersiveDarkModeColors", new IntPtr(1));
+            else _ = RemoveProp(form.Handle, "UseImmersiveDarkModeColors");
+            var value = dark ? 1 : 0;
+            var result = DwmSetWindowAttribute(form.Handle, DwmwaUseImmersiveDarkMode, ref value, sizeof(int));
+            if (result != 0)
+                _ = DwmSetWindowAttribute(form.Handle, DwmwaUseImmersiveDarkModeBefore20H1, ref value, sizeof(int));
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    private static void TrySetCaptionColors(Form form, ThemePalette palette)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000) || palette.IsHighContrast) return;
+        try
+        {
+            var border = ColorRef(palette.Border);
+            var caption = ColorRef(palette.Window);
+            var text = ColorRef(palette.Text);
+            _ = DwmSetWindowAttribute(form.Handle, DwmwaBorderColor, ref border, sizeof(int));
+            _ = DwmSetWindowAttribute(form.Handle, DwmwaCaptionColor, ref caption, sizeof(int));
+            _ = DwmSetWindowAttribute(form.Handle, DwmwaTextColor, ref text, sizeof(int));
+        }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    private static int ColorRef(Color color) => color.R | color.G << 8 | color.B << 16;
+
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    private static extern int SetWindowTheme(IntPtr hwnd, string? subAppName, string? subIdList);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool SetProp(IntPtr hwnd, string name, IntPtr data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr RemoveProp(IntPtr hwnd, string name);
 }

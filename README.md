@@ -2,7 +2,9 @@
 
 AirBridge sends live Windows audio to AirPlay speakers. It can capture the complete Windows system mix or one application's process tree, normalize the stream to 44.1 kHz signed 16-bit stereo PCM, and route it to one or more independently controlled receivers. AirBridge discovers receivers on the local network and does not assume a default speaker.
 
-The Windows 10/11 tray app uses one receiver-first flyout for daily controls, plus an expanded Settings window for audio defaults, speaker synchronization, troubleshooting, and the optional assistant. It supports multi-speaker selection, independent speaker volume, acoustic delay measurement, per-speaker alignment trims, and silence standby. Group playback uses independent RAOP sessions: AirBridge anchor-aligns their sender input and can correct constant receiver latency with manual per-speaker trims. It is not AirPlay 2 buffered-mode multi-room synchronization and does not use a shared PTP clock or anchor-time playback.
+The normal Windows 10/11 app uses one receiver-first tray flyout for daily controls, plus an expanded Settings window for audio defaults, speaker synchronization, troubleshooting, and the optional assistant. It supports multi-speaker selection, independent speaker volume, acoustic delay measurement, per-speaker alignment trims, and silence standby. Group playback uses independent RAOP sessions: AirBridge anchor-aligns their sender input and can correct constant receiver latency with manual per-speaker trims. It is not AirPlay 2 buffered-mode multi-room synchronization and does not use a shared PTP clock or anchor-time playback.
+
+A larger dashboard remains as a developer preview and diagnostics harness; it is not part of the normal tray workflow. Launch it with `dotnet run --project src\AirBridge.App\AirBridge.App.csproj -- --preview`. The dashboard exposes the same receiver controls plus stream telemetry, assistant controls, and a diagnostics menu used during development and validation.
 
 ## How it works
 
@@ -21,7 +23,7 @@ No temporary media file is created anywhere in the streaming path. Raw audio, re
 
 ## Requirements and setup
 
-- Windows 10 version 2004 or newer, or Windows 11
+- Windows 10 22H2 (build 19045) or newer, or Windows 11
 - .NET 9 SDK
 - Python 3.12
 - An AirPlay/RAOP receiver on the same trusted Private network
@@ -34,7 +36,7 @@ dotnet run --project src\AirBridge.App\AirBridge.App.csproj
 
 On first launch, refresh the output list, select one or more of your discovered speakers, and choose **Start**. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
 
-Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout selects a saved group for playback and links directly to that Settings page.
+Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout applies a group's saved speaker selection; choose **Start** separately to begin playback. The same menu links directly to the Groups settings page.
 
 To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge. Saved speaker trims are ignored while only one speaker is active and automatically take effect again when the route has multiple speakers.
 
@@ -63,7 +65,7 @@ AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`.
 
 ## AI Activity Inspector
 
-Open **Settings → Advanced → Open AI Activity Inspector** (or use the dashboard diagnostics menu) to see the optional assistant work in real time. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and whether a local action was allowed, blocked, or awaiting confirmation. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
+Open **Settings → Advanced → Open AI Activity Inspector** to see the optional assistant work in real time. When using the developer dashboard in `--preview` mode, the same inspector is available from its diagnostics menu. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and whether a local action was allowed, blocked, or awaiting confirmation. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
 
 The inspector never stores microphone audio or displays API keys. Credentials, network addresses, hardware identifiers, and pipe identifiers are redacted before an event enters its bounded buffer. Transcript text is hidden in the detail pane unless the user explicitly enables it, and inspector events are not written to disk.
 

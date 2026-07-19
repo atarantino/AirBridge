@@ -56,10 +56,12 @@ internal sealed class ActivityInspectorForm : Form
     {
         Dock = DockStyle.Fill,
         View = View.Details,
+        OwnerDraw = true,
         FullRowSelect = true,
         HideSelection = false,
         MultiSelect = false,
-        GridLines = false
+        GridLines = false,
+        BorderStyle = BorderStyle.None
     };
     private readonly TextBox _details = new()
     {
@@ -68,7 +70,9 @@ internal sealed class ActivityInspectorForm : Form
         ReadOnly = true,
         ScrollBars = ScrollBars.Both,
         WordWrap = false,
-        Font = new Font("Consolas", 9F)
+        Font = new Font("Consolas", 9F),
+        BorderStyle = BorderStyle.None,
+        Margin = Padding.Empty
     };
     private readonly CheckBox _paused = new() { Text = "Pause", AutoSize = true, Margin = new Padding(8, 8, 10, 0) };
     private readonly CheckBox _autoScroll = new() { Text = "Auto-scroll", AutoSize = true, Checked = true, Margin = new Padding(0, 8, 10, 0) };
@@ -76,6 +80,7 @@ internal sealed class ActivityInspectorForm : Form
     private readonly Button _copy = new() { Text = "Copy sanitized JSON", AutoSize = true, Enabled = false };
     private readonly Button _clear = new() { Text = "Clear", AutoSize = true };
     private readonly Label _status = new() { AutoSize = true, Margin = new Padding(10, 9, 0, 0) };
+    private readonly Label _privacy;
     private ThemePalette _palette;
 
     internal ActivityInspectorForm(AgentActivityStore store, ThemePalette palette)
@@ -100,6 +105,9 @@ internal sealed class ActivityInspectorForm : Form
         _events.AccessibleName = "AI activity timeline";
         _events.SelectedIndexChanged += (_, _) => ShowSelectedActivity();
         _events.Resize += (_, _) => ResizeSummaryColumn();
+        _events.DrawColumnHeader += DrawColumnHeader;
+        _events.DrawItem += (_, args) => args.DrawDefault = false;
+        _events.DrawSubItem += DrawEventCell;
 
         _paused.CheckedChanged += (_, _) =>
         {
@@ -115,11 +123,12 @@ internal sealed class ActivityInspectorForm : Form
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
-            Padding = new Padding(8, 5, 8, 4)
+            Padding = new Padding(12, 8, 12, 7),
+            Margin = Padding.Empty
         };
         toolbar.Controls.AddRange([_paused, _autoScroll, _showTranscripts, _copy, _clear, _status]);
 
-        var privacy = new Label
+        _privacy = new Label
         {
             Dock = DockStyle.Fill,
             Text = "Memory only · bounded to 250 events · credentials, network addresses, hardware IDs, and pipe identifiers are redacted · audio is never logged",
@@ -134,18 +143,25 @@ internal sealed class ActivityInspectorForm : Form
             Orientation = Orientation.Horizontal,
             SplitterDistance = 385,
             Panel1MinSize = 180,
-            Panel2MinSize = 110
+            Panel2MinSize = 110,
+            SplitterWidth = 1,
+            IsSplitterFixed = false,
+            Margin = Padding.Empty
         };
-        split.Panel1.Controls.Add(_events);
-        split.Panel2.Controls.Add(_details);
+        var timelineFrame = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1, 1, 1, 0), Margin = Padding.Empty };
+        var detailsFrame = new Panel { Dock = DockStyle.Fill, Padding = new Padding(1), Margin = Padding.Empty };
+        timelineFrame.Controls.Add(_events);
+        detailsFrame.Controls.Add(_details);
+        split.Panel1.Controls.Add(timelineFrame);
+        split.Panel2.Controls.Add(detailsFrame);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 52));
         root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
         root.Controls.Add(toolbar, 0, 0);
         root.Controls.Add(split, 0, 1);
-        root.Controls.Add(privacy, 0, 2);
+        root.Controls.Add(_privacy, 0, 2);
         Controls.Add(root);
         SystemTextScale.Changed += OnTextScaleChanged;
         UiGeometry.ScaleInitialTextLayout(this);
@@ -153,6 +169,7 @@ internal sealed class ActivityInspectorForm : Form
         _store.ActivityPublished += OnActivityPublished;
         _store.Cleared += OnStoreCleared;
         ApplyTheme(palette);
+        Shown += (_, _) => WindowEffects.ApplyTheme(this, _palette);
         RebuildTimeline();
     }
 
@@ -160,11 +177,22 @@ internal sealed class ActivityInspectorForm : Form
     {
         _palette = palette;
         palette.Apply(this);
-        _events.BackColor = palette.Surface;
+        _events.BackColor = palette.Window;
         _events.ForeColor = palette.Text;
-        _details.BackColor = palette.IsDark ? Color.FromArgb(24, 26, 30) : Color.White;
+        _details.BackColor = palette.Window;
         _details.ForeColor = palette.Text;
+        _privacy.ForeColor = palette.SecondaryText;
+        if (_events.Parent is { } timelineFrame) timelineFrame.BackColor = palette.Border;
+        if (_details.Parent is { } detailsFrame) detailsFrame.BackColor = palette.Border;
+        if (_events.Parent?.Parent?.Parent is SplitContainer split)
+        {
+            split.BackColor = palette.Border;
+            split.Panel1.BackColor = palette.Window;
+            split.Panel2.BackColor = palette.Window;
+        }
+        WindowEffects.ApplyTheme(this, palette);
         RecolorItems();
+        _events.Invalidate();
     }
 
     protected override void Dispose(bool disposing)
@@ -292,6 +320,46 @@ internal sealed class ActivityInspectorForm : Form
     {
         if (_events.Columns.Count < 5) return;
         _events.Columns[3].Width = Math.Max(180, _events.ClientSize.Width - 96 - 112 - 190 - 90 - 24);
+    }
+
+    private void DrawColumnHeader(object? sender, DrawListViewColumnHeaderEventArgs args)
+    {
+        using var fill = new SolidBrush(_palette.Surface);
+        using var border = new Pen(_palette.Border);
+        args.Graphics.FillRectangle(fill, args.Bounds);
+        args.Graphics.DrawLine(border, args.Bounds.Left, args.Bounds.Bottom - 1, args.Bounds.Right, args.Bounds.Bottom - 1);
+        if (args.ColumnIndex > 0)
+            args.Graphics.DrawLine(border, args.Bounds.Left, args.Bounds.Top + 7, args.Bounds.Left, args.Bounds.Bottom - 7);
+        TextRenderer.DrawText(
+            args.Graphics,
+            args.Header?.Text ?? string.Empty,
+            _events.Font,
+            Rectangle.Inflate(args.Bounds, -8, 0),
+            _palette.SecondaryText,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+    }
+
+    private void DrawEventCell(object? sender, DrawListViewSubItemEventArgs args)
+    {
+        if (args.Item is null || args.SubItem is null) return;
+        var selected = args.Item.Selected;
+        using var fill = new SolidBrush(selected ? _palette.SurfaceSelected : _palette.Window);
+        args.Graphics.FillRectangle(fill, args.Bounds);
+        var textColor = args.ColumnIndex switch
+        {
+            0 or 3 or 4 => _palette.SecondaryText,
+            1 => args.Item.ForeColor,
+            _ => _palette.Text
+        };
+        TextRenderer.DrawText(
+            args.Graphics,
+            args.SubItem.Text,
+            _events.Font,
+            Rectangle.Inflate(args.Bounds, -8, 0),
+            textColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+        if (args.ColumnIndex == _events.Columns.Count - 1 && selected && args.Item.Focused && _events.Focused)
+            ControlPaint.DrawFocusRectangle(args.Graphics, Rectangle.Inflate(args.Item.Bounds, -1, -1), _palette.Focus, _palette.SurfaceSelected);
     }
 
     private void RecolorItems()
