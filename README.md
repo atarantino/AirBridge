@@ -114,6 +114,10 @@ dotnet test AirBridge.sln -c Release --filter "Category=Hardware"
 
 Packaging produces `artifacts\AirBridge-Setup.exe`, `artifacts\AirBridge.msi`, and a portable application under `artifacts\publish`.
 
+## Acknowledgments
+
+AirBridge streams RAOP audio through [pyatv](https://pyatv.dev), Pierre Ståhl's excellent open-source Apple TV and AirPlay library for Python. Its clean protocol implementation is what made a file-free live `AudioSource` on Windows possible.
+
 ## License
 
 AirBridge is available under the [MIT License](LICENSE).
