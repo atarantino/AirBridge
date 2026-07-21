@@ -2,7 +2,7 @@
      xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
   <Bundle Name="AirBridge for Windows"
           Manufacturer="AirBridge"
-          Version="0.3.2"
+          Version="1.0.1"
           UpgradeCode="7F1C28DF-D74A-4A5E-ACF8-416775882BDB">
     <BootstrapperApplication>
       <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense"
