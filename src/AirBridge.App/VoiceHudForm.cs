@@ -5,11 +5,11 @@ namespace AirBridge.App;
 
 internal sealed class VoiceHudForm : Form
 {
+    private const int CornerRadius = 14;
     private const int WsExNoActivate = 0x08000000;
-    private const int WsExToolWindow = 0x00000080;
     private const int CsDropShadow = 0x00020000;
     private const int WmSettingChange = 0x001A;
-    private readonly RoundedPanel _surface = new() { Dock = DockStyle.Fill, Radius = 18, Padding = new Padding(14, 10, 10, 10) };
+    private readonly RoundedPanel _surface = new() { Dock = DockStyle.Fill, Radius = WindowEffects.UseRoundedPopupCorners ? CornerRadius : 0, ClipToRoundedRegion = false, Padding = new Padding(14, 10, 10, 10) };
     private readonly VoiceMicIndicator _mic = new() { Dock = DockStyle.Fill, Margin = new Padding(0, 4, 8, 4) };
     private readonly Label _status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.BottomLeft };
     private readonly Label _hint = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.TopLeft };
@@ -90,7 +90,11 @@ internal sealed class VoiceHudForm : Form
         WireDrag(_status);
         WireDrag(_hint);
         WireDrag(_level);
-        Shown += (_, _) => WindowEffects.TryEnableRoundedCorners(this);
+        Shown += (_, _) =>
+        {
+            WindowEffects.ApplyTheme(this, _palette);
+            WindowEffects.ConfigureBorderlessPopup(this);
+        };
         ApplyTheme(palette);
     }
 
@@ -103,8 +107,10 @@ internal sealed class VoiceHudForm : Form
         get
         {
             var parameters = base.CreateParams;
-            parameters.ExStyle |= WsExNoActivate | WsExToolWindow;
-            parameters.ClassStyle |= CsDropShadow;
+            parameters.ExStyle |= WsExNoActivate;
+            // CS_DROPSHADOW follows the binary Win32 region on Windows 10 and
+            // exposes a bright, stair-stepped fringe around rounded corners.
+            parameters.ClassStyle &= ~CsDropShadow;
             return parameters;
         }
     }
@@ -122,6 +128,11 @@ internal sealed class VoiceHudForm : Form
         _status.ForeColor = palette.Text;
         _hint.ForeColor = palette.SecondaryText;
         UpdateWindowRegion();
+        if (IsHandleCreated)
+        {
+            WindowEffects.ApplyTheme(this, palette);
+            WindowEffects.ConfigureBorderlessPopup(this);
+        }
         Invalidate(true);
     }
 
@@ -381,15 +392,11 @@ internal sealed class VoiceHudForm : Form
 
     private void UpdateWindowRegion()
     {
-        if (_palette.IsHighContrast || ClientSize.Width <= 0 || ClientSize.Height <= 0)
-        {
-            Region = null;
-            return;
-        }
-        var old = Region;
-        using var path = UiGeometry.Rounded(ClientRectangle, UiGeometry.Scale(this, 18));
-        Region = new Region(path);
-        old?.Dispose();
+        // Windows 10's binary rounded regions produce visibly jagged outer
+        // edges. Keep the HUD rectangular there and let DWM round Windows 11.
+        var previousRegion = Region;
+        Region = null;
+        previousRegion?.Dispose();
     }
 
     private void SetCompactLayout()

@@ -248,8 +248,21 @@ internal sealed class AntiAliasedLabel : Control
 internal sealed class RoundedPanel : Panel, IThemeAware
 {
     private ThemePalette _palette = ThemePalette.Current();
+    private bool _clipToRoundedRegion = true;
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal int Radius { get; set; } = 12;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool ClipToRoundedRegion
+    {
+        get => _clipToRoundedRegion;
+        set
+        {
+            if (_clipToRoundedRegion == value) return;
+            _clipToRoundedRegion = value;
+            UpdateRegion();
+        }
+    }
 
     public RoundedPanel()
     {
@@ -269,12 +282,19 @@ internal sealed class RoundedPanel : Panel, IThemeAware
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         if (_palette.IsHighContrast) { base.OnPaintBackground(e); return; }
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.Clear(Parent?.BackColor ?? _palette.Window);
         var bounds = Rectangle.Inflate(ClientRectangle, -1, -1);
-        using var path = UiGeometry.Rounded(bounds, UiGeometry.Scale(this, Radius));
         using var fill = new SolidBrush(_palette.Surface);
         using var border = new Pen(_palette.Border);
+        if (Radius <= 0)
+        {
+            e.Graphics.FillRectangle(fill, bounds);
+            e.Graphics.DrawRectangle(border, bounds);
+            return;
+        }
+
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var path = UiGeometry.Rounded(bounds, UiGeometry.Scale(this, Radius));
         e.Graphics.FillPath(fill, path);
         e.Graphics.DrawPath(border, path);
     }
@@ -283,9 +303,17 @@ internal sealed class RoundedPanel : Panel, IThemeAware
 
     private void UpdateRegion()
     {
-        if (_palette.IsHighContrast) { Region = null; return; }
+        if (_palette.IsHighContrast || !ClipToRoundedRegion)
+        {
+            var previousRegion = Region;
+            Region = null;
+            previousRegion?.Dispose();
+            return;
+        }
+        var old = Region;
         using var path = UiGeometry.Rounded(ClientRectangle, UiGeometry.Scale(this, Radius));
         Region = new Region(path);
+        old?.Dispose();
     }
 }
 
@@ -580,6 +608,7 @@ internal sealed class OwnerDrawnSlider : Control, IThemeAware
 
 internal static class WindowEffects
 {
+    private const int DwmwaNcRenderingPolicy = 2;
     private const int DwmwaWindowCornerPreference = 33;
     private const int DwmwaUseImmersiveDarkModeBefore20H1 = 19;
     private const int DwmwaUseImmersiveDarkMode = 20;
@@ -587,6 +616,9 @@ internal static class WindowEffects
     private const int DwmwaCaptionColor = 35;
     private const int DwmwaTextColor = 36;
     private const int DwmwcpRound = 2;
+    private const int DwmncrpDisabled = 1;
+
+    public static bool UseRoundedPopupCorners => OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
 
     public static void ApplyTheme(Form form, ThemePalette palette)
     {
@@ -600,6 +632,22 @@ internal static class WindowEffects
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) return;
         try { var value = DwmwcpRound; _ = DwmSetWindowAttribute(form.Handle, DwmwaWindowCornerPreference, ref value, sizeof(int)); }
+        catch (DllNotFoundException) { }
+        catch (EntryPointNotFoundException) { }
+    }
+
+    public static void ConfigureBorderlessPopup(Form form)
+    {
+        if (UseRoundedPopupCorners)
+        {
+            TryEnableRoundedCorners(form);
+            return;
+        }
+
+        // Windows 10's DWM non-client shadow follows a rounded Win32 region as
+        // a bright staircase, most visibly along the lower corners. The popup
+        // paints its own border, so no non-client rendering is needed here.
+        try { var value = DwmncrpDisabled; _ = DwmSetWindowAttribute(form.Handle, DwmwaNcRenderingPolicy, ref value, sizeof(int)); }
         catch (DllNotFoundException) { }
         catch (EntryPointNotFoundException) { }
     }
