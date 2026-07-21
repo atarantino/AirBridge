@@ -1,32 +1,45 @@
 # AirBridge for Windows
 
-AirBridge sends live Windows audio to AirPlay speakers. It can capture the complete Windows system mix or one application's process tree, normalize the stream to 44.1 kHz signed 16-bit stereo PCM, and route it to one or more independently controlled receivers. AirBridge discovers receivers on the local network and does not assume a default speaker.
+AirBridge sends live Windows system audio—or one application's audio—to one or more AirPlay speakers. It runs from the system tray and adds per-speaker volume, multi-speaker alignment, silence standby, browser picture-delay correction, and an optional GPT-5.6 voice assistant.
 
-The normal Windows 10/11 app uses one receiver-first tray flyout for daily controls, plus an expanded Settings window for audio defaults, speaker synchronization, troubleshooting, and the optional assistant. It supports multi-speaker selection, independent speaker volume, acoustic delay measurement, per-speaker alignment trims, and silence standby. Group playback uses independent RAOP sessions: AirBridge anchor-aligns their sender input and can correct constant receiver latency with manual per-speaker trims. It is not AirPlay 2 buffered-mode multi-room synchronization and does not use a shared PTP clock or anchor-time playback.
+## Judge quick start
 
-A larger dashboard remains as a developer preview and diagnostics harness; it is not part of the normal tray workflow. Launch it with `dotnet run --project src\AirBridge.App\AirBridge.App.csproj -- --preview`. The dashboard exposes the same receiver controls plus stream telemetry, assistant controls, and a diagnostics menu used during development and validation.
+**Supported platform:** Windows 10 22H2 (build 19045) or newer, or Windows 11. Testing requires an AirPlay/RAOP receiver on the same trusted Private network. An OpenAI API key is optional; core audio streaming works without one.
+
+1. Download `AirBridge-Setup.exe` from the [latest GitHub release](https://github.com/atarantino/AirBridge/releases/latest). No build tools are required.
+2. Run the installer and launch **AirBridge** from the Start menu. The installer is not code-signed, so Windows SmartScreen may require **More info → Run anyway**.
+3. Open the tray flyout, select a discovered speaker, and choose **Start**.
+4. Play audio on Windows and confirm that it moves to the selected speaker. Adjust its volume from the flyout.
+5. To test voice control, add an OpenAI API key in **Settings → Assistant**, hold the configured push-to-talk shortcut, and say: “AirPlay all system audio to the kitchen speaker.”
+
+For a second test path, start one speaker, open **Settings → Browser sync**, and choose **Measure delay**. Load the browser extension as described below, enter the measured delay, and enable it on a video site to delay the picture while leaving its audio playing normally.
+
+## What it does
+
+- Captures the full Windows mix or one application's process tree through WASAPI.
+- Streams live, file-free PCM to independently controlled AirPlay/RAOP receivers.
+- Routes to multiple speakers and compensates for constant receiver latency with acoustic measurement and per-speaker trims.
+- Releases idle speaker sessions through silence standby, then reconnects the same route when audio resumes.
+- Delays browser video frames to correct AirPlay lip sync without delaying the captured audio.
+- Accepts optional voice commands through GPT-5.6 with local policy enforcement and an inspectable activity log.
+
+AirBridge uses independent RAOP sessions, not AirPlay 2 buffered-mode multi-room synchronization. Receiver alignment corrects constant latency but does not provide a shared PTP playback clock.
 
 ## How it works
 
 ```text
-Windows render engine
-  → WASAPI system or process-tree loopback
-  → stateful 44.1 kHz s16le stereo normalizer
-  → shared in-memory PCM fanout
-  → one shared 20 ms pump, bounded per-receiver ring, and start gate
-  → per-receiver alignment trim and current-user named pipe
-  → live pyatv AudioSource and independent RAOP session
+Windows WASAPI loopback
+  → 44.1 kHz s16le stereo normalization
+  → shared bounded in-memory PCM fanout
+  → per-receiver trim, named pipe, and RAOP session
   → AirPlay receiver
 ```
 
-No temporary media file is created anywhere in the streaming path. Raw audio, receiver addresses, credentials, executable paths, and window titles are never sent to OpenAI. Push-to-talk keeps its short recording in memory and sends it only when the user deliberately records a command. Acoustic delay measurement also keeps microphone PCM in memory and never sends it to OpenAI.
+No temporary media file is created in the streaming path. Raw audio, receiver addresses, credentials, executable paths, and window titles are never sent to OpenAI. See [architecture](docs/architecture.md), [hardware validation](docs/hardware-validation.md), and [AI tools and privacy](docs/ai-tools.md) for details.
 
-## Requirements and setup
+## Build from source
 
-- Windows 10 22H2 (build 19045) or newer, or Windows 11
-- .NET 9 SDK
-- Python 3.12
-- An AirPlay/RAOP receiver on the same trusted Private network
+Requirements: the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), Python 3.12, Windows 10/11, and an AirPlay receiver on the same trusted Private network.
 
 ```powershell
 py -3.12 -m venv .venv
@@ -34,46 +47,45 @@ py -3.12 -m venv .venv
 dotnet run --project src\AirBridge.App\AirBridge.App.csproj
 ```
 
-On first launch, refresh the output list, select one or more discovered AirPlay receivers, and choose **Start**. If an Apple TV requires first-time pairing, AirBridge prompts for the code shown on the TV and remembers the resulting credentials for later connections. New receivers begin at 30% volume, applied only after the RAOP RECORD transition.
+On first launch, refresh the output list, select one or more receivers, and choose **Start**. Apple TV pairing prompts for the code displayed on the TV. For a Mac receiver, set **Allow AirPlay for** to **Anyone on the Same Network**.
 
-A Mac advertising itself as an AirPlay Receiver is usable when **Allow AirPlay for** is set to **Anyone on the Same Network**. The **Current User** setting only accepts devices signed into the same Apple Account, which a Windows sender cannot satisfy; AirBridge detects that mode, leaves the Mac unselected, and points to the setting that must be changed.
-
-Open **Settings** from the gear in the tray flyout. The tray right-click menu also includes **Settings** for keyboard access. Appearance, the default audio source, speaker groups, silence standby, per-speaker sync offsets, browser picture sync, troubleshooting, and the optional assistant are organized there. Use **Settings → Groups** to create, rename, edit, or remove groups. The **Groups** button in the tray flyout applies a group's saved speaker selection; choose **Start** separately to begin playback. The same menu links directly to the Groups settings page.
-
-Discovered Apple TVs include a **Sleep Apple TV** action in their receiver row. AirBridge always asks for confirmation, stops its active stream to prevent an automatic reconnect, and then places the Apple TV in standby. The first use can require a separate on-screen code for Apple TV control authorization. HDMI-CEC may also turn off the connected display or receiver.
-
-To align multiple speakers, open **Settings → Speaker sync** and add a 0–500 ms delay to whichever speaker plays earlier. Recheck the offsets after moving a speaker or changing the selected outputs; a receiver added to an already-playing stream joins at the live edge. Saved speaker trims are ignored while only one speaker is active and automatically take effect again when the route has multiple speakers.
-
-The five chirps enter in memory through the normalized capture fanout on the same 20 ms sender clock, so their measured medians include the bounded rings, alignment trim, named pipe, RAOP session, receiver latency, and room acoustic return. While measuring, synthetic chirp blocks temporarily replace concurrent capture blocks at one-times rate and can advance even when a silent endpoint emits no callback. No calibration or microphone media file is created.
-
-Silence standby is enabled by default after 60 seconds and is configurable from Settings (10–600 seconds or off) or the GPT tools. It releases all RAOP sessions so other senders can use the speakers while Windows capture stays ready. When real audio returns, AirBridge clears old queued PCM, restarts the same group through the shared gate, and reapplies saved trims and volumes. The reconnect handshake takes roughly 1–3 seconds and audio during that interval is intentionally not replayed.
-
-An OpenAI API key is optional. Paste it into **Settings** to save it for the current Windows user in Windows Credential Manager; the app never displays a saved key. `OPENAI_API_KEY` remains available as a managed override and takes precedence when set:
+The larger developer diagnostics dashboard is available with:
 
 ```powershell
-$env:OPENAI_API_KEY = "your-key"
-dotnet run --project src\AirBridge.App\AirBridge.App.csproj
+dotnet run --project src\AirBridge.App\AirBridge.App.csproj -- --preview
 ```
 
-Core capture, streaming, tray controls, health telemetry, and delay measurement work without an API key.
+## Browser extension
 
-## Browser picture delay
+- **Chrome or Edge:** load `src/AirBridge.BrowserExtension` as an unpacked Manifest V3 extension.
+- **Firefox:** open `about:debugging#/runtime/this-firefox`, choose **Load Temporary Add-on**, and select `src/AirBridge.FirefoxExtension/manifest.json`.
 
-Load `src/AirBridge.BrowserExtension` as an unpacked Manifest V3 extension in Chrome or Edge. For Firefox, open `about:debugging#/runtime/this-firefox`, select **Load Temporary Add-on**, and choose `src/AirBridge.FirefoxExtension/manifest.json`. The tray flyout always shows the current recommended picture delay; select it to open **Settings → Browser sync**. For the most accurate value, start exactly one speaker and use **Measure delay**, then enter the reported number in the extension popup and enable that video site.
+Start exactly one speaker, use **Measure delay** in AirBridge, enter the result in the extension popup, and enable the current video site. Protected DRM/EME video is restored and skipped when frame capture is unavailable. More detail is in [browser sync](docs/browser-sync.md).
 
-The extension leaves the real `<video>` playing so its audio continues into WASAPI. It makes only the real picture transparent, captures downscaled frames into a bounded in-memory queue, and renders delayed frames on an overlay canvas. Buffering is capped at approximately four seconds and 450 frames. Seeks flush the queue; pause freezes its clock; resize, fullscreen, SPA navigation, and replaced video elements are tracked. DRM/EME or otherwise protected frames are restored and skipped when capture is blocked.
+## Optional GPT-5.6 assistant
 
-## Runtime logs
+Add an OpenAI API key in **Settings → Assistant**; AirBridge stores it for the current Windows user in Windows Credential Manager and never displays the saved value. `OPENAI_API_KEY` can be used as a managed override.
 
-AirBridge keeps bounded rolling runtime logs in `%LOCALAPPDATA%\AirBridge\logs`. Open them from **Settings → Advanced → Open logs folder**. The logs include receiver state changes, RAOP subprocess stderr, and exception stack traces. Network addresses, hardware addresses, and pipe identifiers are redacted, and audio is never logged.
+The assistant uses `gpt-5.6` through the Responses API for reasoning, intent resolution, diagnosis, and function calling. `gpt-4o-transcribe` handles user-approved push-to-talk transcription. A local allowlist independently classifies each tool call as read-only, reversible, confirmation-required, or forbidden.
 
-## AI Activity Inspector
+Open **Settings → Advanced → Open AI Activity Inspector** to view transcription events, Responses API requests, policy decisions, tool calls, results, latency, token usage, and cost estimates. The model never receives raw audio, credentials, or receiver network details.
 
-Open **Settings → Advanced → Open AI Activity Inspector** to see the optional assistant work in real time. When using the developer dashboard in `--preview` mode, the same inspector is available from its diagnostics menu. The bounded, in-memory timeline separates transcription, Responses API requests, local policy decisions, tool calls, tool results, and final answers. It shows model names, request latency, token usage when returned by the API, and estimated per-response, session, and tracked cost based on the embedded OpenAI rate card. The estimate accounts for cache reads and cache writes but may differ from the OpenAI invoice; tracking begins after this feature is installed. Pause, clear, auto-scroll, transcript visibility, and sanitized JSON copy controls are included.
+## Built with Codex and GPT-5.6
 
-The inspector never stores microphone audio or displays API keys. Credentials, network addresses, hardware identifiers, and pipe identifiers are redacted before an event enters its bounded buffer. Transcript text is hidden in the detail pane unless the user explicitly enables it and is never written to disk. Sanitized operational events are stored with AirBridge's rolling logs. The aggregate estimated-cost ledger is persisted separately in AirBridge's local application data and its total is shown on the Assistant settings page.
+AirBridge was built during OpenAI Build Week in July 2026 with Codex as the primary implementation partner across C#, Python, and JavaScript.
 
-## Verify and package
+Human direction supplied the product requirements, receiver environment, network-permission diagnosis, acoustic observations, and final product, safety, and scope decisions. Codex accelerated the work by:
+
+- tracing pyatv's RAOP internals to find the source-opening seam for a permanently open, file-free `AudioSource`;
+- designing and debugging the shared sender clock, bounded receiver queues, readiness gate, and acoustic alignment flow;
+- running specification and implementation audits to identify drift between intended and implemented behavior;
+- writing focused .NET, Python, and Node regressions for stalled receivers, standby restarts, and calibration feedback loops;
+- iterating on the tray UI with rendered snapshots and analyzing real HomePod, Apple TV, and Mac telemetry; and
+- building the MSI, portable package, and `AirBridge-Setup.exe` release pipeline.
+
+GPT-5.6 contributed directly to the final product as the optional in-app assistant described above. The key engineering decisions remained local and deterministic: audio stays in bounded memory, a stalled receiver cannot block its siblings, dangerous actions are excluded or require confirmation, and assistant fixes are verified against real telemetry. The [specification audit](docs/spec-audit.md) records additional implementation checks.
+
+## Tests and packaging
 
 ```powershell
 dotnet test AirBridge.sln -c Release
@@ -82,48 +94,14 @@ node --test tests\browser-extension.test.js
 .\scripts\package.ps1
 ```
 
-Machine-level WASAPI tests are deliberately opt-in so ordinary CI cannot hang on a driver COM call:
+Machine-level WASAPI tests are opt-in so ordinary CI cannot hang on a driver COM call:
 
 ```powershell
 $env:AIRBRIDGE_RUN_HARDWARE_TESTS = "1"
 dotnet test AirBridge.sln -c Release --filter "Category=Hardware"
 ```
 
-Packaging produces `artifacts\AirBridge-Setup.exe`, the user-facing installer, plus the MSI and portable application files under the gitignored `artifacts\` directory. Run `AirBridge-Setup.exe` to install AirBridge under Program Files and add it to the Start menu. `artifacts\publish\AirBridge.App.exe` is the portable application itself; it launches AirBridge directly and does not install anything.
-
-## How this was built
-
-AirBridge was built during OpenAI Build Week (July 2026) in collaboration with Codex, and GPT-5.6 powers the optional in-app assistant.
-
-### Collaborating with Codex
-
-Codex was the primary implementation partner across the whole codebase — C# (WASAPI capture, tray UI, policy layer), Python (the pyatv RAOP host), and JavaScript (the browser picture-sync extensions). The collaboration pattern was: human direction supplied product requirements, the receiver environment, network-permission diagnosis, acoustic observations, and final scope and safety decisions; Codex supplied implementation, verification, and the deep protocol work. Concretely, Codex:
-
-- **Traced pyatv's RAOP internals** to find the source-opening seam where a permanently open, file-free `AudioSource` could be injected — the core trick that lets live PCM stream without any temporary media file.
-- **Designed and debugged the multi-speaker timing model**: the shared 20 ms sender pump, per-receiver bounded rings, the readiness gate that bounds sender-anchor skew to one block, and the acoustic chirp calibration that measures real receiver latency RAOP does not report.
-- **Ran parallel specification and implementation audits** ([spec audit](docs/spec-audit.md)) to catch drift between documented behavior and code.
-- **Wrote focused regressions** for the failure modes it diagnosed — stalled receivers, silence-standby restarts, calibration feedback loops — across the .NET, Python, and Node test suites.
-- **Iterated on the tray flyout and Settings UI** against rendered snapshots, and analyzed hardware telemetry from real HomePod/Apple TV/Mac receiver runs to verify alignment fixes.
-- **Built the packaging pipeline** (MSI, portable build, and the `AirBridge-Setup.exe` installer) so every change stayed shippable.
-
-### GPT-5.6 inside the product
-
-The optional assistant uses `gpt-5.6` through the Responses API for all reasoning, intent resolution, diagnosis, and function calling, with `gpt-4o-transcribe` handling user-approved push-to-talk transcription. The tool catalog uses strict JSON schemas; a local allowlist independently classifies every call as read-only, reversible, confirmation-required, or forbidden, and the model never sees raw audio, credentials, or receiver network details. Diagnosis follows an observe → classify → gather → explain → act → verify loop with deterministic verification against real underrun counters. The [AI Activity Inspector](#ai-activity-inspector) shows every request, policy decision, tool call, and cost estimate in real time. Details in [AI tools and privacy](docs/ai-tools.md).
-
-### Key design decisions
-
-- **File-free PCM:** live audio stays in bounded memory from WASAPI through per-receiver named pipes. There is no WAV, temporary media file, or unbounded queue in the streaming path.
-- **A live pyatv source:** AirBridge supplies a permanently open `AudioSource` at pyatv's source-opening seam, bypassing the decoder path that expects a finite file or URL.
-- **Process-tree capture:** Windows process-loopback activation captures one application and its descendants without changing the user's default output device.
-- **Independent receiver legs:** one normalized capture feeds bounded queues and RAOP sessions per receiver, so a stalled speaker cannot block healthy speakers.
-- **One sender clock and a readiness gate:** a shared 20 ms pump keeps every handshake fed with silence, drops connection-time history at the live edge, then sends the first live block to all ready group legs on the same iteration. Per-pipe bounded writers prevent a non-reading receiver from blocking its siblings. This bounds sender-anchor skew to one block.
-- **Measured receiver alignment:** acoustic medians reveal latency that RAOP does not report. AirBridge delays faster legs with fixed, frame-aligned silence trims; all legs then remain on one sender clock and each receiver disciplines itself to its own session sync packets.
-- **Silence standby:** sustained near-silence releases receivers without discarding the logical route. The first active block triggers a gated live-edge restart, accepting the honest reconnect gap instead of replaying stale audio.
-- **Post-RECORD safe volume:** initial volume is carried into pyatv's post-RECORD streaming hook, preventing a receiver's manual volume from winning a session-start race.
-- **Picture-only browser sync:** pausing a video cannot correct AirPlay lip sync because it delays both the picture and the audio being captured. AirBridge therefore leaves audio playback untouched and delays only rendered video frames.
-- **Local-first AI boundaries:** GPT-5.6 can call a strict, allowlisted operational tool set, but it never receives audio or receiver network details; microphone actions require explicit confirmation.
-
-More detail is available in [architecture](docs/architecture.md), [browser sync](docs/browser-sync.md), [AI tools and privacy](docs/ai-tools.md), [hardware validation](docs/hardware-validation.md), and the [specification audit](docs/spec-audit.md).
+Packaging produces `artifacts\AirBridge-Setup.exe`, `artifacts\AirBridge.msi`, and a portable application under `artifacts\publish`.
 
 ## License
 
