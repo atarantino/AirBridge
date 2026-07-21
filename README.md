@@ -8,7 +8,7 @@ AirBridge sends live Windows system audio—or one application's audio—to one 
 
 1. Download `AirBridge-Setup.exe` from the [latest GitHub release](https://github.com/atarantino/AirBridge/releases/latest). No build tools are required.
 2. Run the installer and launch **AirBridge** from the Start menu. The installer is not code-signed, so Windows SmartScreen may require **More info → Run anyway**.
-3. Open the tray flyout, select a discovered speaker, and choose **Start**.
+3. Open the tray flyout, select a discovered speaker, and choose **Start**. A receiver starts at 30% volume the first time it is used, so raise its slider if the test audio is too quiet.
 4. Play audio on Windows and confirm that it moves to the selected speaker. Adjust its volume from the flyout.
 5. Test push-to-talk using the walkthrough below. This requires a microphone, internet access, and a judge-provided OpenAI API key.
 
@@ -23,7 +23,7 @@ For a second test path, start one speaker, open **Settings → Browser sync**, a
 5. Use the exact receiver name returned by the assistant for an action, for example: “AirPlay all system audio to Kitchen,” “Set Kitchen volume to 50 percent,” or “Stop playing system audio.” AirBridge asks for confirmation when local policy requires it.
 6. Open **Settings → Advanced → Open AI Activity Inspector** to verify the transcription event, `gpt-5.6` Responses API request, local policy decision, tool call, result, latency, token usage, and cost estimate.
 
-Press **Escape** while recording to cancel a command. If the HUD reports that the microphone is unavailable or no speech was detected, enable Windows microphone access for desktop apps, confirm that the default input is not muted, and try again. If the shortcut does not register, another application may be using it; click the shortcut field under **Settings → General**, press a different modified key combination, and save.
+Press **Escape** while recording to cancel a command. If the HUD reports that the microphone is unavailable or no speech was detected, enable Windows microphone access for desktop apps, confirm that the default input is not muted, and try again. If the shortcut does not register, another application may be using it; click the shortcut field under **Settings → General**, press a different modified key combination, and save. See [troubleshooting](docs/troubleshooting.md) for receiver, streaming, and log guidance.
 
 ## What it does
 
@@ -46,7 +46,7 @@ Windows WASAPI loopback
   → AirPlay receiver
 ```
 
-No temporary media file is created in the streaming path. Raw audio, receiver addresses, credentials, executable paths, and window titles are never sent to OpenAI. See [architecture](docs/architecture.md), [hardware validation](docs/hardware-validation.md), and [AI tools and privacy](docs/ai-tools.md) for details.
+No temporary media file is created in the streaming path. Raw audio, receiver addresses, credentials, executable paths, and window titles are never sent to OpenAI. See [architecture](docs/architecture.md), [hardware validation](docs/hardware-validation.md), [AI tools and privacy](docs/ai-tools.md), and [troubleshooting](docs/troubleshooting.md) for details.
 
 ## Build from source
 
