@@ -310,7 +310,7 @@ public sealed class ReceiverRowControl : UserControl
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
-        if (e.Button == MouseButtons.Left && !_volume.Bounds.Contains(e.Location) &&
+        if (e.Button == MouseButtons.Left && (!_volume.Visible || !_volume.Bounds.Contains(e.Location)) &&
             (!_action.Visible || !_action.Bounds.Contains(e.Location)) && (!_sleep.Visible || !_sleep.Bounds.Contains(e.Location))) ActivateRow();
     }
 
