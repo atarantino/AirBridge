@@ -1,10 +1,30 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="0.1.0" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E">
+  <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="0.3.2" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer AirBridge version is already installed." />
     <MediaTemplate EmbedCab="yes" />
+    <Icon Id="AirBridgeAppIcon" SourceFile="$(sys.CURRENTDIR)\src\AirBridge.App\Assets\AirBridge.AppIcon.ico" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AirBridge">
         <Files Include="$(sys.CURRENTDIR)\artifacts\publish\**" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="AirBridge">
+        <Component Id="ApplicationShortcut" Guid="54AF0786-B1F3-4E36-BE6C-40725EA49370">
+          <Shortcut Id="AirBridgeStartMenuShortcut"
+                    Name="AirBridge"
+                    Description="Stream Windows audio to AirPlay speakers"
+                    Target="[INSTALLFOLDER]AirBridge.App.exe"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="AirBridgeAppIcon" />
+          <RemoveFolder Id="RemoveApplicationProgramsFolder" On="uninstall" />
+          <RegistryValue Root="HKLM"
+                         Key="Software\AirBridge"
+                         Name="StartMenuShortcut"
+                         Type="integer"
+                         Value="1"
+                         KeyPath="yes" />
+        </Component>
       </Directory>
     </StandardDirectory>
   </Package>

@@ -89,7 +89,7 @@ $env:AIRBRIDGE_RUN_HARDWARE_TESTS = "1"
 dotnet test AirBridge.sln -c Release --filter "Category=Hardware"
 ```
 
-Packaging produces a self-contained application and MSI under the gitignored `artifacts/` directory.
+Packaging produces `artifacts\AirBridge-Setup.exe`, the user-facing installer, plus the MSI and portable application files under the gitignored `artifacts\` directory. Run `AirBridge-Setup.exe` to install AirBridge under Program Files and add it to the Start menu. `artifacts\publish\AirBridge.App.exe` is the portable application itself; it launches AirBridge directly and does not install anything.
 
 ## How this was built
 

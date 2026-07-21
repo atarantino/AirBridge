@@ -8,6 +8,7 @@ $workspace = Split-Path -Parent $PSScriptRoot
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
 $publish = Join-Path $workspace "artifacts\publish"
 $raopPublish = Join-Path $publish "RaopHost"
+$installer = Join-Path $workspace "artifacts\AirBridge-Setup.exe"
 
 if (-not (Test-Path -LiteralPath $python)) {
     py -3.12 -m venv (Join-Path $workspace ".venv")
@@ -35,5 +36,8 @@ Write-Host "Published AirBridge to $publish"
 
 if (Get-Command dotnet -ErrorAction SilentlyContinue) {
     dotnet tool restore --tool-manifest (Join-Path $workspace ".config\dotnet-tools.json")
+    dotnet wix extension add WixToolset.BootstrapperApplications.wixext/6.0.2
     dotnet wix build (Join-Path $workspace "installer\wix\Package.wxs") -arch x64 -out (Join-Path $workspace "artifacts\AirBridge.msi")
+    dotnet wix build (Join-Path $workspace "installer\wix\Bundle.wxs") -arch x64 -ext WixToolset.BootstrapperApplications.wixext -out $installer
+    Write-Host "Built installer at $installer"
 }
