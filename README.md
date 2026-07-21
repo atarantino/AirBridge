@@ -10,9 +10,20 @@ AirBridge sends live Windows system audio—or one application's audio—to one 
 2. Run the installer and launch **AirBridge** from the Start menu. The installer is not code-signed, so Windows SmartScreen may require **More info → Run anyway**.
 3. Open the tray flyout, select a discovered speaker, and choose **Start**.
 4. Play audio on Windows and confirm that it moves to the selected speaker. Adjust its volume from the flyout.
-5. To test voice control, add an OpenAI API key in **Settings → Assistant**, hold the configured push-to-talk shortcut, and say: “AirPlay all system audio to the kitchen speaker.”
+5. Test push-to-talk using the walkthrough below. This requires a microphone, internet access, and a judge-provided OpenAI API key.
 
 For a second test path, start one speaker, open **Settings → Browser sync**, and choose **Measure delay**. Load the browser extension as described below, enter the measured delay, and enable it on a video site to delay the picture while leaving its audio playing normally.
+
+### Push-to-talk judge walkthrough
+
+1. Open the tray flyout, choose the **Settings** gear, and select **Assistant**.
+2. Paste an OpenAI API key, leave **Enable the AirBridge assistant when an API key is available** checked, and choose **Save**. The key is stored for the current Windows user in Windows Credential Manager and is never displayed again.
+3. In **Settings → General**, confirm the push-to-talk shortcut. The default global shortcut is **Ctrl+Alt+Space** and it works while AirBridge is in the tray.
+4. Hold **Ctrl+Alt+Space** for at least 250 ms. When the HUD says **Listening**, say “What speakers are available?” and release the shortcut. The HUD advances through **Transcribing** and **Thinking**, then shows the answer. This first command is read-only and verifies the microphone, transcription, GPT-5.6, and local tool path.
+5. Use the exact receiver name returned by the assistant for an action, for example: “AirPlay all system audio to Kitchen,” “Set Kitchen volume to 50 percent,” or “Stop playing system audio.” AirBridge asks for confirmation when local policy requires it.
+6. Open **Settings → Advanced → Open AI Activity Inspector** to verify the transcription event, `gpt-5.6` Responses API request, local policy decision, tool call, result, latency, token usage, and cost estimate.
+
+Press **Escape** while recording to cancel a command. If the HUD reports that the microphone is unavailable or no speech was detected, enable Windows microphone access for desktop apps, confirm that the default input is not muted, and try again. If the shortcut does not register, another application may be using it; click the shortcut field under **Settings → General**, press a different modified key combination, and save.
 
 ## What it does
 
@@ -64,7 +75,7 @@ Start exactly one speaker, use **Measure delay** in AirBridge, enter the result 
 
 ## Optional GPT-5.6 assistant
 
-Add an OpenAI API key in **Settings → Assistant**; AirBridge stores it for the current Windows user in Windows Credential Manager and never displays the saved value. `OPENAI_API_KEY` can be used as a managed override.
+Follow the [push-to-talk judge walkthrough](#push-to-talk-judge-walkthrough) for the shortest end-to-end test. `OPENAI_API_KEY` can be used instead of the Settings field as a managed override.
 
 The assistant uses `gpt-5.6` through the Responses API for reasoning, intent resolution, diagnosis, and function calling. `gpt-4o-transcribe` handles user-approved push-to-talk transcription. A local allowlist independently classifies each tool call as read-only, reversible, confirmation-required, or forbidden.
 
