@@ -93,9 +93,24 @@ Packaging produces `artifacts\AirBridge-Setup.exe`, the user-facing installer, p
 
 ## How this was built
 
-AirBridge was developed collaboratively with Codex. Codex accelerated repository exploration, parallel specification and implementation audits, pyatv protocol tracing, focused regression creation, UI iteration with rendered snapshots, hardware telemetry analysis, and repeatable packaging. Human direction supplied the product requirements, receiver environment, network-permission diagnosis, acoustic observations, and the final scope and safety decisions.
+AirBridge was built during OpenAI Build Week (July 2026) in collaboration with Codex, and GPT-5.6 powers the optional in-app assistant.
 
-The most important design decisions were:
+### Collaborating with Codex
+
+Codex was the primary implementation partner across the whole codebase — C# (WASAPI capture, tray UI, policy layer), Python (the pyatv RAOP host), and JavaScript (the browser picture-sync extensions). The collaboration pattern was: human direction supplied product requirements, the receiver environment, network-permission diagnosis, acoustic observations, and final scope and safety decisions; Codex supplied implementation, verification, and the deep protocol work. Concretely, Codex:
+
+- **Traced pyatv's RAOP internals** to find the source-opening seam where a permanently open, file-free `AudioSource` could be injected — the core trick that lets live PCM stream without any temporary media file.
+- **Designed and debugged the multi-speaker timing model**: the shared 20 ms sender pump, per-receiver bounded rings, the readiness gate that bounds sender-anchor skew to one block, and the acoustic chirp calibration that measures real receiver latency RAOP does not report.
+- **Ran parallel specification and implementation audits** ([spec audit](docs/spec-audit.md)) to catch drift between documented behavior and code.
+- **Wrote focused regressions** for the failure modes it diagnosed — stalled receivers, silence-standby restarts, calibration feedback loops — across the .NET, Python, and Node test suites.
+- **Iterated on the tray flyout and Settings UI** against rendered snapshots, and analyzed hardware telemetry from real HomePod/Apple TV/Mac receiver runs to verify alignment fixes.
+- **Built the packaging pipeline** (MSI, portable build, and the `AirBridge-Setup.exe` installer) so every change stayed shippable.
+
+### GPT-5.6 inside the product
+
+The optional assistant uses `gpt-5.6` through the Responses API for all reasoning, intent resolution, diagnosis, and function calling, with `gpt-4o-transcribe` handling user-approved push-to-talk transcription. The tool catalog uses strict JSON schemas; a local allowlist independently classifies every call as read-only, reversible, confirmation-required, or forbidden, and the model never sees raw audio, credentials, or receiver network details. Diagnosis follows an observe → classify → gather → explain → act → verify loop with deterministic verification against real underrun counters. The [AI Activity Inspector](#ai-activity-inspector) shows every request, policy decision, tool call, and cost estimate in real time. Details in [AI tools and privacy](docs/ai-tools.md).
+
+### Key design decisions
 
 - **File-free PCM:** live audio stays in bounded memory from WASAPI through per-receiver named pipes. There is no WAV, temporary media file, or unbounded queue in the streaming path.
 - **A live pyatv source:** AirBridge supplies a permanently open `AudioSource` at pyatv's source-opening seam, bypassing the decoder path that expects a finite file or URL.
