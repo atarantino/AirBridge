@@ -9,7 +9,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\AirBridge.Core\AirBridge.Core.csproj" />
-    <PackageReference Include="NAudio" Version="3.0.0-preview.18" />
+    <PackageReference Include="NAudio" Version="3.0.0" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="..\AirBridge.RaopHost\**\*.py" Link="RaopHost\%(RecursiveDir)%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
