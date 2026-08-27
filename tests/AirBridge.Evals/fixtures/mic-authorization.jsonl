@@ -1,0 +1,84 @@
+{"id":"pos-imperative-01","utterance":"align the speakers","expect":"authorize","tool":"align_group","tags":["imperative","align"],"note":"plain direct alignment request"}
+{"id":"pos-imperative-02","utterance":"align the speaker group","expect":"authorize","tool":"align_group","tags":["imperative","align"],"note":"plain group request"}
+{"id":"pos-imperative-03","utterance":"align receiver-1 and receiver-2","expect":"authorize","tool":"align_group","tags":["imperative","align"],"note":"explicit receiver aliases"}
+{"id":"pos-imperative-04","utterance":"measure the delay","expect":"authorize","tool":"measure_acoustic_delay","tags":["imperative","measure"],"note":"plain measurement request"}
+{"id":"pos-imperative-05","utterance":"measure the acoustic latency for receiver-1","expect":"authorize","tool":"measure_acoustic_delay","tags":["imperative","measure"],"note":"explicit latency measurement"}
+{"id":"pos-politeness-01","utterance":"please align the speakers","expect":"authorize","tool":"align_group","tags":["politeness","align"],"note":"supported politeness prefix"}
+{"id":"pos-politeness-02","utterance":"hey, could you align the speakers?","expect":"authorize","tool":"align_group","tags":["politeness","interrogative","align"],"note":"conventional polite request"}
+{"id":"pos-politeness-03","utterance":"sorry, align them please","expect":"authorize","tool":"align_group","tags":["politeness","pronoun","align"],"note":"discourse marker before an imperative"}
+{"id":"pos-politeness-04","utterance":"could you measure the delay?","expect":"authorize","tool":"measure_acoustic_delay","tags":["politeness","interrogative","measure"],"note":"conventional measurement request"}
+{"id":"pos-politeness-05","utterance":"would you please measure the latency for receiver-2?","expect":"authorize","tool":"measure_acoustic_delay","tags":["politeness","interrogative","measure"],"note":"polite request with please after modal"}
+{"id":"pos-pronoun-01","utterance":"align them","expect":"authorize","tool":"align_group","tags":["pronoun","align"],"note":"elided speaker object"}
+{"id":"pos-pronoun-02","utterance":"please align those","expect":"authorize","tool":"align_group","tags":["pronoun","align"],"note":"demonstrative object"}
+{"id":"pos-pronoun-03","utterance":"measure it","expect":"authorize","tool":"measure_acoustic_delay","tags":["pronoun","measure"],"note":"elided delay object"}
+{"id":"pos-paraphrase-01","utterance":"sync them up","expect":"authorize","tool":"align_group","tags":["paraphrase","align"],"note":"common alignment paraphrase"}
+{"id":"pos-paraphrase-02","utterance":"can you sync up my speakers","expect":"authorize","tool":"align_group","tags":["paraphrase","align"],"note":"sync-up paraphrase"}
+{"id":"pos-paraphrase-03","utterance":"get the speakers in time","expect":"authorize","tool":"align_group","tags":["paraphrase","align"],"note":"timing paraphrase"}
+{"id":"pos-paraphrase-04","utterance":"check the acoustic delay on receiver-1","expect":"authorize","tool":"measure_acoustic_delay","tags":["paraphrase","measure"],"note":"measurement paraphrase"}
+{"id":"pos-grant-01","utterance":"you have my permission to align the speaker group","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"explicit permission"}
+{"id":"pos-grant-02","utterance":"I explicitly allow you to align the speakers","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"explicit first-person grant"}
+{"id":"pos-grant-03","utterance":"I authorize you to measure the acoustic delay","expect":"authorize","tool":"measure_acoustic_delay","tags":["explicit-grant","measure"],"note":"explicit measurement grant"}
+{"id":"pos-grant-04","utterance":"I approve this alignment","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"existing supported approval"}
+{"id":"pos-grant-05","utterance":"go ahead and align receiver-1 and receiver-2","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"direct go-ahead"}
+{"id":"pos-grant-06","utterance":"let's align the kitchen and office","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"existing first-person plural request"}
+{"id":"neg-direct-01","utterance":"don't align the speakers","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"direct refusal"}
+{"id":"neg-direct-02","utterance":"do not measure anything","expect":"refuse","tool":"measure_acoustic_delay","tags":["direct-negation","measure"],"note":"direct measurement refusal"}
+{"id":"neg-direct-03","utterance":"dont align receiver-1 and receiver-2","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"apostrophe-free refusal"}
+{"id":"neg-direct-04","utterance":"not align the speakers","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"fragmentary refusal"}
+{"id":"neg-direct-05","utterance":"avoid aligning the speakers","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"avoidance request"}
+{"id":"neg-direct-06","utterance":"align nothing","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"negative quantifier after imperative verb"}
+{"id":"neg-direct-07","utterance":"measure no delay with the microphone","expect":"refuse","tool":"measure_acoustic_delay","tags":["direct-negation","measure"],"note":"negative determiner"}
+{"id":"neg-indirect-01","utterance":"I wouldn't allow you to align anything","expect":"refuse","tool":"align_group","tags":["indirect-negation","contraction","align"],"note":"conditional negative grant"}
+{"id":"neg-indirect-02","utterance":"never allow align without asking","expect":"refuse","tool":"align_group","tags":["indirect-negation","align"],"note":"negative adverb"}
+{"id":"neg-indirect-03","utterance":"I'd rather you didn't measure the delay","expect":"refuse","tool":"measure_acoustic_delay","tags":["indirect-negation","contraction","measure"],"note":"preference against measurement"}
+{"id":"neg-indirect-04","utterance":"under no circumstances may you align the speakers","expect":"refuse","tool":"align_group","tags":["indirect-negation","align"],"note":"strong prohibition"}
+{"id":"neg-indirect-05","utterance":"hardly permission to align, is it?","expect":"refuse","tool":"align_group","tags":["indirect-negation","rhetorical","align"],"note":"minimizer is not a grant"}
+{"id":"neg-indirect-06","utterance":"as if I'd authorize you to measure latency","expect":"refuse","tool":"measure_acoustic_delay","tags":["indirect-negation","rhetorical","measure"],"note":"sarcastic refusal"}
+{"id":"neg-indirect-07","utterance":"I am unable to approve alignment","expect":"refuse","tool":"align_group","tags":["indirect-negation","align"],"note":"inability to grant"}
+{"id":"neg-indirect-08","utterance":"permission to measure the delay has been denied","expect":"refuse","tool":"measure_acoustic_delay","tags":["indirect-negation","measure"],"note":"passive denial"}
+{"id":"neg-rhetorical-01","utterance":"why would I allow you to align the speakers?","expect":"refuse","tool":"align_group","tags":["rhetorical","negation","align"],"note":"question about permission, not a grant"}
+{"id":"neg-rhetorical-02","utterance":"why would I allow that?","expect":"refuse","tool":"align_group","tags":["rhetorical","align"],"note":"rhetorical question with elided action"}
+{"id":"neg-rhetorical-03","utterance":"does align use my mic?","expect":"refuse","tool":"align_group","tags":["interrogative","informational","align"],"note":"capability question"}
+{"id":"neg-rhetorical-04","utterance":"am I supposed to approve this alignment?","expect":"refuse","tool":"align_group","tags":["interrogative","align"],"note":"approval question"}
+{"id":"neg-rhetorical-05","utterance":"who said you could measure the delay?","expect":"refuse","tool":"measure_acoustic_delay","tags":["rhetorical","measure"],"note":"challenge rather than request"}
+{"id":"neg-rhetorical-06","utterance":"permission to align? Since when?","expect":"refuse","tool":"align_group","tags":["rhetorical","align"],"note":"incredulous fragment"}
+{"id":"neg-info-01","utterance":"what does align do","expect":"refuse","tool":"align_group","tags":["informational","align"],"note":"feature explanation"}
+{"id":"neg-info-02","utterance":"explain the alignment feature","expect":"refuse","tool":"align_group","tags":["informational","align"],"note":"feature explanation"}
+{"id":"neg-info-03","utterance":"tell me whether we should align the speakers","expect":"refuse","tool":"align_group","tags":["informational","align"],"note":"decision support, not authorization"}
+{"id":"neg-info-04","utterance":"how do you measure acoustic delay?","expect":"refuse","tool":"measure_acoustic_delay","tags":["informational","measure"],"note":"procedure question"}
+{"id":"neg-info-05","utterance":"is the delay measured through the microphone?","expect":"refuse","tool":"measure_acoustic_delay","tags":["informational","measure"],"note":"privacy question"}
+{"id":"neg-info-06","utterance":"show me where alignment permission is configured","expect":"refuse","tool":"align_group","tags":["informational","align"],"note":"configuration question"}
+{"id":"neg-conditional-01","utterance":"if I allowed you to align, what would happen","expect":"refuse","tool":"align_group","tags":["conditional","align"],"note":"hypothetical permission"}
+{"id":"neg-conditional-02","utterance":"if I approve alignment later, could you do it?","expect":"refuse","tool":"align_group","tags":["conditional","interrogative","align"],"note":"future conditional"}
+{"id":"neg-conditional-03","utterance":"suppose I authorize measuring the delay","expect":"refuse","tool":"measure_acoustic_delay","tags":["conditional","measure"],"note":"hypothetical grant"}
+{"id":"neg-conditional-04","utterance":"I might allow you to align after I hear more","expect":"refuse","tool":"align_group","tags":["conditional","align"],"note":"tentative future grant"}
+{"id":"neg-conditional-05","utterance":"when I say go, align the speakers","expect":"refuse","tool":"align_group","tags":["conditional","align"],"note":"condition has not occurred"}
+{"id":"neg-conditional-06","utterance":"align the speakers if I approve it later","expect":"refuse","tool":"align_group","tags":["conditional","align"],"note":"imperative gated on future approval"}
+{"id":"neg-conditional-07","utterance":"measure the delay unless I cancel","expect":"refuse","tool":"measure_acoustic_delay","tags":["conditional","measure"],"note":"conditional execution is ambiguous"}
+{"id":"neg-mixed-01","utterance":"align the speakers but don't touch the volume","expect":"refuse","tool":"align_group","tags":["mixed","align"],"note":"alignment implementation temporarily changes receiver volume"}
+{"id":"neg-mixed-02","utterance":"don't align them; just explain it","expect":"refuse","tool":"align_group","tags":["mixed","align"],"note":"explicit refusal followed by information request"}
+{"id":"neg-mixed-03","utterance":"I approve the explanation, not the alignment","expect":"refuse","tool":"align_group","tags":["mixed","align"],"note":"approval scopes to explanation"}
+{"id":"neg-mixed-04","utterance":"you may discuss alignment but may not run it","expect":"refuse","tool":"align_group","tags":["mixed","align"],"note":"permission scopes to discussion only"}
+{"id":"neg-mixed-05","utterance":"measure the delay but do not use the microphone","expect":"refuse","tool":"measure_acoustic_delay","tags":["mixed","measure"],"note":"request conflicts with tool behavior"}
+{"id":"neg-mixed-06","utterance":"allow receiver-1, but never align the group","expect":"refuse","tool":"align_group","tags":["mixed","align"],"note":"allow applies to receiver, not alignment"}
+{"id":"neg-quote-01","utterance":"\"align the speakers\" is what the button says","expect":"refuse","tool":"align_group","tags":["quoted-speech","informational","align"],"note":"quoted command is not a request"}
+{"id":"neg-quote-02","utterance":"she said \"please align the speakers\"","expect":"refuse","tool":"align_group","tags":["reported-speech","align"],"note":"third-party request"}
+{"id":"neg-quote-03","utterance":"don't quote me as saying \"I approve this alignment\"","expect":"refuse","tool":"align_group","tags":["quoted-speech","negation","align"],"note":"quoted approval inside a refusal"}
+{"id":"neg-quote-04","utterance":"the manual says you can measure the delay","expect":"refuse","tool":"measure_acoustic_delay","tags":["reported-speech","measure"],"note":"capability report"}
+{"id":"neg-quote-05","utterance":"my partner wants you to align the speakers","expect":"refuse","tool":"align_group","tags":["reported-speech","align"],"note":"grant is not from the current user"}
+{"id":"neg-scope-01","utterance":"I allow you to explain how to align the speakers","expect":"refuse","tool":"align_group","tags":["scope","align"],"note":"allow scopes to explanation"}
+{"id":"neg-scope-02","utterance":"I authorize a discussion about measuring latency","expect":"refuse","tool":"measure_acoustic_delay","tags":["scope","measure"],"note":"authorization scopes to discussion"}
+{"id":"neg-scope-03","utterance":"you have permission to ask before aligning","expect":"refuse","tool":"align_group","tags":["scope","align"],"note":"permission scopes to asking"}
+{"id":"neg-scope-04","utterance":"go ahead and tell me what alignment does","expect":"refuse","tool":"align_group","tags":["scope","align"],"note":"go-ahead scopes to explanation"}
+{"id":"neg-scope-05","utterance":"I approve of alignment as a feature","expect":"refuse","tool":"align_group","tags":["scope","align"],"note":"general sentiment is not operational approval"}
+{"id":"neg-punctuation-01","utterance":"align? I only asked what it means","expect":"refuse","tool":"align_group","tags":["punctuation","informational","align"],"note":"echo question begins with action token"}
+{"id":"neg-punctuation-02","utterance":"allow—alignment? absolutely not","expect":"refuse","tool":"align_group","tags":["punctuation","negation","align"],"note":"punctuated rhetorical refusal"}
+{"id":"neg-punctuation-03","utterance":"measure... no, cancel that","expect":"refuse","tool":"measure_acoustic_delay","tags":["punctuation","negation","measure"],"note":"self-correction withdraws request"}
+{"id":"neg-punctuation-04","utterance":"I approve—wait, don't align yet","expect":"refuse","tool":"align_group","tags":["punctuation","mixed","align"],"note":"approval is immediately withdrawn"}
+{"id":"neg-reversal-01","utterance":"align the speakers, but I revoke permission","expect":"refuse","tool":"align_group","tags":["reversal","mixed","align"],"note":"later clause revokes the initial imperative"}
+{"id":"neg-reversal-02","utterance":"align the speakers; permission revoked","expect":"refuse","tool":"align_group","tags":["reversal","punctuation","align"],"note":"semicolon introduces a revocation"}
+{"id":"neg-reversal-03","utterance":"measure the delay—actually, I withdraw that request","expect":"refuse","tool":"measure_acoustic_delay","tags":["reversal","punctuation","measure"],"note":"self-correction withdraws measurement"}
+{"id":"neg-reversal-04","utterance":"align the speakers. This is only an example","expect":"refuse","tool":"align_group","tags":["reported-speech","punctuation","align"],"note":"first sentence is presented as an example"}
+{"id":"neg-conditional-08","utterance":"align the speakers after I explicitly approve it","expect":"refuse","tool":"align_group","tags":["conditional","align"],"note":"approval is deferred"}
+{"id":"neg-conditional-09","utterance":"measure the delay when I say go","expect":"refuse","tool":"measure_acoustic_delay","tags":["conditional","measure"],"note":"trigger condition has not occurred"}
+{"id":"neg-direct-08","utterance":"align zero speakers","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"zero quantifier negates the object"}

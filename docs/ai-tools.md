@@ -14,6 +14,12 @@ The diagnosis prompt requires observe → classify → gather → explain → ac
 
 Persistent tools require explicit confirmation. When a model requests one, AirBridge presents a local Allow/Cancel dialog; Allow executes that exact tool call immediately, so the user never has to discover a special approval phrase or wait through another model round trip. Streaming remains completely functional when no API key or OpenAI connection is available.
 
+## Agent intent evals
+
+`tests/AirBridge.Evals` measures the two intent layers separately. The hermetic microphone-authorization eval loads a tagged JSONL corpus, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog and are reported so recall can be improved without weakening that budget. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
+
+The model-in-the-loop fixture independently scores tool selection, exact argument construction, and refusal/no-tool behavior against synthetic aliases such as `receiver-1`. It is paid and intentionally excluded from CI: set both `AIRBRIDGE_MODEL_EVALS=1` and `OPENAI_API_KEY` to opt in. With either setting absent, the test prints a skipped scorecard and makes no network request.
+
 Calibration failures are shown immediately in the main conversation and as a Windows notification, including the locally selected microphone and the speaker that failed. AirBridge records local sample count, capture duration, peak, RMS, and chirp-emission count so it can distinguish an unavailable or silent input from a live microphone whose audio did not contain matching chirps. The same sanitized error is retained in diagnostics; users do not need to open the Activity Inspector or log files to discover a failed operation.
 
 Per-speaker alignment trims support 0–2000 ms. This fits inside the shared five-second PCM buffer and allows AirPlay receivers with substantially different presentation delays to be aligned without silently clipping the proposed correction at 500 ms.
