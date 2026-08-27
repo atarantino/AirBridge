@@ -130,6 +130,11 @@ public sealed class DirectMicrophoneAuthorization
         "hey", "hi", "hello", "sorry", "ok", "okay"
     };
 
+    private static readonly HashSet<string> CourtesySuffixes = new(StringComparer.Ordinal)
+    {
+        "please", "thanks", "thank you", "now"
+    };
+
     private static readonly HashSet<string> AlignmentDeviceObjects = new(StringComparer.Ordinal)
     {
         "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both"
@@ -139,13 +144,14 @@ public sealed class DirectMicrophoneAuthorization
     {
         "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
         "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both",
-        "together", "and", "up", "time", "synced", "synchronized", "please", "now"
+        "together", "and", "up", "time", "synced", "synchronized", "please", "thanks", "thank", "you", "now"
     };
 
     private static readonly HashSet<string> AllowedMeasurementWords = new(StringComparer.Ordinal)
     {
         "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
-        "speaker", "speakers", "receiver", "receivers", "group", "acoustic", "delay", "latency", "please", "now"
+        "speaker", "speakers", "receiver", "receivers", "group", "acoustic", "delay", "latency",
+        "please", "thanks", "thank", "you", "now"
     };
 
     private readonly HashSet<string> _tools;
@@ -190,11 +196,16 @@ public sealed class DirectMicrophoneAuthorization
     private static bool HasUnsupportedClauseBoundary(string text)
     {
         if (text.IndexOfAny(['\r', '\n', ':', '—']) >= 0) return true;
-        var comma = text.IndexOf(',');
-        if (comma < 0) return false;
-        if (text.IndexOf(',', comma + 1) >= 0) return true;
-        return !ConversationalPrefixes.Contains(text[..comma].Trim().ToLowerInvariant());
+        var clauses = text.Split(',');
+        if (clauses.Length == 1) return false;
+        if (clauses.Length > 3 || clauses.Any(string.IsNullOrWhiteSpace)) return true;
+        var startsWithPrefix = ConversationalPrefixes.Contains(NormalizeBoundaryClause(clauses[0]));
+        var endsWithCourtesy = CourtesySuffixes.Contains(NormalizeBoundaryClause(clauses[^1]));
+        return clauses.Length == 2 ? !startsWithPrefix && !endsWithCourtesy : !startsWithPrefix || !endsWithCourtesy;
     }
+
+    private static string NormalizeBoundaryClause(string clause) =>
+        clause.Trim().TrimEnd('.', '!', '?', '"', '\'', '”').ToLowerInvariant();
 
     private static int FindActionIndex(IReadOnlyList<string> words)
     {
@@ -234,10 +245,9 @@ public sealed class DirectMicrophoneAuthorization
         var action = words[actionIndex];
         var rest = words.Skip(actionIndex + 1).ToArray();
         var hasDeviceObject = rest.Any(AlignmentDeviceObjects.Contains);
-        if (action == "align" && IsEstablishedNamedPairExample(words, actionIndex, rest)) return true;
         if (action is "align" or "sync")
-            return hasDeviceObject && rest.All(word => IsAllowedArgumentWord(word, AllowedAlignmentWords));
-        return action == "get" && hasDeviceObject && rest.All(word => IsAllowedArgumentWord(word, AllowedAlignmentWords)) &&
+            return hasDeviceObject && AreAllowedArgumentWords(rest, AllowedAlignmentWords);
+        return action == "get" && hasDeviceObject && AreAllowedArgumentWords(rest, AllowedAlignmentWords) &&
             (ContainsSequence(rest, 0, "in", "time") || rest.Any(word => word is "synced" or "synchronized"));
     }
 
@@ -248,17 +258,22 @@ public sealed class DirectMicrophoneAuthorization
         var rest = words.Skip(actionIndex + 1).ToArray();
         if (action == "measure" && rest is ["it"]) return true;
         return rest.Any(word => word is "delay" or "latency" or "acoustic") &&
-            rest.All(word => IsAllowedArgumentWord(word, AllowedMeasurementWords));
+            AreAllowedArgumentWords(rest, AllowedMeasurementWords);
     }
 
-    // Preserve the established policy example without treating arbitrary "X and Y"
-    // concepts as receiver aliases. Other named pairs safely use the local dialog.
-    private static bool IsEstablishedNamedPairExample(IReadOnlyList<string> words, int actionIndex, IReadOnlyList<string> rest) =>
-        actionIndex > 0 && words[actionIndex - 1] == "let's" &&
-        rest is ["the", "kitchen", "and", "office"];
+    private static bool AreAllowedArgumentWords(IReadOnlyList<string> words, IReadOnlySet<string> allowedWords)
+    {
+        for (var index = 0; index < words.Count; index++)
+        {
+            if (allowedWords.Contains(words[index])) continue;
+            var followsAliasNoun = index > 0 && words[index - 1] is "speaker" or "receiver";
+            if (!followsAliasNoun || !IsAliasSuffix(words[index])) return false;
+        }
+        return true;
+    }
 
-    private static bool IsAllowedArgumentWord(string word, IReadOnlySet<string> allowedWords) =>
-        allowedWords.Contains(word) || word.All(char.IsAsciiDigit) || word.Length == 1 && char.IsAsciiLetter(word[0]);
+    private static bool IsAliasSuffix(string word) =>
+        word.All(char.IsAsciiDigit) || word.Length == 1 && char.IsAsciiLetter(word[0]);
 
     private static bool StartsWith(IReadOnlyList<string> words, int start, params string[] prefix)
     {

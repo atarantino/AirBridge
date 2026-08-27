@@ -20,7 +20,7 @@
 {"id":"pos-grant-03","utterance":"I authorize you to measure the acoustic delay","expect":"authorize","tool":"measure_acoustic_delay","tags":["explicit-grant","measure"],"note":"explicit measurement grant"}
 {"id":"pos-grant-04","utterance":"I approve this alignment","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"existing supported approval"}
 {"id":"pos-grant-05","utterance":"go ahead and align receiver-1 and receiver-2","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"direct go-ahead"}
-{"id":"pos-grant-06","utterance":"let's align the kitchen and office","expect":"authorize","tool":"align_group","tags":["explicit-grant","align"],"note":"existing first-person plural request"}
+{"id":"neg-named-pair-01","utterance":"let's align the kitchen and office","expect":"refuse","tool":"align_group","tags":["named-pair","ambiguous","align"],"note":"bare room names require device context and fall through to the dialog"}
 {"id":"neg-direct-01","utterance":"don't align the speakers","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"direct refusal"}
 {"id":"neg-direct-02","utterance":"do not measure anything","expect":"refuse","tool":"measure_acoustic_delay","tags":["direct-negation","measure"],"note":"direct measurement refusal"}
 {"id":"neg-direct-03","utterance":"dont align receiver-1 and receiver-2","expect":"refuse","tool":"align_group","tags":["direct-negation","align"],"note":"apostrophe-free refusal"}
