@@ -16,7 +16,7 @@ Persistent tools require explicit confirmation. When a model requests one, AirBr
 
 ## Agent intent evals
 
-`tests/AirBridge.Evals` measures the two intent layers separately. The hermetic microphone-authorization eval loads a tagged JSONL corpus, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog and are reported so recall can be improved without weakening that budget. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
+`tests/AirBridge.Evals` measures the two intent layers separately. The hermetic microphone-authorization eval loads a tagged primary corpus plus externally sourced held-out cases, evaluates both microphone tools for every utterance, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog, with a small separate budget that prevents an always-refuse implementation from passing. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
 
 The model-in-the-loop fixture independently scores tool selection, exact argument construction, and refusal/no-tool behavior against synthetic aliases such as `receiver-1`. It is paid and intentionally excluded from CI: set both `AIRBRIDGE_MODEL_EVALS=1` and `OPENAI_API_KEY` to opt in. With either setting absent, the test prints a skipped scorecard and makes no network request.
 

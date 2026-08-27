@@ -130,9 +130,22 @@ public sealed class DirectMicrophoneAuthorization
         "hey", "hi", "hello", "sorry", "ok", "okay"
     };
 
-    private static readonly HashSet<string> AlignmentObjects = new(StringComparer.Ordinal)
+    private static readonly HashSet<string> AlignmentDeviceObjects = new(StringComparer.Ordinal)
     {
-        "speaker", "speakers", "receiver", "receivers", "group", "alignment", "them", "those", "these", "both", "together", "and"
+        "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both"
+    };
+
+    private static readonly HashSet<string> AllowedAlignmentWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
+        "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both",
+        "together", "and", "up", "time", "synced", "synchronized", "please", "now"
+    };
+
+    private static readonly HashSet<string> AllowedMeasurementWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
+        "speaker", "speakers", "receiver", "receivers", "group", "acoustic", "delay", "latency", "please", "now"
     };
 
     private readonly HashSet<string> _tools;
@@ -142,7 +155,9 @@ public sealed class DirectMicrophoneAuthorization
     {
         HashSet<string> tools = new(StringComparer.Ordinal);
         var trimmed = text.TrimStart();
-        if (trimmed.StartsWith('"') || trimmed.StartsWith('“') || trimmed.StartsWith('\'') || HasTrailingSentence(trimmed)) return new(tools);
+        if (trimmed.StartsWith('"') || trimmed.StartsWith('“') || trimmed.StartsWith('\'') ||
+            HasUnsupportedClauseBoundary(trimmed) || HasTrailingSentence(trimmed))
+            return new(tools);
         var words = Tokenize(text);
         if (words.Length == 0 || IsAmbiguous(words)) return new(tools);
 
@@ -169,7 +184,16 @@ public sealed class DirectMicrophoneAuthorization
     {
         var sentenceEnd = text.IndexOfAny(['.', '!', '?', ';']);
         if (sentenceEnd < 0) return false;
-        return text[(sentenceEnd + 1)..].Trim([' ', '\t', '\r', '\n', '"', '\'', '”']).Length > 0;
+        return text[(sentenceEnd + 1)..].Trim([' ', '\t', '\r', '\n', '.', '!', '?', '"', '\'', '”']).Length > 0;
+    }
+
+    private static bool HasUnsupportedClauseBoundary(string text)
+    {
+        if (text.IndexOfAny(['\r', '\n', ':', '—']) >= 0) return true;
+        var comma = text.IndexOf(',');
+        if (comma < 0) return false;
+        if (text.IndexOf(',', comma + 1) >= 0) return true;
+        return !ConversationalPrefixes.Contains(text[..comma].Trim().ToLowerInvariant());
     }
 
     private static int FindActionIndex(IReadOnlyList<string> words)
@@ -208,18 +232,33 @@ public sealed class DirectMicrophoneAuthorization
     {
         if (actionIndex >= words.Count) return false;
         var action = words[actionIndex];
-        var hasAlignmentObject = words.Skip(actionIndex + 1).Any(AlignmentObjects.Contains);
-        if (action is "align" or "sync") return hasAlignmentObject;
-        return action == "get" && hasAlignmentObject &&
-            (ContainsSequence(words, actionIndex + 1, "in", "time") ||
-             words.Skip(actionIndex + 1).Any(word => word is "synced" or "synchronized"));
+        var rest = words.Skip(actionIndex + 1).ToArray();
+        var hasDeviceObject = rest.Any(AlignmentDeviceObjects.Contains);
+        if (action == "align" && IsEstablishedNamedPairExample(words, actionIndex, rest)) return true;
+        if (action is "align" or "sync")
+            return hasDeviceObject && rest.All(word => IsAllowedArgumentWord(word, AllowedAlignmentWords));
+        return action == "get" && hasDeviceObject && rest.All(word => IsAllowedArgumentWord(word, AllowedAlignmentWords)) &&
+            (ContainsSequence(rest, 0, "in", "time") || rest.Any(word => word is "synced" or "synchronized"));
     }
 
     private static bool IsMeasurementRequest(IReadOnlyList<string> words, int actionIndex)
     {
         if (actionIndex >= words.Count || words[actionIndex] is not ("measure" or "check")) return false;
-        return words.Skip(actionIndex + 1).Any(word => word is "delay" or "latency" or "acoustic" or "timing" or "it");
+        var action = words[actionIndex];
+        var rest = words.Skip(actionIndex + 1).ToArray();
+        if (action == "measure" && rest is ["it"]) return true;
+        return rest.Any(word => word is "delay" or "latency" or "acoustic") &&
+            rest.All(word => IsAllowedArgumentWord(word, AllowedMeasurementWords));
     }
+
+    // Preserve the established policy example without treating arbitrary "X and Y"
+    // concepts as receiver aliases. Other named pairs safely use the local dialog.
+    private static bool IsEstablishedNamedPairExample(IReadOnlyList<string> words, int actionIndex, IReadOnlyList<string> rest) =>
+        actionIndex > 0 && words[actionIndex - 1] == "let's" &&
+        rest is ["the", "kitchen", "and", "office"];
+
+    private static bool IsAllowedArgumentWord(string word, IReadOnlySet<string> allowedWords) =>
+        allowedWords.Contains(word) || word.All(char.IsAsciiDigit) || word.Length == 1 && char.IsAsciiLetter(word[0]);
 
     private static bool StartsWith(IReadOnlyList<string> words, int start, params string[] prefix)
     {

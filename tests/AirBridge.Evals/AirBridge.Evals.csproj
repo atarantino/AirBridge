@@ -11,6 +11,6 @@
     <PackageReference Include="xunit.runner.visualstudio" Version="3.0.1"><PrivateAssets>all</PrivateAssets></PackageReference>
   </ItemGroup>
   <ItemGroup>
-    <None Update="fixtures\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+    <None Update="fixtures/*.jsonl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

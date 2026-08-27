@@ -29,11 +29,16 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
             return;
         }
 
-        using var http = new HttpClient { BaseAddress = new Uri("https://api.openai.com/") };
+        using var http = new HttpClient
+        {
+            BaseAddress = new Uri("https://api.openai.com/"),
+            Timeout = TimeSpan.FromSeconds(45)
+        };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+        using var evalTimeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var results = new List<ModelEvalResult>();
         foreach (var testCase in cases)
-            results.Add(await EvaluateAsync(http, testCase));
+            results.Add(await EvaluateAsync(http, testCase, evalTimeout.Token));
 
         WriteScorecard(results);
 
@@ -48,7 +53,7 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
         Console.WriteLine(message);
     }
 
-    private static async Task<ModelEvalResult> EvaluateAsync(HttpClient http, ModelToolCase testCase)
+    private static async Task<ModelEvalResult> EvaluateAsync(HttpClient http, ModelToolCase testCase, CancellationToken cancellationToken)
     {
         var payload = new Dictionary<string, object?>
         {
@@ -63,8 +68,8 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
             ["store"] = false
         };
         using var response = await http.PostAsync("v1/responses",
-            new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"));
-        var raw = await response.Content.ReadAsStringAsync();
+            new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"), cancellationToken);
+        var raw = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Model eval request failed for {testCase.Id} with HTTP {(int)response.StatusCode}: {ReadError(raw)}");
 
