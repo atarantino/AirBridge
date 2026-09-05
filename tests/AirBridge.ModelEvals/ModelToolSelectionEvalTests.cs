@@ -17,17 +17,11 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
     public async Task ModelToolSelectionArgumentsAndRefusalsMatchTheFixtureWhenExplicitlyEnabled()
     {
         var cases = LoadCases("model-tool-selection.jsonl");
-        if (Environment.GetEnvironmentVariable("AIRBRIDGE_MODEL_EVALS") != "1")
-        {
-            WriteSkip(cases.Length, "Set AIRBRIDGE_MODEL_EVALS=1 to run paid model evals.");
-            return;
-        }
+        Assert.True(Environment.GetEnvironmentVariable("AIRBRIDGE_MODEL_EVALS") == "1",
+            "Set AIRBRIDGE_MODEL_EVALS=1 to explicitly enable paid local model evals.");
         var apiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
-        if (string.IsNullOrWhiteSpace(apiKey))
-        {
-            WriteSkip(cases.Length, "Set OPENAI_API_KEY to run paid model evals.");
-            return;
-        }
+        Assert.False(string.IsNullOrWhiteSpace(apiKey),
+            "Set OPENAI_API_KEY to run paid local model evals.");
 
         using var http = new HttpClient
         {
@@ -44,13 +38,6 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
 
         var failures = results.Where(result => !result.SelectionCorrect || !result.ArgumentsCorrect || !result.RefusalCorrect).ToArray();
         Assert.True(failures.Length == 0, $"Model tool-selection eval had {failures.Length} failing cases.");
-    }
-
-    private void WriteSkip(int caseCount, string reason)
-    {
-        var message = $"Model tool-selection eval ({OpenAiAgent.Model}){Environment.NewLine}  cases: {caseCount}{Environment.NewLine}  SKIPPED: {reason}";
-        output.WriteLine(message);
-        Console.WriteLine(message);
     }
 
     private static async Task<ModelEvalResult> EvaluateAsync(HttpClient http, ModelToolCase testCase, CancellationToken cancellationToken)
