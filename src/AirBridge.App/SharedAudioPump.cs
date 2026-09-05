@@ -113,11 +113,6 @@ public sealed class SharedAudioPump : IAsyncDisposable
         }
     }
 
-    public void ResyncGroup()
-    {
-        lock (_gate) ResyncGroupCore();
-    }
-
     public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null, bool discardBufferedUntilGateOpen = true)
     {
         lock (_gate)

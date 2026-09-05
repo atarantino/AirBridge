@@ -6,7 +6,14 @@ public sealed class PcmNormalizer
     private readonly int _inputRate;
     private readonly int _channels;
     private double _sourcePosition;
-    private float[]? _previousFrame;
+    private bool _hasPreviousFrame;
+    private float _previousLeft;
+    private float _previousRight;
+    // Capture uses one normalizer serially. Retain scratch storage across packets;
+    // only the returned PCM array belongs to the caller and must remain independent.
+    private float[] _inputSamples = [];
+    private float[] _stereoSamples = [];
+    private short[] _outputSamples = [];
 
     public PcmNormalizer(int inputRate, int channels)
     {
@@ -21,7 +28,7 @@ public sealed class PcmNormalizer
     public byte[] ConvertInt16(ReadOnlySpan<byte> input)
     {
         var values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(input);
-        var samples = new float[values.Length];
+        var samples = Scratch(ref _inputSamples, values.Length);
         for (var i = 0; i < values.Length; i++) samples[i] = values[i] / 32768f;
         return ConvertSamples(samples);
     }
@@ -30,23 +37,26 @@ public sealed class PcmNormalizer
     {
         var frames = samples.Length / _channels;
         if (frames == 0) return [];
-        var withPrevious = new float[(frames + (_previousFrame is null ? 0 : 1)) * 2];
+        var withPrevious = Scratch(ref _stereoSamples, (frames + (_hasPreviousFrame ? 1 : 0)) * 2);
         var offset = 0;
-        if (_previousFrame is not null)
+        if (_hasPreviousFrame)
         {
-            withPrevious[0] = _previousFrame[0];
-            withPrevious[1] = _previousFrame[1];
+            withPrevious[0] = _previousLeft;
+            withPrevious[1] = _previousRight;
             offset = 1;
         }
         for (var frame = 0; frame < frames; frame++)
         {
             (withPrevious[(frame + offset) * 2], withPrevious[(frame + offset) * 2 + 1]) = Downmix(samples, frame);
         }
-        _previousFrame = [withPrevious[^2], withPrevious[^1]];
+        _previousLeft = withPrevious[^2];
+        _previousRight = withPrevious[^1];
+        _hasPreviousFrame = true;
 
         var totalFrames = frames + offset;
         var step = _inputRate / 44100d;
-        var output = new List<short>((int)(frames / step + 2) * 2);
+        var output = Scratch(ref _outputSamples, (int)(frames / step + 2) * 2);
+        var outputCount = 0;
         while (_sourcePosition + 1 < totalFrames)
         {
             var index = (int)_sourcePosition;
@@ -55,14 +65,20 @@ public sealed class PcmNormalizer
             {
                 var a = withPrevious[index * 2 + channel];
                 var b = withPrevious[(index + 1) * 2 + channel];
-                output.Add(ToInt16(a + ((b - a) * fraction)));
+                output[outputCount++] = ToInt16(a + ((b - a) * fraction));
             }
             _sourcePosition += step;
         }
         _sourcePosition -= totalFrames - 1;
-        var bytes = new byte[output.Count * sizeof(short)];
-        output.CopyTo(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes));
+        var bytes = new byte[outputCount * sizeof(short)];
+        output[..outputCount].CopyTo(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes));
         return bytes;
+    }
+
+    private static Span<T> Scratch<T>(ref T[] buffer, int length)
+    {
+        if (buffer.Length < length) buffer = new T[length];
+        return buffer.AsSpan(0, length);
     }
 
     private (float Left, float Right) Downmix(ReadOnlySpan<float> samples, int frame)
@@ -81,4 +97,3 @@ public sealed class PcmNormalizer
 
     private static short ToInt16(float value) => (short)Math.Round(Math.Clamp(value, -1f, 1f) * (value < 0 ? 32768f : 32767f));
 }
-

@@ -72,6 +72,51 @@ public sealed class MultiReceiverTests
     }
 
     [Fact]
+    public void FanoutUpdatesMembershipAndControlsAfterUnsubscribeAndResubscribe()
+    {
+        var hub = new PcmBroadcastHub();
+        var removed = hub.Subscribe(SpeakerA.Id);
+        var healthy = hub.Subscribe(Office.Id);
+        hub.Write(new byte[] { 1, 2, 3, 4 });
+        hub.Unsubscribe(SpeakerA.Id);
+        hub.Unsubscribe("unknown");
+        var replacement = hub.Subscribe(SpeakerA.Id);
+        hub.Write(new byte[] { 5, 6, 7, 8 });
+
+        var read = new byte[4];
+        Assert.Equal(4, removed.Read(read, false));
+        Assert.Equal(new byte[] { 1, 2, 3, 4 }, read);
+        Assert.Equal(0, removed.Read(read, false));
+        Assert.Equal(4, replacement.Read(read, false));
+        Assert.Equal(new byte[] { 5, 6, 7, 8 }, read);
+        Assert.Equal(8, healthy.Snapshot().FillBytes);
+
+        hub.SetTarget(700);
+        hub.Clear();
+        Assert.Equal(500, removed.TargetMilliseconds);
+        Assert.Equal(700, replacement.TargetMilliseconds);
+        Assert.Equal(700, healthy.TargetMilliseconds);
+        Assert.Equal(0, healthy.Snapshot().FillBytes);
+        Assert.Equal(0, hub.MonitorBuffer.Snapshot().FillBytes);
+    }
+
+    [Fact]
+    public void SteadyStateFanoutDoesNotAllocate()
+    {
+        var hub = new PcmBroadcastHub();
+        hub.Subscribe(SpeakerA.Id);
+        hub.Subscribe(Office.Id);
+        var block = new byte[SharedAudioPump.BlockBytes];
+        for (var i = 0; i < 100; i++) hub.Write(block);
+
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        for (var i = 0; i < 100; i++) hub.Write(block);
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
     public async Task CalibrationIsMixedIntoSharedCaptureFanoutForEveryLeg()
     {
         var hub = new PcmBroadcastHub();
