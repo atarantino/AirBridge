@@ -1,5 +1,22 @@
 # Hardware validation — 2026-07-17
 
+## Running local audio checks
+
+The automated WASAPI checks are reported as skipped unless `AIRBRIDGE_RUN_HARDWARE_TESTS=1` is set. Run them on a Windows machine with working audio devices from the repository root:
+
+```powershell
+$env:AIRBRIDGE_RUN_HARDWARE_TESTS = '1'
+try {
+    dotnet test tests/AirBridge.Tests --configuration Release --filter 'Category=Hardware'
+} finally {
+    Remove-Item Env:AIRBRIDGE_RUN_HARDWARE_TESTS
+}
+```
+
+Once enabled, activation timeouts fail the checks. These tests verify capture startup and format availability; they do not prove audible output. Packaging excludes the hardware category even when the local opt-in variable is set.
+
+## Recorded receiver validation
+
 Discovery on the local Wi-Fi found a HomePod mini test receiver running tvOS 26.5 with RAOP pairing reported as `NotNeeded`. TCP port 7000 was reachable and pyatv 0.18.0 discovery passed.
 
 Initial in-memory PCM smoke-test attempts reached RAOP `SETUP` but timed out while the trusted test Wi-Fi profile was `Public`. After the profile was changed to `Private`, the receiver completed transient pairing, RTSP `SETUP`, `RECORD`, event-channel negotiation, and returned its audio/control ports.
