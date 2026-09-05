@@ -101,7 +101,7 @@ GPT-5.6 contributed directly to the final product as the optional in-app assista
 ```powershell
 dotnet test AirBridge.sln -c Release
 .\.venv\Scripts\python.exe -m unittest discover -s src\AirBridge.RaopHost -p "test_*.py" -v
-node --test tests\browser-extension.test.js
+node --test tests\browser-extension.test.js tests\firefox-extension.test.js
 .\scripts\package.ps1
 ```
 

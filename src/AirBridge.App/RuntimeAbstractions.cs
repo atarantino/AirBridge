@@ -20,7 +20,6 @@ public interface IRaopClient
     Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default);
     Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default);
-    Task<JsonElement> PlayDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default);
     Task ShutdownAsync(CancellationToken cancellationToken);
     void ForceTerminate();
 }

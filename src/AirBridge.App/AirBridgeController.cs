@@ -334,19 +334,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         finally { _routeGate.Release(); }
     }
 
-    public async Task RunDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default)
-    {
-        await _routeGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        try
-        {
-            if (Coordinator.Route.StreamId is not null)
-                throw new InvalidOperationException("Stop the active route before playing a diagnostic tone; the diagnostic host command takes exclusive control of RAOP receivers.");
-            using var suppression = SuppressStandby();
-            await _raop.PlayDiagnosticToneAsync(receiverName, seconds, cancellationToken).ConfigureAwait(false);
-        }
-        finally { _routeGate.Release(); }
-    }
-
     private async Task<AcousticDelayResult> MeasureAcousticDelayCoreAsync(string receiverId, CancellationToken cancellationToken)
     {
         ReceiverLeg leg;

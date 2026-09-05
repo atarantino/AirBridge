@@ -1352,19 +1352,6 @@ public sealed class MainForm : Form
         return panel;
     }
 
-    private static Control Metric(string title, Label value)
-    {
-        var panel = new Panel { Dock = DockStyle.Fill, Margin = new Padding(0, 2, 6, 2) };
-        value.AutoSize = false;
-        value.Dock = DockStyle.Fill;
-        value.AutoEllipsis = true;
-        value.Font = UiGeometry.UiFont(8.5F);
-        value.TextAlign = ContentAlignment.MiddleCenter;
-        value.AccessibleName = title;
-        panel.Controls.Add(value);
-        return panel;
-    }
-
     private void UpdateMetricsSummary()
     {
         _metricsSummary.Text = string.Join("   ·   ", _route.Text, _duration.Text, _format.Text, _latency.Text, _transport.Text);
