@@ -110,59 +110,185 @@ public sealed class ToolConfirmationStore
 /// <summary>Recognizes a clear, non-negated current-turn request and authorizes one matching microphone tool call.</summary>
 public sealed class DirectMicrophoneAuthorization
 {
+    private static readonly char[] TokenSeparators =
+    [
+        ' ', '\t', '\r', '\n', '.', ',', '!', '?', ':', ';', '"', '“', '”', '(', ')', '[', ']', '{', '}', '-', '—'
+    ];
+
+    private static readonly HashSet<string> AmbiguityTokens = new(StringComparer.Ordinal)
+    {
+        "not", "no", "never", "nothing", "neither", "nor", "hardly", "barely", "dont",
+        "none", "zero", "without", "avoid", "cancel", "cancelled", "canceled", "denied", "unable",
+        "refuse", "refused", "revoke", "revoked", "withdraw", "withdrawn",
+        "if", "unless", "hypothetically", "assuming", "suppose", "supposing", "provided",
+        "when", "after", "before", "until", "once", "later", "might", "maybe", "perhaps",
+        "but", "however", "although", "though", "except", "instead", "actually", "wait"
+    };
+
+    private static readonly HashSet<string> ConversationalPrefixes = new(StringComparer.Ordinal)
+    {
+        "hey", "hi", "hello", "sorry", "ok", "okay"
+    };
+
+    private static readonly HashSet<string> CourtesySuffixes = new(StringComparer.Ordinal)
+    {
+        "please", "thanks", "thank you", "now"
+    };
+
+    private static readonly HashSet<string> AlignmentDeviceObjects = new(StringComparer.Ordinal)
+    {
+        "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both"
+    };
+
+    private static readonly HashSet<string> AllowedAlignmentWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
+        "speaker", "speakers", "receiver", "receivers", "group", "them", "those", "these", "both",
+        "together", "and", "up", "time", "synced", "synchronized", "please", "thanks", "thank", "you", "now"
+    };
+
+    private static readonly HashSet<string> AllowedMeasurementWords = new(StringComparer.Ordinal)
+    {
+        "a", "an", "the", "my", "our", "of", "to", "for", "on", "in", "with",
+        "speaker", "speakers", "receiver", "receivers", "group", "acoustic", "delay", "latency",
+        "please", "thanks", "thank", "you", "now"
+    };
+
     private readonly HashSet<string> _tools;
     private DirectMicrophoneAuthorization(HashSet<string> tools) => _tools = tools;
 
     public static DirectMicrophoneAuthorization FromUserText(string text)
     {
-        var normalized = text.Trim().ToLowerInvariant();
-        var negated = normalized.Contains("don't", StringComparison.Ordinal) ||
-            normalized.Contains("do not", StringComparison.Ordinal) ||
-            normalized.Contains("dont", StringComparison.Ordinal) ||
-            normalized.Contains("not align", StringComparison.Ordinal) ||
-            normalized.Contains("not measure", StringComparison.Ordinal) ||
-            normalized.Contains("without using", StringComparison.Ordinal) ||
-            normalized.Contains("avoid ", StringComparison.Ordinal);
         HashSet<string> tools = new(StringComparer.Ordinal);
-        if (negated) return new(tools);
-        if (IsImperative(normalized, "align") &&
-            (normalized.Contains("group", StringComparison.Ordinal) || normalized.Contains("speaker", StringComparison.Ordinal) ||
-             normalized.Contains("receiver", StringComparison.Ordinal) || normalized.Contains("alignment", StringComparison.Ordinal) ||
-             normalized.Contains(" and ", StringComparison.Ordinal)) ||
-            IsApprovalOf(normalized, "align"))
+        var trimmed = text.TrimStart();
+        if (trimmed.StartsWith('"') || trimmed.StartsWith('“') || trimmed.StartsWith('\'') ||
+            HasUnsupportedClauseBoundary(trimmed) || HasTrailingSentence(trimmed))
+            return new(tools);
+        var words = Tokenize(text);
+        if (words.Length == 0 || IsAmbiguous(words)) return new(tools);
+
+        var actionIndex = FindActionIndex(words);
+        if (IsAlignmentApproval(words) || actionIndex >= 0 && IsAlignmentRequest(words, actionIndex))
             tools.Add("align_group");
-        if (IsImperative(normalized, "measure") &&
-            (normalized.Contains("delay", StringComparison.Ordinal) || normalized.Contains("latency", StringComparison.Ordinal)) ||
-            IsApprovalOf(normalized, "measure"))
+        if (actionIndex >= 0 && IsMeasurementRequest(words, actionIndex))
             tools.Add("measure_acoustic_delay");
         return new(tools);
     }
 
     public bool TryConsume(string toolName) => _tools.Remove(toolName);
 
-    private static bool IsImperative(string text, string verb) =>
-        text.StartsWith(verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("please " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("can you " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("could you " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("would you " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("let's " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("go ahead and " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("i want you to " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("i need you to " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("i allow you to " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("i explicitly allow you to " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("i authorize you to " + verb + " ", StringComparison.Ordinal) ||
-        text.StartsWith("you have my permission to " + verb + " ", StringComparison.Ordinal);
+    private static string[] Tokenize(string text) => text
+        .Trim()
+        .ToLowerInvariant()
+        .Replace('’', '\'')
+        .Split(TokenSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private static bool IsApprovalOf(string text, string action) =>
-        (text.Contains("approve", StringComparison.Ordinal) || text.Contains("allow", StringComparison.Ordinal) ||
-         text.Contains("authorize", StringComparison.Ordinal) || text.Contains("permission", StringComparison.Ordinal) ||
-         text.Contains("go ahead", StringComparison.Ordinal)) &&
-        (action == "align"
-            ? text.Contains("align", StringComparison.Ordinal)
-            : text.Contains("measure", StringComparison.Ordinal) &&
-              (text.Contains("delay", StringComparison.Ordinal) || text.Contains("latency", StringComparison.Ordinal)));
+    private static bool IsAmbiguous(IEnumerable<string> words) => words.Any(word =>
+        AmbiguityTokens.Contains(word) || word.EndsWith("n't", StringComparison.Ordinal));
+
+    private static bool HasTrailingSentence(string text)
+    {
+        var sentenceEnd = text.IndexOfAny(['.', '!', '?', ';']);
+        if (sentenceEnd < 0) return false;
+        return text[(sentenceEnd + 1)..].Trim([' ', '\t', '\r', '\n', '.', '!', '?', '"', '\'', '”']).Length > 0;
+    }
+
+    private static bool HasUnsupportedClauseBoundary(string text)
+    {
+        if (text.IndexOfAny(['\r', '\n', ':', '—']) >= 0) return true;
+        var clauses = text.Split(',');
+        if (clauses.Length == 1) return false;
+        if (clauses.Length > 3 || clauses.Any(string.IsNullOrWhiteSpace)) return true;
+        var startsWithPrefix = ConversationalPrefixes.Contains(NormalizeBoundaryClause(clauses[0]));
+        var endsWithCourtesy = CourtesySuffixes.Contains(NormalizeBoundaryClause(clauses[^1]));
+        return clauses.Length == 2 ? !startsWithPrefix && !endsWithCourtesy : !startsWithPrefix || !endsWithCourtesy;
+    }
+
+    private static string NormalizeBoundaryClause(string clause) =>
+        clause.Trim().TrimEnd('.', '!', '?', '"', '\'', '”').ToLowerInvariant();
+
+    private static int FindActionIndex(IReadOnlyList<string> words)
+    {
+        var start = ConversationalPrefixes.Contains(words[0]) ? 1 : 0;
+        if (StartsWith(words, start, "please")) return start + 1;
+        if (StartsWith(words, start, "can", "you") ||
+            StartsWith(words, start, "could", "you") ||
+            StartsWith(words, start, "would", "you"))
+        {
+            var action = start + 2;
+            return action < words.Count && words[action] == "please" ? action + 1 : action;
+        }
+        if (StartsWith(words, start, "let's")) return start + 1;
+        if (StartsWith(words, start, "go", "ahead", "and")) return start + 3;
+        if (StartsWith(words, start, "i", "want", "you", "to") ||
+            StartsWith(words, start, "i", "need", "you", "to") ||
+            StartsWith(words, start, "i", "allow", "you", "to"))
+            return start + 4;
+        if (StartsWith(words, start, "i", "explicitly", "allow", "you", "to")) return start + 5;
+        if (StartsWith(words, start, "i", "authorize", "you", "to")) return start + 4;
+        if (StartsWith(words, start, "you", "have", "my", "permission", "to")) return start + 5;
+        return start;
+    }
+
+    private static bool IsAlignmentApproval(IReadOnlyList<string> words)
+    {
+        var start = ConversationalPrefixes.Contains(words[0]) ? 1 : 0;
+        if (!StartsWith(words, start, "i", "approve", "this", "alignment") &&
+            !StartsWith(words, start, "i", "approve", "the", "alignment"))
+            return false;
+        return words.Count == start + 4 || words.Count == start + 5 && words[^1] is "now" or "please";
+    }
+
+    private static bool IsAlignmentRequest(IReadOnlyList<string> words, int actionIndex)
+    {
+        if (actionIndex >= words.Count) return false;
+        var action = words[actionIndex];
+        var rest = words.Skip(actionIndex + 1).ToArray();
+        var hasDeviceObject = rest.Any(AlignmentDeviceObjects.Contains);
+        if (action is "align" or "sync")
+            return hasDeviceObject && AreAllowedArgumentWords(rest, AllowedAlignmentWords);
+        return action == "get" && hasDeviceObject && AreAllowedArgumentWords(rest, AllowedAlignmentWords) &&
+            (ContainsSequence(rest, 0, "in", "time") || rest.Any(word => word is "synced" or "synchronized"));
+    }
+
+    private static bool IsMeasurementRequest(IReadOnlyList<string> words, int actionIndex)
+    {
+        if (actionIndex >= words.Count || words[actionIndex] is not ("measure" or "check")) return false;
+        var action = words[actionIndex];
+        var rest = words.Skip(actionIndex + 1).ToArray();
+        if (action == "measure" && rest is ["it"]) return true;
+        return rest.Any(word => word is "delay" or "latency" or "acoustic") &&
+            AreAllowedArgumentWords(rest, AllowedMeasurementWords);
+    }
+
+    private static bool AreAllowedArgumentWords(IReadOnlyList<string> words, IReadOnlySet<string> allowedWords)
+    {
+        for (var index = 0; index < words.Count; index++)
+        {
+            if (allowedWords.Contains(words[index])) continue;
+            var followsAliasNoun = index > 0 && words[index - 1] is "speaker" or "receiver";
+            if (!followsAliasNoun || !IsAliasSuffix(words[index])) return false;
+        }
+        return true;
+    }
+
+    private static bool IsAliasSuffix(string word) =>
+        word.All(char.IsAsciiDigit) || word.Length == 1 && char.IsAsciiLetter(word[0]);
+
+    private static bool StartsWith(IReadOnlyList<string> words, int start, params string[] prefix)
+    {
+        if (start < 0 || start + prefix.Length > words.Count) return false;
+        for (var index = 0; index < prefix.Length; index++)
+            if (words[start + index] != prefix[index]) return false;
+        return true;
+    }
+
+    private static bool ContainsSequence(IReadOnlyList<string> words, int start, string first, string second)
+    {
+        for (var index = start; index + 1 < words.Count; index++)
+            if (words[index] == first && words[index + 1] == second) return true;
+        return false;
+    }
 }
 
 public interface IAgentToolRuntime

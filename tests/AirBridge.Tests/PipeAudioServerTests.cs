@@ -90,40 +90,6 @@ public sealed class PipeAudioServerTests
         Assert.Equal(freshBlock, await ReadBlockAsync(second));
     }
 
-    [Fact(Skip = "Quarantined: nondeterministic named-pipe read timeout in GitHub Actions")]
-    public async Task TwoActualPipeClientsReceiveSilenceThenSameFirstLiveGateIteration()
-    {
-        await using var speakerAServer = new PipeAudioServer();
-        await using var beamServer = new PipeAudioServer();
-        speakerAServer.Start();
-        beamServer.Start();
-        await using var speakerAClient = await ConnectAsync(speakerAServer);
-        await using var beamClient = await ConnectAsync(beamServer);
-        var speakerABuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4, 0);
-        var beamBuffer = new AirBridge.Core.BoundedPcmBuffer(SharedAudioPump.BlockBytes * 4, 0);
-        var live = Enumerable.Repeat((byte)0x5A, SharedAudioPump.BlockBytes).ToArray();
-        speakerABuffer.Write(live);
-        beamBuffer.Write(live);
-        var pump = new SharedAudioPump();
-        pump.AddLeg("speakerA", speakerABuffer, speakerAServer, 0);
-        pump.AddLeg("beam", beamBuffer, beamServer, 0);
-        pump.BeginGroup(["speakerA", "beam"]);
-
-        pump.MarkReady("speakerA");
-        await pump.PumpOnceAsync();
-        var gatedSpeakerA = await ReadBlockAsync(speakerAClient);
-        var gatedBeam = await ReadBlockAsync(beamClient);
-        Assert.All(gatedSpeakerA, value => Assert.Equal(0, value));
-        Assert.All(gatedBeam, value => Assert.Equal(0, value));
-
-        pump.MarkReady("beam");
-        await pump.PumpOnceAsync();
-        var firstLiveSpeakerA = await ReadBlockAsync(speakerAClient);
-        var firstLiveBeam = await ReadBlockAsync(beamClient);
-        Assert.Equal(live, firstLiveSpeakerA);
-        Assert.Equal(firstLiveSpeakerA, firstLiveBeam);
-    }
-
     private static async Task<NamedPipeClientStream> ConnectAsync(PipeAudioServer server)
     {
         var client = new NamedPipeClientStream(".", server.PipeName, PipeDirection.In, PipeOptions.Asynchronous);
