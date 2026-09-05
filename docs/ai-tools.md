@@ -16,9 +16,22 @@ Persistent tools require explicit confirmation. When a model requests one, AirBr
 
 ## Agent intent evals
 
-`tests/AirBridge.Evals` measures the two intent layers separately. The hermetic microphone-authorization eval loads a tagged primary corpus plus externally sourced held-out cases, evaluates both microphone tools for every utterance, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog, with a small separate budget that prevents an always-refuse implementation from passing. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
+`tests/AirBridge.Evals` contains the deterministic microphone-authorization eval that runs in CI. It loads a tagged primary corpus plus externally sourced held-out cases, evaluates both microphone tools for every utterance, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog, with a small separate budget that prevents an always-refuse implementation from passing. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
 
-The model-in-the-loop fixture independently scores tool selection, exact argument construction, and refusal/no-tool behavior against synthetic aliases such as `receiver-1`. It is paid and intentionally excluded from CI: set both `AIRBRIDGE_MODEL_EVALS=1` and `OPENAI_API_KEY` to opt in. With either setting absent, the test prints a skipped scorecard and makes no network request.
+`tests/AirBridge.ModelEvals` is a separate local-only project, intentionally outside `AirBridge.sln` and the CI workflow. Its 20-case model-in-the-loop fixture independently scores tool selection, exact argument construction, and the no-tool response rate against synthetic aliases such as `receiver-1`. A no-tool case passes when the model returns nonempty text without calling a tool; the grader does not evaluate the text's meaning or verify that it is an appropriate refusal. It makes paid API requests and requires both `AIRBRIDGE_MODEL_EVALS=1` and `OPENAI_API_KEY`. With either setting absent, an explicit run fails with setup instructions before making a network request; it never reports an unexecuted eval as passed.
+
+Both eval projects reject empty fixtures and require positive and negative coverage before scoring. Each microphone tool must have more authorize cases than the allowed false-negative budget, so an always-refuse gate cannot pass after those cases are removed. Undefined metrics display `n/a`.
+
+With `OPENAI_API_KEY` set in your local environment, run from the repository root in PowerShell:
+
+```powershell
+$env:AIRBRIDGE_MODEL_EVALS = '1'
+try {
+    dotnet test tests/AirBridge.ModelEvals --configuration Release
+} finally {
+    Remove-Item Env:AIRBRIDGE_MODEL_EVALS
+}
+```
 
 Calibration failures are shown immediately in the main conversation and as a Windows notification, including the locally selected microphone and the speaker that failed. AirBridge records local sample count, capture duration, peak, RMS, and chirp-emission count so it can distinguish an unavailable or silent input from a live microphone whose audio did not contain matching chirps. The same sanitized error is retained in diagnostics; users do not need to open the Activity Inspector or log files to discover a failed operation.
 
