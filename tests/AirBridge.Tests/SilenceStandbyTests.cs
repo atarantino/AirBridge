@@ -28,7 +28,6 @@ public sealed class SilenceStandbyTests
             VolumeChanges.Add((receiverId, percent));
             return Task.FromResult(Empty);
         }
-        public Task<JsonElement> PlayDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public void ForceTerminate() { }
     }
