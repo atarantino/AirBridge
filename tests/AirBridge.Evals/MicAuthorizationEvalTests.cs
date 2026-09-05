@@ -48,7 +48,7 @@ public sealed class MicAuthorizationEvalTests(ITestOutputHelper output)
         return new(testCase, expected, expectedToolAuthorized, unexpectedTools, correct);
     }
 
-    private void WriteScorecard(IReadOnlyCollection<EvalResult> results, double accuracy, double precision, double recall,
+    private void WriteScorecard(IReadOnlyCollection<EvalResult> results, string accuracy, string precision, string recall,
         IReadOnlyCollection<FalsePositive> falsePositives, IReadOnlyCollection<EvalResult> falseNegatives)
     {
         var heldOutCases = results.Count(result => result.Case.Tags.Contains("heldout", StringComparer.Ordinal));
@@ -56,9 +56,9 @@ public sealed class MicAuthorizationEvalTests(ITestOutputHelper output)
         {
             "Microphone authorization eval",
             $"  cases: {results.Count} ({heldOutCases} externally sourced held-out)",
-            $"  accuracy: {accuracy:P1}",
-            $"  authorize precision: {precision:P1}",
-            $"  authorize recall: {recall:P1}",
+            $"  accuracy: {accuracy}",
+            $"  authorize precision: {precision}",
+            $"  authorize recall: {recall}",
             $"  false positives: {falsePositives.Count} (budget: {FalsePositiveBudget})",
             $"  false negatives: {falseNegatives.Count} (budget: {FalseNegativeBudget})"
         };
@@ -71,12 +71,19 @@ public sealed class MicAuthorizationEvalTests(ITestOutputHelper output)
         Console.WriteLine(scorecard);
     }
 
-    private static double Ratio(int numerator, int denominator) => denominator == 0 ? 1 : (double)numerator / denominator;
+    private static string Ratio(int numerator, int denominator) => denominator == 0 ? "n/a" : ((double)numerator / denominator).ToString("P1");
 
     private static MicAuthorizationCase[] LoadCases(params string[] fixtureNames)
     {
-        var cases = fixtureNames.SelectMany(fixtureName => File.ReadLines(Path.Combine(AppContext.BaseDirectory, "fixtures", fixtureName)))
-            .Where(line => !string.IsNullOrWhiteSpace(line))
+        var lines = fixtureNames.SelectMany(fixtureName =>
+        {
+            var fixtureLines = File.ReadLines(Path.Combine(AppContext.BaseDirectory, "fixtures", fixtureName))
+                .Where(line => !string.IsNullOrWhiteSpace(line)).ToArray();
+            if (fixtureLines.Length == 0)
+                throw new InvalidDataException($"Microphone authorization fixture '{fixtureName}' must not be empty.");
+            return fixtureLines;
+        });
+        var cases = lines
             .Select(line => JsonSerializer.Deserialize<MicAuthorizationCase>(line,
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ??
                 throw new InvalidDataException($"Invalid eval fixture line: {line}"))
@@ -91,6 +98,12 @@ public sealed class MicAuthorizationEvalTests(ITestOutputHelper output)
                 throw new InvalidDataException($"{testCase.Id} has invalid microphone tool '{testCase.Tool}'.");
             if (testCase.Tags.Length == 0 || string.IsNullOrWhiteSpace(testCase.Note))
                 throw new InvalidDataException($"{testCase.Id} must have tags and a note.");
+        }
+        foreach (var tool in MicrophoneTools)
+        {
+            if (cases.Count(testCase => testCase.Tool == tool && testCase.Expect == "authorize") <= FalseNegativeBudget ||
+                !cases.Any(testCase => testCase.Tool == tool && testCase.Expect == "refuse"))
+                throw new InvalidDataException($"Microphone authorization fixtures must include more than {FalseNegativeBudget} authorize cases and at least one refuse case for '{tool}'.");
         }
         return cases;
     }

@@ -39,21 +39,14 @@ public sealed class PcmNormalizerTests
         Assert.InRange(one.Length + two.Length, 440 * 4 * 2 - 8, 442 * 4 * 2 + 8);
     }
 
-    [Fact]
-    public async Task WindowsLoopbackAcceptsItsNativeExtensibleFormatWhenAudioArrives()
+    [HardwareFact]
+    [Trait("Category", "Hardware")]
+    public async Task WindowsLoopbackExposesSupportedNativeFormat()
     {
-        if (!HardwareTestGate.Enabled) return;
         var buffer = new BoundedPcmBuffer(176400);
         var coordinator = new StreamCoordinator(buffer);
         using var capture = new AirBridge.App.WasapiCaptureService(buffer, coordinator);
-        try
-        {
-            await capture.StartSystemAsync(activationTimeout: TimeSpan.FromSeconds(3));
-        }
-        catch (TimeoutException)
-        {
-            return;
-        }
+        await capture.StartSystemAsync(activationTimeout: TimeSpan.FromSeconds(3));
         // This assertion documents the common Windows mix format behind the regression.
         Assert.NotNull(capture.SourceFormat);
         Assert.True(capture.SourceFormat!.BitsPerSample is 16 or 32);

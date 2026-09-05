@@ -14,7 +14,7 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
         """;
 
     [Fact]
-    public async Task ModelToolSelectionArgumentsAndRefusalsMatchTheFixtureWhenExplicitlyEnabled()
+    public async Task ModelToolSelectionArgumentsAndNoToolResponsesMatchTheFixtureWhenExplicitlyEnabled()
     {
         var cases = LoadCases("model-tool-selection.jsonl");
         Assert.True(Environment.GetEnvironmentVariable("AIRBRIDGE_MODEL_EVALS") == "1",
@@ -36,7 +36,7 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
 
         WriteScorecard(results);
 
-        var failures = results.Where(result => !result.SelectionCorrect || !result.ArgumentsCorrect || !result.RefusalCorrect).ToArray();
+        var failures = results.Where(result => !result.SelectionCorrect || !result.ArgumentsCorrect || !result.NoToolResponseCorrect).ToArray();
         Assert.True(failures.Length == 0, $"Model tool-selection eval had {failures.Length} failing cases.");
     }
 
@@ -63,35 +63,37 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
         using var document = JsonDocument.Parse(raw);
         var calls = ReadFunctionCalls(document.RootElement).ToArray();
         var outputText = ReadOutputText(document.RootElement);
-        var expectsRefusal = testCase.ExpectedTool is null;
-        var selectionCorrect = expectsRefusal || calls.Length == 1 && calls[0].Name == testCase.ExpectedTool;
-        var argumentsCorrect = expectsRefusal || selectionCorrect &&
+        var expectsNoTool = testCase.ExpectedTool is null;
+        var selectionCorrect = expectsNoTool || calls.Length == 1 && calls[0].Name == testCase.ExpectedTool;
+        var argumentsCorrect = expectsNoTool || selectionCorrect &&
             JsonEquivalent(testCase.ExpectedArguments, calls[0].Arguments);
-        var refusalCorrect = !expectsRefusal || calls.Length == 0 && !string.IsNullOrWhiteSpace(outputText);
-        return new(testCase, calls, outputText, selectionCorrect, argumentsCorrect, refusalCorrect);
+        // This checks the absence of a tool call, not the meaning of the response text.
+        var noToolResponseCorrect = !expectsNoTool || calls.Length == 0 && !string.IsNullOrWhiteSpace(outputText);
+        return new(testCase, calls, outputText, selectionCorrect, argumentsCorrect, noToolResponseCorrect);
     }
 
     private void WriteScorecard(IReadOnlyCollection<ModelEvalResult> results)
     {
         var actionable = results.Where(result => result.Case.ExpectedTool is not null).ToArray();
-        var refusals = results.Where(result => result.Case.ExpectedTool is null).ToArray();
+        var noToolCases = results.Where(result => result.Case.ExpectedTool is null).ToArray();
         var selectionCorrect = actionable.Count(result => result.SelectionCorrect);
         var argumentsCorrect = actionable.Count(result => result.ArgumentsCorrect);
-        var refusalCorrect = refusals.Count(result => result.RefusalCorrect);
+        var noToolResponseCorrect = noToolCases.Count(result => result.NoToolResponseCorrect);
         var lines = new List<string>
         {
             $"Model tool-selection eval ({OpenAiAgent.Model})",
             $"  cases: {results.Count}",
-            $"  tool selection accuracy: {Ratio(selectionCorrect, actionable.Length):P1} ({selectionCorrect}/{actionable.Length})",
-            $"  argument correctness: {Ratio(argumentsCorrect, actionable.Length):P1} ({argumentsCorrect}/{actionable.Length})",
-            $"  refusal correctness: {Ratio(refusalCorrect, refusals.Length):P1} ({refusalCorrect}/{refusals.Length})"
+            $"  tool selection accuracy: {Ratio(selectionCorrect, actionable.Length)} ({selectionCorrect}/{actionable.Length})",
+            $"  argument correctness: {Ratio(argumentsCorrect, actionable.Length)} ({argumentsCorrect}/{actionable.Length})",
+            $"  no-tool response rate: {Ratio(noToolResponseCorrect, noToolCases.Length)} ({noToolResponseCorrect}/{noToolCases.Length})",
+            "  response meaning is not graded"
         };
         lines.AddRange(results.Where(result => !result.SelectionCorrect).Select(result =>
             $"  TOOL [{result.Case.Id}] expected={result.Case.ExpectedTool} actual={FormatCalls(result.Calls)}: {result.Case.Utterance}"));
         lines.AddRange(results.Where(result => !result.ArgumentsCorrect).Select(result =>
             $"  ARGS [{result.Case.Id}] expected={result.Case.ExpectedArguments.GetRawText()} actual={FormatCalls(result.Calls)}"));
-        lines.AddRange(results.Where(result => !result.RefusalCorrect).Select(result =>
-            $"  REFUSAL [{result.Case.Id}] calls={FormatCalls(result.Calls)} text={(string.IsNullOrWhiteSpace(result.OutputText) ? "missing" : "present")}: {result.Case.Utterance}"));
+        lines.AddRange(results.Where(result => !result.NoToolResponseCorrect).Select(result =>
+            $"  NO-TOOL [{result.Case.Id}] calls={FormatCalls(result.Calls)} text={(string.IsNullOrWhiteSpace(result.OutputText) ? "missing" : "present")}: {result.Case.Utterance}"));
         var scorecard = string.Join(Environment.NewLine, lines);
         output.WriteLine(scorecard);
         Console.WriteLine(scorecard);
@@ -157,7 +159,7 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
         return expected.GetRawText() == actual.GetRawText();
     }
 
-    private static double Ratio(int numerator, int denominator) => denominator == 0 ? 1 : (double)numerator / denominator;
+    private static string Ratio(int numerator, int denominator) => denominator == 0 ? "n/a" : ((double)numerator / denominator).ToString("P1");
 
     private static ModelToolCase[] LoadCases(string fixtureName)
     {
@@ -168,6 +170,10 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ??
                 throw new InvalidDataException($"Invalid eval fixture line: {line}"))
             .ToArray();
+        if (cases.Length == 0)
+            throw new InvalidDataException("Model eval fixture must not be empty.");
+        if (!cases.Any(testCase => testCase.ExpectedTool is not null) || !cases.Any(testCase => testCase.ExpectedTool is null))
+            throw new InvalidDataException("Model eval fixture must include both tool-call and no-tool cases.");
         if (cases.Select(testCase => testCase.Id).Distinct(StringComparer.Ordinal).Count() != cases.Length)
             throw new InvalidDataException("Model eval IDs must be unique.");
         var knownTools = OpenAiAgent.ToolDefinitions
@@ -187,5 +193,5 @@ public sealed class ModelToolSelectionEvalTests(ITestOutputHelper output)
 
     private sealed record ModelToolCase(string Id, string Utterance, string? ExpectedTool, JsonElement ExpectedArguments, string Category, string Note);
     private sealed record ModelCall(string Name, JsonElement Arguments);
-    private sealed record ModelEvalResult(ModelToolCase Case, ModelCall[] Calls, string? OutputText, bool SelectionCorrect, bool ArgumentsCorrect, bool RefusalCorrect);
+    private sealed record ModelEvalResult(ModelToolCase Case, ModelCall[] Calls, string? OutputText, bool SelectionCorrect, bool ArgumentsCorrect, bool NoToolResponseCorrect);
 }
