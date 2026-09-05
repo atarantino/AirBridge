@@ -20,8 +20,14 @@ if (-not $SkipTests) {
     # block indefinitely inside the Windows audio COM API on some device states.
     dotnet test (Join-Path $workspace "AirBridge.sln") -c $Configuration --filter "FullyQualifiedName!~WasapiIntegrationTests"
 }
+if (Test-Path -LiteralPath $publish) {
+    $resolvedPublish = (Resolve-Path -LiteralPath $publish).ProviderPath
+    if ($resolvedPublish -ne [System.IO.Path]::GetFullPath((Join-Path $workspace "artifacts\publish"))) {
+        throw "Refusing to clean an unexpected publish directory: $resolvedPublish"
+    }
+    Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
+}
 dotnet publish (Join-Path $workspace "src\AirBridge.App\AirBridge.App.csproj") -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -o $publish
-dotnet publish (Join-Path $workspace "src\AirBridge.NativeMessaging\AirBridge.NativeMessaging.csproj") -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -o (Join-Path $publish "NativeMessaging")
 
 New-Item -ItemType Directory -Force -Path $raopPublish | Out-Null
 Push-Location (Join-Path $workspace "src\AirBridge.RaopHost")
