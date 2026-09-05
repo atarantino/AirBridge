@@ -12,6 +12,8 @@ public sealed class PcmBroadcastHub : IPcmSink
     private readonly object _gate = new();
     private readonly object _calibrationGate = new();
     private readonly Dictionary<string, BoundedPcmBuffer> _subscriptions = new(StringComparer.Ordinal);
+    // Replace only when membership changes; published arrays are never mutated.
+    private BoundedPcmBuffer[] _targets = [];
     private readonly BoundedPcmBuffer _idle = new(176400 * 5, 500);
     private readonly BoundedPcmBuffer _monitor = new(176400 * 5, 500);
     private CalibrationRun? _calibration;
@@ -34,13 +36,18 @@ public sealed class PcmBroadcastHub : IPcmSink
             if (_subscriptions.ContainsKey(receiverId)) throw new InvalidOperationException("Receiver already has a PCM subscription.");
             var buffer = new BoundedPcmBuffer(176400 * 5, targetMilliseconds);
             _subscriptions.Add(receiverId, buffer);
+            Volatile.Write(ref _targets, _subscriptions.Values.ToArray());
             return buffer;
         }
     }
 
     public void Unsubscribe(string receiverId)
     {
-        lock (_gate) _subscriptions.Remove(receiverId);
+        lock (_gate)
+        {
+            if (_subscriptions.Remove(receiverId))
+                Volatile.Write(ref _targets, _subscriptions.Values.ToArray());
+        }
     }
 
     public void Write(ReadOnlySpan<byte> source, bool producerActive = true)
@@ -114,8 +121,7 @@ public sealed class PcmBroadcastHub : IPcmSink
 
     private void WriteToTargets(ReadOnlySpan<byte> source, bool producerActive)
     {
-        BoundedPcmBuffer[] targets;
-        lock (_gate) targets = _subscriptions.Values.ToArray();
+        var targets = Volatile.Read(ref _targets);
         _monitor.Write(source, producerActive);
         foreach (var target in targets) target.Write(source, producerActive);
     }
@@ -140,16 +146,14 @@ public sealed class PcmBroadcastHub : IPcmSink
 
     public void Clear()
     {
-        BoundedPcmBuffer[] targets;
-        lock (_gate) targets = _subscriptions.Values.ToArray();
+        var targets = Volatile.Read(ref _targets);
         foreach (var target in targets) target.Clear();
         _monitor.Clear();
     }
 
     public void SetTarget(int milliseconds)
     {
-        BoundedPcmBuffer[] targets;
-        lock (_gate) targets = _subscriptions.Values.ToArray();
+        var targets = Volatile.Read(ref _targets);
         foreach (var target in targets) target.SetTarget(milliseconds);
     }
 
