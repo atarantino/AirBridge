@@ -13,6 +13,7 @@ public sealed class SilenceStandbyTests
         public List<(string ReceiverId, int Volume)> Starts { get; } = [];
         public List<(string ReceiverId, int Volume)> VolumeChanges { get; } = [];
         public int StopAllCount { get; private set; }
+        public Func<CancellationToken, Task<JsonElement>>? StopAllHandler { get; set; }
         public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ReceiverInfo>>([]);
         public Task<JsonElement> StartStreamAsync(ReceiverInfo receiver, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default)
@@ -22,7 +23,11 @@ public sealed class SilenceStandbyTests
             return Task.FromResult(Empty);
         }
         public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
-        public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) { StopAllCount++; return Task.FromResult(Empty); }
+        public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default)
+        {
+            StopAllCount++;
+            return StopAllHandler?.Invoke(cancellationToken) ?? Task.FromResult(Empty);
+        }
         public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default)
         {
             VolumeChanges.Add((receiverId, percent));
@@ -108,45 +113,51 @@ public sealed class SilenceStandbyTests
     }
 
     [Fact]
-    public async Task RouteTransitionStopsBeforeReleaseThenRestoresTrimsGateAndVolumesInOrder()
+    public async Task ControllerWaitsForRaopStopAndDoesNotReleaseReceiverOnFailure()
     {
-        List<string> events = [];
-        await StandbyRouteTransition.EnterAsync(
-            _ => { events.Add("stop-all"); return Task.CompletedTask; },
-            () => events.Add("released"));
+        var raop = new FakeRaopClient();
+        var capture = new FakeCaptureService();
+        await using var controller = new AirBridgeController(raop, capture);
+        var receiver = new ReceiverInfo("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
+        controller.ConfigureSettings(new AirBridgeSettings
+        {
+            SilenceStandbyEnabled = true,
+            SilenceStandbySeconds = 10
+        });
+        await controller.StartSystemAsync(receiver);
+        var captureStopsBeforeStandby = capture.StopCount;
+        var stopStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var stopCompletion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var routeFailed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        raop.StopAllHandler = _ =>
+        {
+            stopStarted.TrySetResult();
+            return stopCompletion.Task;
+        };
+        controller.Coordinator.RouteChanged += (_, route) =>
+        {
+            if (route.State == StreamState.Failed) routeFailed.TrySetResult();
+        };
 
-        ReceiverResumeSetting[] plan =
-        [
-            new("speakerA", 18, 60),
-            new("beam", 27, 0)
-        ];
-        await StandbyRouteTransition.ResumeAsync(
-            plan,
-            (id, trim) => events.Add($"trim:{id}:{trim}"),
-            ids => events.Add($"gate:{string.Join(',', ids)}"),
-            (id, volume, _) => { events.Add($"start:{id}:{volume}"); return Task.CompletedTask; });
+        try
+        {
+            for (var tick = 0; tick < 500; tick++) controller.ObserveCaptureActivityForTest(false);
+            await stopStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(StreamState.Streaming, controller.Coordinator.Route.State);
+            Assert.Equal(StreamState.Streaming, Assert.Single(controller.ReceiverPlayback).State);
 
-        Assert.Equal(
-        [
-            "stop-all",
-            "released",
-            "trim:speakerA:60",
-            "trim:beam:0",
-            "gate:speakerA,beam",
-            "start:speakerA:18",
-            "start:beam:27"
-        ], events);
-    }
+            stopCompletion.SetException(new IOException("receiver did not release"));
+            await routeFailed.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-    [Fact]
-    public async Task FailedRaopStopNeverMarksRouteReleased()
-    {
-        var released = false;
-        await Assert.ThrowsAsync<IOException>(() => StandbyRouteTransition.EnterAsync(
-            _ => Task.FromException(new IOException("receiver did not release")),
-            () => released = true));
-
-        Assert.False(released);
+            Assert.Equal(StreamState.Streaming, Assert.Single(controller.ReceiverPlayback).State);
+            Assert.Equal(captureStopsBeforeStandby, capture.StopCount);
+            Assert.Single(raop.Starts);
+        }
+        finally
+        {
+            stopCompletion.TrySetException(new IOException("receiver did not release"));
+            raop.StopAllHandler = null;
+        }
     }
 
     [Fact]
