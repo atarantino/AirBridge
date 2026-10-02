@@ -13,6 +13,8 @@ function Invoke-CheckedCommand([scriptblock]$Command) {
 }
 
 $workspace = Split-Path -Parent $PSScriptRoot
+$toolManifest = Join-Path $workspace ".config\dotnet-tools.json"
+$wixVersion = (Get-Content -LiteralPath $toolManifest -Raw | ConvertFrom-Json).tools.wix.version
 $python = Join-Path $workspace ".venv\Scripts\python.exe"
 $publish = Join-Path $workspace "artifacts\publish"
 $raopPublish = Join-Path $publish "RaopHost"
@@ -48,8 +50,8 @@ finally {
 
 Write-Host "Published AirBridge to $publish"
 
-Invoke-CheckedCommand { dotnet tool restore --tool-manifest (Join-Path $workspace ".config\dotnet-tools.json") }
-Invoke-CheckedCommand { dotnet wix extension add WixToolset.BootstrapperApplications.wixext/6.0.2 }
+Invoke-CheckedCommand { dotnet tool restore --tool-manifest $toolManifest }
+Invoke-CheckedCommand { dotnet wix extension add "WixToolset.BootstrapperApplications.wixext/$wixVersion" }
 Invoke-CheckedCommand { dotnet wix build (Join-Path $workspace "installer\wix\Package.wxs") -arch x64 -out (Join-Path $workspace "artifacts\AirBridge.msi") }
-Invoke-CheckedCommand { dotnet wix build (Join-Path $workspace "installer\wix\Bundle.wxs") -arch x64 -ext WixToolset.BootstrapperApplications.wixext -out $installer }
+Invoke-CheckedCommand { dotnet wix build (Join-Path $workspace "installer\wix\Bundle.wxs") -arch x64 -ext "WixToolset.BootstrapperApplications.wixext/$wixVersion" -out $installer }
 Write-Host "Built installer at $installer"
