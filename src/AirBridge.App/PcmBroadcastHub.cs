@@ -141,7 +141,8 @@ public sealed class PcmBroadcastHub : IPcmSink
             values.Sum(item => item.Underruns),
             values.Max(item => item.Epoch),
             values.Sum(item => item.ProducerIdlePaddingBytes),
-            values.Sum(item => item.StarvedWhileActivePaddingBytes));
+            values.Sum(item => item.StarvedWhileActivePaddingBytes),
+            values.Min(item => item.ActiveBytesWritten));
     }
 
     public void Clear()

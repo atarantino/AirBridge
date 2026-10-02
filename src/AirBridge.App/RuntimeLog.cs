@@ -83,8 +83,7 @@ internal sealed partial class RuntimeLog : IDisposable
 internal static class AppLog
 {
     private static RuntimeLog? _current;
-    internal static string DirectoryPath => System.IO.Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AirBridge", "logs");
+    internal static string DirectoryPath => System.IO.Path.Combine(AirBridge.Core.RuntimeProfile.DataDirectory, "logs");
 
     internal static void Initialize()
     {

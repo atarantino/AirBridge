@@ -1,0 +1,13 @@
+{
+  "name": "airbridge-verification",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node --test tests/browser-extension.test.js tests/firefox-extension.test.js",
+    "test:e2e": "playwright test",
+    "browser:install": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

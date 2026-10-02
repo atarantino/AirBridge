@@ -45,6 +45,7 @@ internal sealed class SettingsForm : Form
     private bool _removeApiKeyRequested;
     private string _shortcutBeforeCapture = HotkeyGesture.Default.ToString();
     private HotkeyGesture _capturedShortcut = HotkeyGesture.Default;
+    private readonly IReadOnlyList<MicrophoneDeviceInfo>? _microphones;
 
     public SettingsForm(
         AirBridgeSettings settings,
@@ -53,8 +54,10 @@ internal sealed class SettingsForm : Form
         bool apiKeyManagedByEnvironment,
         IReadOnlyList<ReceiverInfo>? receivers = null,
         string? initialTab = null,
-        AgentCostSnapshot? apiCosts = null)
+        AgentCostSnapshot? apiCosts = null,
+        IReadOnlyList<MicrophoneDeviceInfo>? microphones = null)
     {
+        _microphones = microphones;
         _speakerGroups = settings.SpeakerGroups.ToList();
         Text = "AirBridge Settings";
         AccessibleName = "AirBridge settings";
@@ -97,7 +100,7 @@ internal sealed class SettingsForm : Form
         }
 
         var save = new Button { Text = "Save", AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
-        var close = new Button { Text = "Close", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
+        var close = new Button { Name = "CloseSettings", Text = "Close", DialogResult = DialogResult.Cancel, AutoSize = true, Padding = new Padding(14, 4, 14, 4) };
         save.Click += (_, _) =>
         {
             if (!_capturedShortcut.IsValid)
@@ -210,7 +213,7 @@ internal sealed class SettingsForm : Form
         _standby.SelectedIndex = settings.SilenceStandbyEnabled ? SecondsToIndex(settings.SilenceStandbySeconds) : 0;
         _standby.AccessibleName = "Silence standby";
 
-        var microphones = AcousticDelayMeasurer.GetAvailableMicrophones();
+        var microphones = _microphones ?? AcousticDelayMeasurer.GetAvailableMicrophones();
         foreach (var microphone in microphones) _calibrationMicrophone.Items.Add(new MicrophoneChoice(microphone.Name, microphone.Name));
         if (!string.IsNullOrWhiteSpace(settings.CalibrationMicrophoneName) &&
             microphones.All(item => !item.Name.Equals(settings.CalibrationMicrophoneName, StringComparison.OrdinalIgnoreCase)))

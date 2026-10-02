@@ -1,0 +1,39 @@
+# Schema checked against the installed Codex desktop local-environment parser.
+version = 1
+name = "AirBridge for Windows"
+
+[setup]
+script = ""
+
+[setup.win32]
+script = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1'
+
+[[actions]]
+name = "Run fixture"
+icon = "run"
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\run.ps1'
+platform = "win32"
+
+[[actions]]
+name = "Doctor"
+icon = "debug"
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\doctor.ps1'
+platform = "win32"
+
+[[actions]]
+name = "Verify"
+icon = "test"
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1'
+platform = "win32"
+
+[[actions]]
+name = "Snapshots"
+icon = "tool"
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\snapshots.ps1'
+platform = "win32"
+
+[[actions]]
+name = "Browser QA"
+icon = "test"
+command = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify.ps1 -BrowserQA'
+platform = "win32"

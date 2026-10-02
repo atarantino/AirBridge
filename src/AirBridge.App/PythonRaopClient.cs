@@ -7,8 +7,13 @@ namespace AirBridge.App;
 
 public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 {
-    private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonElement>> _requests = new();
+    private sealed record PendingRequest(Process Process, TaskCompletionSource<JsonElement> Completion);
+    private readonly ConcurrentDictionary<string, PendingRequest> _requests = new();
+    private readonly ConcurrentDictionary<Process, byte> _closedResponseStreams = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private readonly SemaphoreSlim _lifecycleGate = new(1, 1);
+    private readonly string? _runtimeOverride;
+    private readonly string? _hostPathOverride;
     private Process? _process;
     private CancellationTokenSource? _cancellation;
     private Task? _outputTask;
@@ -16,12 +21,24 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 
     public event EventHandler<(string? ReceiverId, StreamState State, string? Error)>? StateChanged;
 
+    public PythonRaopClient() { }
+    internal PythonRaopClient(string runtime, string hostPath)
+    {
+        _runtimeOverride = runtime;
+        _hostPathOverride = hostPath;
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
         if (_process is { HasExited: false }) return;
+        if (_process is { } previous)
+            await CleanupProcessAsync(previous).ConfigureAwait(false);
         var basePath = AppContext.BaseDirectory;
-        var (runtime, runtimeArguments) = FindRuntime(basePath);
-        var host = Path.Combine(basePath, "RaopHost", "host.py");
+        var (runtime, runtimeArguments) = FindRuntime(basePath, _runtimeOverride ?? Environment.GetEnvironmentVariable("AIRBRIDGE_PYTHON"));
+        var host = _hostPathOverride ?? Path.Combine(basePath, "RaopHost", "host.py");
         if (runtimeArguments is not null && !File.Exists(host)) throw new FileNotFoundException("The bundled RAOP host was not found.", host);
         _process = new Process
         {
@@ -36,12 +53,32 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             },
             EnableRaisingEvents = true
         };
+        ConfigureHostEnvironment(_process.StartInfo);
         if (!_process.Start()) throw new InvalidOperationException("Unable to launch the RAOP host.");
         AppLog.Info("raop-host", $"Started RAOP host process; pid={_process.Id}; runtime={Path.GetFileName(runtime)}.");
         _cancellation = new();
         _outputTask = ReadOutputAsync(_process, _cancellation.Token);
         _errorTask = DrainErrorsAsync(_process, _cancellation.Token);
-        await SendAsync("ping", new { }, cancellationToken).ConfigureAwait(false);
+        try { await SendAsync("ping", new { }, cancellationToken).ConfigureAwait(false); }
+        catch
+        {
+            ForceTerminate();
+            await CleanupProcessAsync(_process).ConfigureAwait(false);
+            throw;
+        }
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    public Task<JsonElement> PingAsync(CancellationToken cancellationToken = default) =>
+        SendAsync("ping", new { }, cancellationToken);
+
+    internal static void ConfigureHostEnvironment(ProcessStartInfo startInfo)
+    {
+        startInfo.Environment[RuntimeProfile.DataDirectoryVariable] = RuntimeProfile.DataDirectory;
+        startInfo.Environment["AIRBRIDGE_RUN_ID"] = RuntimeProfile.RunId;
+        foreach (var name in new[] { "OPENAI_API_KEY", "AIRBRIDGE_MODEL_EVAL_KEY", "AIRBRIDGE_RUN_HARDWARE_TESTS", "AIRBRIDGE_MODEL_EVALS", "AIRBRIDGE_RUN_MODEL_EVALS" })
+            startInfo.Environment.Remove(name);
     }
 
     public async Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default)
@@ -81,21 +118,28 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 
     private async Task<JsonElement> SendAsync(string command, object arguments, CancellationToken cancellationToken)
     {
-        if (_process is not { HasExited: false }) throw new InvalidOperationException("RAOP host is not running.");
+        var process = _process;
+        if (process is not { HasExited: false }) throw new InvalidOperationException("RAOP host is not running.");
         var requestId = Guid.NewGuid().ToString("N");
         var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _requests[requestId] = completion;
+        _requests[requestId] = new(process, completion);
+        if (_closedResponseStreams.ContainsKey(process))
+        {
+            _requests.TryRemove(requestId, out _);
+            throw new InvalidOperationException("The RAOP host response stream is closed.");
+        }
         var values = JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(arguments))!;
         values["request_id"] = requestId;
         values["command"] = command;
-        AppLog.Info("raop-command", $"Sending {command}.");
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        AppLog.Info("raop-command", $"Sending {command}; operation={requestId}; run={RuntimeProfile.RunId}.");
         try
         {
             await _sendGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                await _process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(values).AsMemory(), cancellationToken).ConfigureAwait(false);
-                await _process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
+                await process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(values).AsMemory(), cancellationToken).ConfigureAwait(false);
+                await process.StandardInput.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
             finally { _sendGate.Release(); }
         }
@@ -108,13 +152,13 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         try
         {
             var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
-            AppLog.Info("raop-command", $"Completed {command}.");
+            AppLog.Info("raop-command", $"Completed {command}; operation={requestId}; duration_ms={elapsed.ElapsedMilliseconds}.");
             return result;
         }
         catch (TimeoutException)
         {
             _requests.TryRemove(requestId, out _);
-            AppLog.Error("raop-command", $"Timed out waiting for {command}.");
+            AppLog.Error("raop-command", $"Timed out waiting for {command}; operation={requestId}.");
             throw new TimeoutException($"RAOP host did not answer the {command} command within 15 seconds.");
         }
         finally { _requests.TryRemove(requestId, out _); }
@@ -122,6 +166,8 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 
     private async Task ReadOutputAsync(Process process, CancellationToken cancellationToken)
     {
+        try
+        {
         while (!cancellationToken.IsCancellationRequested)
         {
             string? line;
@@ -133,14 +179,18 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             {
                 using var document = JsonDocument.Parse(line);
                 var root = document.RootElement;
-                if (root.TryGetProperty("request_id", out var requestIdElement) && requestIdElement.GetString() is { } requestId && _requests.TryRemove(requestId, out var completion))
+                if (root.TryGetProperty("request_id", out var requestIdElement) && requestIdElement.GetString() is { } requestId &&
+                    _requests.TryGetValue(requestId, out var pending) && ReferenceEquals(pending.Process, process))
                 {
-                    if (root.GetProperty("ok").GetBoolean()) completion.TrySetResult(root.GetProperty("result").Clone());
+                    var accepted = root.GetProperty("ok").GetBoolean();
+                    var result = accepted ? root.GetProperty("result").Clone() : default;
+                    var error = accepted ? null : root.GetProperty("error").GetString() ?? "RAOP host command failed.";
+                    if (!_requests.TryRemove(requestId, out pending)) continue;
+                    if (accepted) pending.Completion.TrySetResult(result);
                     else
                     {
-                        var error = root.GetProperty("error").GetString() ?? "RAOP host command failed.";
-                        AppLog.Error("raop-host", error);
-                        completion.TrySetException(new InvalidOperationException(error));
+                        AppLog.Error("raop-host", error!);
+                        pending.Completion.TrySetException(new InvalidOperationException(error));
                     }
                     continue;
                 }
@@ -154,7 +204,24 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
                     StateChanged?.Invoke(this, (receiverId, state, error));
                 }
             }
-            catch (JsonException ex) { AppLog.Error("raop-host", $"Ignored malformed host output: {line}", ex); }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException)
+            {
+                // Raw malformed output may contain credentials or audio. Keep
+                // the reader alive without putting that payload into logs.
+                AppLog.Warning("raop-host", $"Ignored malformed host output ({ex.GetType().Name}).");
+            }
+        }
+        }
+        catch (Exception ex)
+        {
+            AppLog.Warning("raop-host", $"RAOP response reader stopped ({ex.GetType().Name}).");
+        }
+        finally
+        {
+            // Process.Exited can occur before buffered final JSON is read.
+            // Resolve requests only after draining stdout or a reader failure.
+            _closedResponseStreams.TryAdd(process, 0);
+            FailPendingRequests(process, "The RAOP host closed its response stream before responding.");
         }
     }
 
@@ -173,8 +240,21 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         catch (InvalidOperationException) when (cancellationToken.IsCancellationRequested) { }
     }
 
-    private static (string Runtime, string? Arguments) FindRuntime(string basePath)
+    private void FailPendingRequests(Process process, string reason)
     {
+        foreach (var request in _requests)
+            if (ReferenceEquals(request.Value.Process, process) && _requests.TryRemove(request.Key, out var pending))
+                pending.Completion.TrySetException(new InvalidOperationException(reason));
+    }
+
+    internal static (string Runtime, string? Arguments) FindRuntime(string basePath, string? runtimeOverride = null)
+    {
+        if (!string.IsNullOrWhiteSpace(runtimeOverride))
+        {
+            var explicitRuntime = Path.GetFullPath(runtimeOverride);
+            if (!File.Exists(explicitRuntime)) throw new FileNotFoundException("AIRBRIDGE_PYTHON must name an existing Python executable.", explicitRuntime);
+            return (explicitRuntime, "python");
+        }
         var bundled = Path.Combine(basePath, "RaopHost", "AirBridge.RaopHost.exe");
         if (File.Exists(bundled)) return (bundled, null);
         var current = new DirectoryInfo(basePath);
@@ -189,6 +269,9 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 
     public async Task ShutdownAsync(CancellationToken cancellationToken)
     {
+        await _lifecycleGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
         var process = _process;
         if (process is null) return;
         if (!process.HasExited)
@@ -198,25 +281,38 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
         }
         AppLog.Info("raop-host", $"RAOP host exited; code={(process.HasExited ? process.ExitCode : -1)}.");
-        if (_cancellation is not null) await _cancellation.CancelAsync().ConfigureAwait(false);
-        await AwaitReaderAsync(_outputTask).ConfigureAwait(false);
-        await AwaitReaderAsync(_errorTask).ConfigureAwait(false);
-        if (ReferenceEquals(_process, process)) _process = null;
+        await CleanupProcessAsync(process).ConfigureAwait(false);
+        }
+        finally { _lifecycleGate.Release(); }
+    }
+
+    private async Task CleanupProcessAsync(Process process)
+    {
+        var cancellation = _cancellation;
+        var output = _outputTask;
+        var errors = _errorTask;
+        if (cancellation is not null) await cancellation.CancelAsync().ConfigureAwait(false);
+        await AwaitReaderAsync(output).ConfigureAwait(false);
+        await AwaitReaderAsync(errors).ConfigureAwait(false);
+        FailPendingRequests(process, "The RAOP host was stopped before responding.");
+        _closedResponseStreams.TryRemove(process, out _);
+        if (ReferenceEquals(_process, process))
+        {
+            _process = null;
+            _cancellation = null;
+            _outputTask = null;
+            _errorTask = null;
+        }
         process.Dispose();
-        _cancellation?.Dispose();
-        _cancellation = null;
-        _outputTask = null;
-        _errorTask = null;
+        cancellation?.Dispose();
     }
 
     public void ForceTerminate()
     {
         var process = _process;
         try { _cancellation?.Cancel(); } catch (ObjectDisposedException) { }
-        foreach (var request in _requests.Values)
-            request.TrySetException(new OperationCanceledException("The RAOP host was terminated during application shutdown."));
-        _requests.Clear();
         if (process is null) return;
+        FailPendingRequests(process, "The RAOP host was terminated during application shutdown.");
         try { process.StandardInput.Close(); } catch { }
         try
         {
@@ -246,11 +342,8 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             if (process is not null)
             {
                 try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); } catch { }
-                process.Dispose();
-                _process = null;
+                await CleanupProcessAsync(process).ConfigureAwait(false);
             }
-            _cancellation?.Dispose();
-            _cancellation = null;
         }
         _sendGate.Dispose();
     }

@@ -5,6 +5,21 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        LaunchOptions options;
+        try { options = LaunchOptions.Parse(args); }
+        catch (ArgumentException exception)
+        {
+            Console.Error.WriteLine(exception.Message);
+            Environment.ExitCode = 2;
+            return;
+        }
+        if (options.Help)
+        {
+            Console.WriteLine("AirBridge [--data-dir PATH] [--fixture healthy|no-receivers|partial-failure|pairing|reconnect] [--debug-pipe NAME] [--session-file PATH]\nPreview: --preview; --snapshot PATH [THEME] [SCALE] [idle]; --snapshot-flyout PATH [THEME] [SCALE]; --snapshot-settings PATH [THEME] [TAB]; --snapshot-hud PATH [THEME] [STATE]; --snapshot-activity PATH [THEME]; --stress-flyout [CYCLES]");
+            return;
+        }
+        AirBridge.Core.RuntimeProfile.Configure(options.DataDirectory, options.IsPreview || options.FixtureScenario is not null);
+        args = options.Arguments;
         AppLog.Initialize();
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, eventArgs) => AppLog.Error("ui", "Unhandled UI-thread exception.", eventArgs.Exception);
@@ -40,9 +55,11 @@ internal static class Program
                 Application.DoEvents();
             }
             using var bitmap = new Bitmap(form.Width, form.Height);
+            form.SettleSnapshotLayout();
             form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
             bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.WriteLayout(form, path);
             form.Close();
             return;
         }
@@ -65,10 +82,12 @@ internal static class Program
             flyout.Show();
             flyout.ReflowReceiverRows();
             Application.DoEvents();
+            flyout.SettleSnapshotLayout();
             using var bitmap = new Bitmap(flyout.Width, flyout.Height);
             flyout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(flyoutPath))!);
             bitmap.Save(flyoutPath, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.WriteLayout(flyout, flyoutPath);
             flyout.Close();
             return;
         }
@@ -94,7 +113,7 @@ internal static class Program
             };
             using var settings = new SettingsForm(previewSettings, ThemePalette.Current(theme), storedApiKeyConfigured: true,
                 apiKeyManagedByEnvironment: false, previewReceivers,
-                apiCosts: new(0.0174m, 3, 1.2847m, 142, true));
+                apiCosts: new(0.0174m, 3, 1.2847m, 142, true), microphones: [new(0, "Fixture microphone")]);
             settings.Show();
             Application.DoEvents();
             if (args.Length >= 4 && int.TryParse(args[3], out var tabIndex) && settings.Controls.OfType<TabControl>().FirstOrDefault() is { } tabs)
@@ -176,7 +195,10 @@ internal static class Program
             flyout.Close();
             return;
         }
-        Application.Run(new MainForm());
+        using var main = new MainForm(false, null, true, options.FixtureScenario is { } scenario ? new FixtureRuntime(scenario) : null);
+        main.StartDebugSession(options);
+        Application.Run(main);
+        main.CompleteDebugSession();
 
         // Returning from Main can leave the process alive when a native audio
         // library owns a foreground thread. MainForm has already completed its

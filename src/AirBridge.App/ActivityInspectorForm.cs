@@ -23,8 +23,7 @@ internal sealed class AgentActivityStore : IAgentActivitySink
         if (persistToDisk)
         {
             _persistentLog = new(logPath ?? System.IO.Path.Combine(AppLog.DirectoryPath, "ai-activity.jsonl"));
-            _costLedger = new(costLedgerPath ?? System.IO.Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AirBridge", "ai-cost.json"));
+            _costLedger = new(costLedgerPath ?? System.IO.Path.Combine(RuntimeProfile.DataDirectory, "ai-cost.json"));
         }
     }
 

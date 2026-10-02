@@ -14,14 +14,13 @@ internal interface IOpenAiCredentialStore
 /// <summary>Stores the API key in the current Windows user's Credential Manager vault.</summary>
 internal sealed class WindowsOpenAiCredentialStore : IOpenAiCredentialStore
 {
-    private const string DefaultTargetName = "AirBridge/OpenAI API Key";
     private const uint CredentialTypeGeneric = 1;
     private const uint CredentialPersistLocalMachine = 2;
     private const int ErrorNotFound = 1168;
     private const int MaxCredentialBlobBytes = 2560;
     private readonly string _targetName;
 
-    public WindowsOpenAiCredentialStore() : this(DefaultTargetName) { }
+    public WindowsOpenAiCredentialStore() : this(AirBridge.Core.RuntimeProfile.CredentialTarget) { }
 
     internal WindowsOpenAiCredentialStore(string targetName)
     {

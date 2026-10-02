@@ -3,17 +3,19 @@ using AirBridge.Core;
 
 namespace AirBridge.App;
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
     private const int HotkeyId = 0xA17B;
     private const int WmHotkey = 0x0312;
     private const int WmSettingChange = 0x001A;
-    private readonly AirBridgeController _controller = new();
+    private readonly AirBridgeController _controller;
     private readonly PushToTalkRecorder _recorder = new();
     private readonly AgentActivityStore _activityStore;
     private readonly ToolConfirmationStore _agentConfirmations = new();
-    private readonly SettingsStore _settingsStore = new();
-    private readonly IOpenAiCredentialStore _openAiCredentials = new WindowsOpenAiCredentialStore();
+    private readonly SettingsStore _settingsStore;
+    private readonly IOpenAiCredentialStore _openAiCredentials;
+    private readonly FixtureRuntime? _fixture;
+    private bool IsTestSession => _previewMode || _fixture is not null;
     private readonly SegmentedControl _sourceMode = new() { Width = 156, Height = 36 };
     private readonly ComboBox _sessions = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 230 };
     private readonly ComboBox _groups = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
@@ -74,11 +76,21 @@ public sealed class MainForm : Form
     private Task _voiceDuckingTransition = Task.CompletedTask;
 
     public MainForm(bool previewMode = false, AppThemeMode? previewTheme = null, bool previewStreaming = true)
+        : this(previewMode, previewTheme, previewStreaming, null) { }
+
+    internal MainForm(bool previewMode, AppThemeMode? previewTheme, bool previewStreaming, FixtureRuntime? fixture)
     {
         _previewMode = previewMode;
+        _fixture = fixture ?? (previewMode ? new FixtureRuntime("healthy") : null);
+        if (IsTestSession) RuntimeProfile.Configure(null, requireIsolatedProfile: true);
+        _settingsStore = new SettingsStore();
+        _openAiCredentials = IsTestSession ? new MemoryOpenAiCredentialStore() : new WindowsOpenAiCredentialStore();
+        _controller = _fixture is null ? new AirBridgeController() : new AirBridgeController(_fixture.Raop, _fixture.Capture);
+        if (_fixture is not null) _fixture.Capture.WritePcm = _controller.AppendCapturedPcm;
         _activityStore = new(persistToDisk: !previewMode);
         _previewStreamActive = previewMode && previewStreaming;
-        _settings = _settingsStore.Load();
+        _settings = previewMode ? new() : _settingsStore.Load();
+        if (IsTestSession) _settings = _settings with { AiEnabled = false };
         _controller.ConfigureSettings(_settings);
         _controller.AgentPairingHandler = EnsureAgentReceiversPairedAsync;
         foreach (var id in _settings.SelectedReceiverIds) _selectedReceiverIds.Add(id);
@@ -86,6 +98,7 @@ public sealed class MainForm : Form
         var themeMode = previewTheme ?? ParseTheme(_settings.ThemeMode);
         _palette = ThemePalette.Current(themeMode);
         _trayFlyout = new(themeMode);
+        if (_fixture is not null) _trayFlyout.AutoHide = false;
         _trayFlyout.UpdateBrowserDelay(_settings.EstimatedAudioDelayMilliseconds);
         _voiceHud = new(_palette);
         if (!_voiceHud.SetInitialPosition(_settings.VoiceHudX, _settings.VoiceHudY))
@@ -102,6 +115,7 @@ public sealed class MainForm : Form
         ShowInTaskbar = previewMode;
         Opacity = previewMode ? 1D : 0D;
         BuildLayout();
+        if (IsTestSession) _pushToTalk.Enabled = false;
         UiGeometry.ScaleInitialTextLayout(this);
         BuildTraySurface();
         _tray.Visible = !previewMode;
@@ -118,7 +132,7 @@ public sealed class MainForm : Form
         };
         FormClosing += OnFormClosing;
         SystemTextScale.Changed += OnTextScaleChanged;
-        if (!previewMode)
+        if (!IsTestSession)
         {
             var (modifiers, virtualKey) = _hotkeyGesture.ToRegisterHotKeyArgs();
             if (!RegisterHotKey(Handle, HotkeyId, modifiers, virtualKey))
@@ -360,8 +374,11 @@ public sealed class MainForm : Form
             var apiKey = ResolveOpenAiApiKey();
             if (!string.IsNullOrWhiteSpace(apiKey) && _settings.AiEnabled) _agent = new OpenAiAgent(apiKey, new AgentPolicy(), _controller,
                 activity: _activityStore, confirmationStore: _agentConfirmations, confirmationPrompt: ConfirmAgentToolAsync);
-            else AppendConversation("System", "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
+            else AppendConversation("System", IsTestSession ? "Fixture session: generated audio and simulated receivers; microphone and API access are disabled." : "Save an OpenAI API key in Settings to enable GPT-5.6 and push-to-talk. Streaming stays fully available.");
+            _sessionManifest?.Update("ready", ready: true);
+            _debugServer?.Events.Add("ready", "Application initialization completed.");
         });
+        if (_sessionManifest is { Ready: false }) _sessionManifest.Update("failed", error: "Application initialization failed. See the profile runtime log.");
     }
 
     private async Task RefreshReceiversAsync()
@@ -441,6 +458,7 @@ public sealed class MainForm : Form
                 row.SleepRequested += async (_, args) => await SleepAppleTvAsync(args.ReceiverId);
                 _receiverRows.Add(receiver.Id, row);
                 _receiverPanel.Controls.Add(row);
+                row.ApplyTextScale();
             }
             ResizeReceiverRows();
             _trayFlyout.SetReceivers(receivers, _selectedReceiverIds, _receiverVolumes, _settings.ReceiverAlignmentTrimMs);
@@ -456,11 +474,20 @@ public sealed class MainForm : Form
         foreach (var row in _receiverRows.Values) if (row.Width != width) row.Width = width;
     }
 
+    internal void SettleSnapshotLayout()
+    {
+        foreach (var row in _receiverRows.Values) row.ApplyTextScale();
+        ResizeReceiverRows();
+        PerformLayout();
+    }
+
     private void RefreshSessions()
     {
         try
         {
-            var sessions = WasapiCaptureService.ListSessions();
+            IReadOnlyList<AudioSessionInfo> sessions = IsTestSession
+                ? [new AudioSessionInfo(1234, "Fixture audio process", "fixture", true, 0.3f)]
+                : WasapiCaptureService.ListSessions();
             _sessions.DataSource = sessions.ToList();
             _sessions.DisplayMember = nameof(AudioSessionInfo.Application);
         }
@@ -497,14 +524,14 @@ public sealed class MainForm : Form
         else _groupsMenu.Show(anchor, new Point(0, anchor.Height));
     }
 
-    private async Task StartSelectedAsync()
+    private async Task StartSelectedAsync(bool propagateErrors = false, CancellationToken cancellationToken = default)
     {
         var receivers = _controller.Receivers.Where(item => _selectedReceiverIds.Contains(item.Id)).ToArray();
         if (receivers.Length == 0) { AppendConversation("System", "Select at least one available speaker."); return; }
         var unavailable = receivers.FirstOrDefault(item => !item.CanConnect);
         if (unavailable is not null) { ShowConnectionIssue(unavailable); return; }
         foreach (var receiver in receivers)
-            if (!await EnsureReceiverPairedAsync(receiver)) return;
+            if (!await EnsureReceiverPairedAsync(receiver, cancellationToken)) return;
         await RunUiActionAsync(async () =>
         {
             var startVolumes = receivers.ToDictionary(
@@ -514,10 +541,10 @@ public sealed class MainForm : Form
             if (_sourceMode.SelectedIndex == 1)
             {
                 if (_sessions.SelectedItem is not AudioSessionInfo session) throw new InvalidOperationException("Select an application first.");
-                await _controller.StartApplicationAsync(session.ProcessId, receivers, startVolumes);
+                await _controller.StartApplicationAsync(session.ProcessId, receivers, startVolumes, cancellationToken);
             }
-            else await _controller.StartSystemAsync(receivers, startVolumes);
-        });
+            else await _controller.StartSystemAsync(receivers, startVolumes, cancellationToken);
+        }, propagateErrors);
     }
 
     private async Task ConnectReceiverAsync(string receiverId)
@@ -665,14 +692,14 @@ public sealed class MainForm : Form
         RefreshGroups();
     }
 
-    private async Task ChangeReceiverVolumeAsync(string receiverId, int volume)
+    private async Task ChangeReceiverVolumeAsync(string receiverId, int volume, bool propagateErrors = false, CancellationToken cancellationToken = default)
     {
         _receiverVolumes[receiverId] = volume;
         if (_receiverRows.TryGetValue(receiverId, out var row)) row.SetVolume(volume);
         _trayFlyout.UpdateReceiver(receiverId, GetReceiverState(receiverId), volume: volume);
         PersistUiSettings();
         if (_controller.ReceiverPlayback.Any(item => item.Receiver.Id == receiverId))
-            await RunUiActionAsync(() => _controller.SetReceiverVolumeAsync(receiverId, volume));
+            await RunUiActionAsync(() => _controller.SetReceiverVolumeAsync(receiverId, volume, cancellationToken), propagateErrors);
     }
 
     private void ApplySelectedGroup()
@@ -793,6 +820,11 @@ public sealed class MainForm : Form
 
     private bool StartRecording(bool holdHint)
     {
+        if (IsTestSession)
+        {
+            AppendConversation("System", "Microphone access is disabled in preview and fixture sessions.");
+            return false;
+        }
         if (_transcriptionCancellation is not null) return false;
         try
         {
@@ -936,6 +968,13 @@ public sealed class MainForm : Form
 
     private async Task MeasureSelectedDelayAsync(SettingsForm? settingsDialog = null)
     {
+        if (IsTestSession)
+        {
+            const string message = "Acoustic measurement is disabled in preview and fixture sessions.";
+            AppendConversation("System", message);
+            settingsDialog?.SetBrowserDelayError(message);
+            return;
+        }
         var active = _controller.ReceiverPlayback.Where(item => _selectedReceiverIds.Contains(item.Receiver.Id)).ToArray();
         if (active.Length != 1)
         {
@@ -981,6 +1020,7 @@ public sealed class MainForm : Form
 
     private async Task AlignSelectedGroupAsync()
     {
+        if (IsTestSession) { AppendConversation("System", "Acoustic measurement is disabled in preview and fixture sessions."); return; }
         var active = _controller.ReceiverPlayback.Where(item => _selectedReceiverIds.Contains(item.Receiver.Id)).ToArray();
         if (active.Length < 2)
         {
@@ -1004,10 +1044,15 @@ public sealed class MainForm : Form
         });
     }
 
-    private async Task RunUiActionAsync(Func<Task> action)
+    private async Task RunUiActionAsync(Func<Task> action, bool propagateErrors = false)
     {
         try { UseWaitCursor = true; await action(); }
-        catch (Exception ex) { AppLog.Error("ui-action", "UI action failed.", ex); AppendConversation("System", ex.Message); }
+        catch (Exception ex)
+        {
+            AppLog.Error("ui-action", "UI action failed.", ex);
+            AppendConversation("System", ex.Message);
+            if (propagateErrors) throw;
+        }
         finally { UseWaitCursor = false; UpdateTelemetry(); }
     }
 
@@ -1110,7 +1155,7 @@ public sealed class MainForm : Form
     private void ShowSettingsDialog(string? initialTab = null)
     {
         _trayFlyout.Hide();
-        var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+        var environmentApiKey = IsTestSession ? null : Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         bool storedApiKeyConfigured;
         try { storedApiKeyConfigured = _openAiCredentials.IsConfigured; }
         catch (Exception ex)
@@ -1120,7 +1165,8 @@ public sealed class MainForm : Form
             return;
         }
         using var dialog = new SettingsForm(_settings, _palette, storedApiKeyConfigured, !string.IsNullOrWhiteSpace(environmentApiKey),
-            _controller.Receivers, initialTab, _activityStore.CostSnapshot());
+            _controller.Receivers, initialTab, _activityStore.CostSnapshot(),
+            microphones: IsTestSession ? [new(0, "Fixture microphone")] : null);
         dialog.OpenLogsRequested += (_, _) => OpenLogsFolder();
         dialog.OpenActivityInspectorRequested += (_, _) => ShowActivityInspector();
         dialog.BrowserDelayMeasureRequested += async (_, _) => await MeasureSelectedDelayAsync(dialog);
@@ -1220,7 +1266,7 @@ public sealed class MainForm : Form
         };
         var previousGesture = _hotkeyGesture;
         var candidateGesture = HotkeyGesture.TryParse(next.PushToTalkShortcut, out var parsedGesture) ? parsedGesture : HotkeyGesture.Default;
-        if (!_previewMode)
+        if (!IsTestSession)
         {
             UnregisterHotKey(Handle, HotkeyId);
             var (modifiers, virtualKey) = candidateGesture.ToRegisterHotKeyArgs();
@@ -1262,6 +1308,7 @@ public sealed class MainForm : Form
 
     private string? ResolveOpenAiApiKey()
     {
+        if (IsTestSession) return null;
         var environmentApiKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         return !string.IsNullOrWhiteSpace(environmentApiKey) ? environmentApiKey.Trim() : _openAiCredentials.Read();
     }
@@ -1445,13 +1492,13 @@ public sealed class MainForm : Form
 
     private void OnFormClosing(object? sender, FormClosingEventArgs args)
     {
-        if (!_allowClose && args.CloseReason == CloseReason.UserClosing) { args.Cancel = true; Hide(); return; }
         if (_previewMode)
         {
             _controller.ForceCleanup();
             DisposeUiResources();
             return;
         }
+        if (!_allowClose && args.CloseReason == CloseReason.UserClosing) { args.Cancel = true; Hide(); return; }
         if (!_shutdownCompleted)
         {
             args.Cancel = true;
@@ -1504,6 +1551,7 @@ public sealed class MainForm : Form
         _shutdownWatchdog?.Dispose();
         _shutdownWatchdog = null;
         _timer.Stop();
+        _timer.Dispose();
         _hotkeyPollTimer.Stop();
         _tray.Visible = false;
         _trayFlyout.Close();

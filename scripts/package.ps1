@@ -1,55 +1,49 @@
-param(
-    [string]$Configuration = "Release",
-    [switch]$SkipTests
-)
+param([string]$Configuration = 'Release', [switch]$SkipTests, [string]$OutputDirectory = '')
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'common.ps1')
+$run = New-AirBridgeRun 'package' $OutputDirectory
+Add-AirBridgeProvenance $run
+$python = Join-Path $script:AirBridgeRoot '.venv\Scripts\python.exe'
+$publish = Join-Path $script:AirBridgeRoot 'artifacts\publish'
+$raopPublish = Join-Path $publish 'RaopHost'
+$installer = Join-Path $script:AirBridgeRoot 'artifacts\AirBridge-Setup.exe'
 
-$ErrorActionPreference = "Stop"
-
-function Invoke-CheckedCommand([scriptblock]$Command) {
-    & $Command
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code ${LASTEXITCODE}: $Command"
-    }
+function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 240) {
+    $check = Invoke-AirBridgeCheck $run $Name $FilePath $Arguments $TimeoutSeconds
+    if ($check.status -ne 'passed') { throw "$Name failed. Inspect $($run.outputDirectory)." }
 }
 
-$workspace = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $workspace ".venv\Scripts\python.exe"
-$publish = Join-Path $workspace "artifacts\publish"
-$raopPublish = Join-Path $publish "RaopHost"
-$installer = Join-Path $workspace "artifacts\AirBridge-Setup.exe"
-
-if (-not (Test-Path -LiteralPath $python)) {
-    Invoke-CheckedCommand { py -3.12 -m venv (Join-Path $workspace ".venv") }
-}
-
-Invoke-CheckedCommand { & $python -m pip install -r (Join-Path $workspace "src\AirBridge.RaopHost\requirements.txt") pyinstaller==6.16.0 }
-if (-not $SkipTests) {
-    # WASAPI integration checks are machine-level hardware smoke tests and can
-    # block indefinitely inside the Windows audio COM API on some device states.
-    Invoke-CheckedCommand { dotnet test (Join-Path $workspace "AirBridge.sln") -c $Configuration --filter "Category!=Hardware" }
-}
-if (Test-Path -LiteralPath $publish) {
-    $resolvedPublish = (Resolve-Path -LiteralPath $publish).ProviderPath
-    if ($resolvedPublish -ne [System.IO.Path]::GetFullPath((Join-Path $workspace "artifacts\publish"))) {
-        throw "Refusing to clean an unexpected publish directory: $resolvedPublish"
-    }
-    Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
-}
-Invoke-CheckedCommand { dotnet publish (Join-Path $workspace "src\AirBridge.App\AirBridge.App.csproj") -c $Configuration -r win-x64 --self-contained true -p:PublishSingleFile=true -o $publish }
-
-New-Item -ItemType Directory -Force -Path $raopPublish | Out-Null
-Push-Location (Join-Path $workspace "src\AirBridge.RaopHost")
 try {
-    Invoke-CheckedCommand { & $python -m PyInstaller --noconfirm --clean --onefile --name AirBridge.RaopHost --collect-all pyatv --collect-all miniaudio --distpath $raopPublish --workpath (Join-Path $workspace "artifacts\pyinstaller-work") --specpath (Join-Path $workspace "artifacts") host.py }
+    $shell = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $shell)) { $shell = Join-Path $PSHOME 'pwsh.exe' }
+    Invoke-PackageCheck 'bootstrap' $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'bootstrap.ps1'), '-OutputDirectory', (Join-Path $run.outputDirectory 'bootstrap')) 360
+    if (-not $SkipTests) {
+        Invoke-PackageCheck 'verify' $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'verify.ps1'), '-Configuration', $Configuration, '-OutputDirectory', (Join-Path $run.outputDirectory 'verify')) 900
+    }
+    else { Add-AirBridgeSkippedCheck $run 'verify' 'Explicit -SkipTests bypass; this package has not passed the release gate.' }
+    Invoke-PackageCheck 'packaging-dependencies' $python @('-m', 'pip', 'install', '--disable-pip-version-check', 'pyinstaller==6.16.0')
+    if (Test-Path -LiteralPath $publish) {
+        $resolvedPublish = (Resolve-Path -LiteralPath $publish).ProviderPath
+        if ($resolvedPublish -ne [IO.Path]::GetFullPath((Join-Path $script:AirBridgeRoot 'artifacts\publish'))) { throw "Refusing to clean unexpected directory: $resolvedPublish" }
+        Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
+    }
+    Invoke-PackageCheck 'dotnet-publish' 'dotnet' @('publish', (Join-Path $script:AirBridgeRoot 'src\AirBridge.App\AirBridge.App.csproj'), '-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true', '-o', $publish)
+    New-Item -ItemType Directory -Force -Path $raopPublish | Out-Null
+    Invoke-PackageCheck 'raop-publish' $python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--name', 'AirBridge.RaopHost', '--collect-all', 'pyatv', '--collect-all', 'miniaudio', '--distpath', $raopPublish, '--workpath', (Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-work'), '--specpath', (Join-Path $script:AirBridgeRoot 'artifacts'), (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\host.py')) 360
+    $ping = Test-AirBridgeHostPing $run (Join-Path $raopPublish 'AirBridge.RaopHost.exe') 'packaged-host-ping'
+    if ($ping.status -ne 'passed') { throw 'Packaged RAOP host failed its protocol handshake.' }
+    Invoke-PackageCheck 'wix-restore' 'dotnet' @('tool', 'restore', '--tool-manifest', (Join-Path $script:AirBridgeRoot '.config\dotnet-tools.json'))
+    Invoke-PackageCheck 'wix-extension' 'dotnet' @('wix', 'extension', 'add', 'WixToolset.BootstrapperApplications.wixext/6.0.2')
+    $sourceDefine = 'SourceRoot=' + $script:AirBridgeRoot
+    Invoke-PackageCheck 'msi-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Package.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-out', (Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'))
+    Invoke-PackageCheck 'installer-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Bundle.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-ext', 'WixToolset.BootstrapperApplications.wixext', '-out', $installer)
+    $run.artifacts = @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, $publish)
+    $run.artifactHashes = @()
+    foreach ($artifact in @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, (Join-Path $raopPublish 'AirBridge.RaopHost.exe'))) {
+        $run.artifactHashes += [ordered]@{ path = $artifact; bytes = (Get-Item -LiteralPath $artifact).Length; sha256 = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash.ToLowerInvariant() }
+    }
+    Add-AirBridgeSkippedCheck $run 'install-upgrade-uninstall' 'Build and host ping do not prove installation; run on a disposable Windows VM.'
+    Write-Host "Installer: $installer"
 }
-finally {
-    Pop-Location
-}
-
-Write-Host "Published AirBridge to $publish"
-
-Invoke-CheckedCommand { dotnet tool restore --tool-manifest (Join-Path $workspace ".config\dotnet-tools.json") }
-Invoke-CheckedCommand { dotnet wix extension add WixToolset.BootstrapperApplications.wixext/6.0.2 }
-Invoke-CheckedCommand { dotnet wix build (Join-Path $workspace "installer\wix\Package.wxs") -arch x64 -out (Join-Path $workspace "artifacts\AirBridge.msi") }
-Invoke-CheckedCommand { dotnet wix build (Join-Path $workspace "installer\wix\Bundle.wxs") -arch x64 -ext WixToolset.BootstrapperApplications.wixext -out $installer }
-Write-Host "Built installer at $installer"
+catch { $run.checks.Add([ordered]@{ name = 'package'; status = 'failed'; error = $_.Exception.Message }) | Out-Null }
+if (-not (Complete-AirBridgeRun $run)) { exit 1 }

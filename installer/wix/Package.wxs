@@ -2,10 +2,10 @@
   <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="1.0.2" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer AirBridge version is already installed." />
     <MediaTemplate EmbedCab="yes" />
-    <Icon Id="AirBridgeAppIcon" SourceFile="$(sys.CURRENTDIR)\src\AirBridge.App\Assets\AirBridge.AppIcon.ico" />
+    <Icon Id="AirBridgeAppIcon" SourceFile="$(var.SourceRoot)\src\AirBridge.App\Assets\AirBridge.AppIcon.ico" />
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="AirBridge">
-        <Files Include="$(sys.CURRENTDIR)\artifacts\publish\**" />
+        <Files Include="$(var.SourceRoot)\artifacts\publish\**" />
       </Directory>
     </StandardDirectory>
     <StandardDirectory Id="ProgramMenuFolder">

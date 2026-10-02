@@ -10,6 +10,7 @@ import subprocess
 import sys
 
 from smoke_test import main as stream_tone
+from hardware_lease import hardware_lease
 
 EXPECTED_FREQUENCY = 523.25
 
@@ -76,11 +77,11 @@ def strongest_tone_window(raw: bytes, sample_rate: int, duration_seconds: int = 
     return best_start / sample_rate
 
 
-async def verify(device: str, target: str, tone_seconds: int, builtin: bool = False, airplay1: bool = False) -> dict:
+async def verify(device: str, target: str, tone_seconds: int, builtin: bool = False, airplay1: bool = False, volume: int = 30) -> dict:
     sample_rate = 16000
     # Discovery, pairing and AirPlay SETUP can take 8-15 seconds before the first
     # audible frame. Keep recording through the entire tone and locate it by signal.
-    capture_seconds = tone_seconds + 20
+    capture_seconds = tone_seconds + 40
     # subprocess passes this as one argv item, so embedded shell quotes become
     # literal characters and make DirectShow reject otherwise valid names.
     input_spec = f"audio={device}"
@@ -91,13 +92,18 @@ async def verify(device: str, target: str, tone_seconds: int, builtin: bool = Fa
         "-f", "s16le", "pipe:1",
     ]
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    await asyncio.sleep(2.0)
+    # Drain immediately: a filled stdout pipe otherwise blocks FFmpeg before
+    # the receiver tone starts and invalidates the acoustic observation window.
+    capture = asyncio.create_task(asyncio.to_thread(process.communicate, timeout=capture_seconds + 10))
     try:
-        await stream_tone(target, float(tone_seconds), builtin, airplay1)
-        raw, error = await asyncio.to_thread(process.communicate, timeout=capture_seconds + 10)
-    except Exception:
-        process.kill()
-        process.communicate()
+        await asyncio.sleep(2.0)
+        await stream_tone(target, float(tone_seconds), builtin, airplay1, volume)
+        raw, error = await capture
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+        await asyncio.gather(capture, return_exceptions=True)
+        await asyncio.to_thread(process.wait, timeout=5)
         raise
     if process.returncode:
         raise RuntimeError(error.decode("utf-8", "replace"))
@@ -121,14 +127,33 @@ async def baseline(device: str, seconds: int) -> dict:
     return analyze(process.stdout, sample_rate, start_second=1, duration_seconds=max(2, seconds - 2))
 
 
-if __name__ == "__main__":
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--seconds", type=int, default=8)
+    parser.add_argument("--volume", type=int, choices=range(0, 101), default=30)
     parser.add_argument("--baseline", action="store_true")
     parser.add_argument("--builtin", action="store_true")
     parser.add_argument("--airplay1", action="store_true")
-    arguments = parser.parse_args()
-    operation = baseline(arguments.device, arguments.seconds) if arguments.baseline else verify(arguments.device, arguments.target, arguments.seconds, arguments.builtin, arguments.airplay1)
-    print(json.dumps(asyncio.run(operation), indent=2))
+    arguments = parser.parse_args(argv)
+    operation = baseline(arguments.device, arguments.seconds) if arguments.baseline else verify(arguments.device, arguments.target, arguments.seconds, arguments.builtin, arguments.airplay1, arguments.volume)
+    try:
+        with hardware_lease():
+            result = asyncio.run(operation)
+        passed = arguments.baseline or result["classification"] == "clean_tone"
+        result.update({"status": "passed" if passed else "failed",
+                       "mode": "ambient_baseline" if arguments.baseline else "acoustic_verification",
+                       "acoustic_scope": "direct_pyatv_test_tone",
+                       "acoustic_output_proven": not arguments.baseline and passed,
+                       "criteria": {"frequency_tolerance_hz": 20, "minimum_tone_energy_fraction": 0.25}})
+        print(json.dumps(result, indent=2))
+        return 0 if passed else 1
+    except Exception as error:
+        operation.close()
+        print(json.dumps({"status": "failed", "error": str(error), "acoustic_output_proven": False}, indent=2))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

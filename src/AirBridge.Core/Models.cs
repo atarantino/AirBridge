@@ -98,7 +98,8 @@ public sealed record BufferSnapshot(
     long Underruns,
     long Epoch,
     long ProducerIdlePaddingBytes = 0,
-    long StarvedWhileActivePaddingBytes = 0)
+    long StarvedWhileActivePaddingBytes = 0,
+    long ActiveBytesWritten = 0)
 {
     public int FillMilliseconds => (int)Math.Round(FillBytes / 176.4);
     public int FillPercent => CapacityBytes == 0 ? 0 : (int)Math.Round(FillBytes * 100.0 / CapacityBytes);
@@ -117,7 +118,10 @@ public sealed record StreamHealth(
     double PacketLossPercent,
     DateTimeOffset CapturedUtc,
     bool? LastFixVerified,
-    string? LastError);
+    string? LastError)
+{
+    public StreamVerificationResult? Verification { get; init; }
+}
 
 public sealed record AirBridgeSettings
 {

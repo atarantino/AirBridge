@@ -50,21 +50,23 @@ No temporary media file is created in the streaming path. Raw audio, receiver ad
 
 ## Build from source
 
-Requirements: the [.NET 9 SDK](https://dotnet.microsoft.com/download/dotnet/9.0), Python 3.12, Windows 10/11, and an AirPlay receiver on the same trusted Private network.
+Requirements: Windows 10/11, the [.NET 9.0.1xx SDK](https://dotnet.microsoft.com/download/dotnet/9.0) selected by `global.json`, Python 3.12 with the `py` launcher, and Node 22.19.0 (`.node-version`). An AirPlay receiver is needed for live transport and acoustic checks.
 
 ```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r src\AirBridge.RaopHost\requirements.txt
-dotnet run --project src\AirBridge.App\AirBridge.App.csproj
+.\scripts\bootstrap.ps1
+.\scripts\doctor.ps1
+.\scripts\run.ps1
 ```
 
-On first launch, refresh the output list, select one or more receivers, and choose **Start**. Apple TV pairing prompts for the code displayed on the TV. For a Mac receiver, set **Allow AirPlay for** to **Anyone on the Same Network**.
+The development launcher starts a hardware-free fixture with an isolated worktree profile and an opt-in local debug pipe. Its session manifest records the executable, profile, PID, readiness, and cleanup command. Use `.\scripts\run.ps1 -Live` for real receiver streaming. On a live launch, refresh the output list, select receivers, and choose **Start**. Apple TV pairing prompts for the displayed code. For a Mac receiver, set **Allow AirPlay for** to **Anyone on the Same Network**.
 
-The larger developer diagnostics dashboard is available with:
+Generate snapshots of the developer dashboard and product UI with:
 
 ```powershell
-dotnet run --project src\AirBridge.App\AirBridge.App.csproj -- --preview
+.\scripts\snapshots.ps1
 ```
+
+See [agent development and verification](docs/agent-development.md) for fixture QA, debug commands, worktree setup, evidence reports, and explicit hardware verification tiers.
 
 ## Browser extension
 
@@ -99,9 +101,9 @@ GPT-5.6 contributed directly to the final product as the optional in-app assista
 ## Tests and packaging
 
 ```powershell
-dotnet test AirBridge.sln -c Release
-.\.venv\Scripts\python.exe -m unittest discover -s src\AirBridge.RaopHost -p "test_*.py" -v
-node --test tests\browser-extension.test.js tests\firefox-extension.test.js
+.\scripts\verify.ps1
+# Include dark/light, scale, text-size and HUD snapshot generation:
+.\scripts\verify.ps1 -Snapshots
 .\scripts\package.ps1
 ```
 
@@ -112,7 +114,9 @@ $env:AIRBRIDGE_RUN_HARDWARE_TESTS = "1"
 dotnet test AirBridge.sln -c Release --filter "Category=Hardware"
 ```
 
-Packaging produces `artifacts\AirBridge-Setup.exe`, `artifacts\AirBridge.msi`, and a portable application under `artifacts\publish`.
+Verification saves run-scoped JSON reports, logs, distinct TRX files, and fixture evidence under `artifacts\qa`. Hardware, acoustic output, paid model evals, native UI interaction, and installer lifecycle checks are reported separately. CI runs the same verification command and retains evidence on failure.
+
+Packaging runs the shared offline verification gate, builds `artifacts\AirBridge-Setup.exe`, `artifacts\AirBridge.msi`, and a portable application under `artifacts\publish`, then verifies the bundled RAOP host handshake. A manual CI workflow can build the package. Install, upgrade, and uninstall testing still require a disposable Windows VM.
 
 ## Acknowledgments
 

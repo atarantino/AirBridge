@@ -402,14 +402,14 @@ public sealed class ReceiverRowControl : UserControl
         var v = s * SystemTextScale.Current;
         var left = (int)(12 * s);
         var glyphSize = (int)(30 * s);
-        var glyphTop = CompactEngaged ? (int)(5 * v) : (Height - glyphSize) / 2;
+        var glyphTop = CompactExpanded ? (int)(5 * v) : (Height - glyphSize) / 2;
         var glyphBox = new Rectangle(left, glyphTop, glyphSize, glyphSize);
         var nameLeft = glyphBox.Right + (int)(10 * s);
         var checkSize = (int)(22 * s);
-        var checkTop = CompactEngaged ? (int)(8 * v) : (Height - checkSize) / 2;
+        var checkTop = CompactExpanded ? (int)(8 * v) : (Height - checkSize) / 2;
         var checkBox = new Rectangle(Width - (int)(12 * s) - checkSize, checkTop, checkSize, checkSize);
         var nameRight = _sleep.Visible ? _sleep.Left : checkBox.Left;
-        var nameBounds = new Rectangle(nameLeft, CompactEngaged ? (int)(5 * v) : 0, Math.Max(40, nameRight - (int)(8 * s) - nameLeft), CompactEngaged ? (int)(25 * v) : Height);
+        var nameBounds = new Rectangle(nameLeft, CompactExpanded ? (int)(5 * v) : 0, Math.Max(40, nameRight - (int)(8 * s) - nameLeft), CompactExpanded ? (int)(25 * v) : Height);
 
         using var iconFont = UiGeometry.IconFont(14F);
         using var nameFont = UiGeometry.UiFont(10F, FontStyle.Bold);
@@ -442,7 +442,8 @@ public sealed class ReceiverRowControl : UserControl
             using var stateBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.StateColor(_streamState));
             graphics.FillEllipse(stateBrush, dot);
             var statusText = _streamState == StreamState.Failed && !string.IsNullOrWhiteSpace(_detail) ? _detail! : StatusText(_streamState);
-            var statusBounds = new Rectangle(dot.Right + (int)(5 * s), (int)(34 * v), Math.Max(28, _volume.Left - dot.Right - (int)(8 * s)), (int)(20 * v));
+            var statusRight = CompactEngaged ? _volume.Left : checkBox.Left;
+            var statusBounds = new Rectangle(dot.Right + (int)(5 * s), (int)(34 * v), Math.Max(28, statusRight - dot.Right - (int)(8 * s)), (int)(20 * v));
             var statusColor = _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText;
             TextRenderer.DrawText(graphics, statusText, statusFont, statusBounds, statusColor, textFlags);
         }
@@ -612,6 +613,7 @@ public sealed class ReceiverRowControl : UserControl
     }
 
     private bool CompactEngaged => _compact && (_compactStreamActive ? IsActive : _selected);
+    private bool CompactExpanded => CompactEngaged || (_compact && _streamState is not StreamState.Idle and not StreamState.Streaming);
 
     internal static bool IsCompactPlaybackHighlighted(bool streamActive, StreamState state) =>
         streamActive && state is not StreamState.Idle and not StreamState.Failed;
@@ -627,7 +629,7 @@ public sealed class ReceiverRowControl : UserControl
     private void UpdateCompactHeight(bool animate)
     {
         if (!_compact) return;
-        var target = UiGeometry.ScaleText(this, CompactEngaged ? 64 : 44);
+        var target = UiGeometry.ScaleText(this, CompactExpanded ? 64 : 44);
         if (Height == target) return;
         if (!animate)
         {

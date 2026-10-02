@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Build installer and verify packaged RAOP host
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,23 +35,96 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: src/AirBridge.RaopHost/requirements.txt
+          cache-dependency-path: src/AirBridge.RaopHost/requirements.lock.txt
 
-      - name: Restore .NET dependencies
-        run: dotnet restore AirBridge.sln
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
 
-      - name: Run .NET tests
-        run: dotnet test AirBridge.sln --no-restore --configuration Release
+      - name: Bootstrap isolated development environment
+        shell: powershell
+        run: ./scripts/bootstrap.ps1 -OutputDirectory artifacts/qa/ci-bootstrap
 
-      - name: Run browser-extension tests
-        run: node --test tests/browser-extension.test.js tests/firefox-extension.test.js
+      - name: Run shared verification and snapshot matrix
+        shell: powershell
+        run: ./scripts/verify.ps1 -Snapshots -OutputDirectory artifacts/qa/ci-verify
 
-      - name: Install Python dependencies
-        run: python -m pip install --requirement src/AirBridge.RaopHost/requirements.txt
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-verification
+          path: |
+            artifacts/qa/**/*.json
+            artifacts/qa/**/*.log
+            artifacts/qa/**/*.trx
+            artifacts/qa/**/*.png
+            artifacts/qa/**/session.json
+            artifacts/qa/**/app-session.json
+          if-no-files-found: warn
+          retention-days: 14
 
-      - name: Run Python tests
-        working-directory: src/AirBridge.RaopHost
-        run: python -m unittest discover -v
+  browser-e2e:
+    name: Chromium extension QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Restore locked browser QA dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Install disposable runner Chromium runtime
+        run: npx playwright install --with-deps chromium
+      - name: Exercise the actual unpacked extension
+        run: npm run test:e2e
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chromium-extension-qa
+          path: |
+            artifacts/browser-qa/report.json
+            artifacts/browser-qa/**/*.png
+            artifacts/browser-qa/**/*.zip
+          if-no-files-found: warn
+          retention-days: 14
+
+  package:
+    name: Package smoke
+    if: github.event_name == 'workflow_dispatch' && inputs.package
+    needs: [test, browser-e2e]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - name: Build installer with shared release gate and host ping
+        shell: powershell
+        run: ./scripts/package.ps1 -OutputDirectory artifacts/qa/ci-package
+      - name: Upload package smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-smoke
+          path: |
+            artifacts/AirBridge-Setup.exe
+            artifacts/AirBridge.msi
+            artifacts/qa/**/*.json
+            artifacts/qa/**/*.log
+            artifacts/qa/**/*.trx
+          if-no-files-found: warn
+          retention-days: 14
 
   deterministic-agent-evals:
     name: Deterministic agent evals

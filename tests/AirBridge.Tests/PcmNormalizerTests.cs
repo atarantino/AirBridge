@@ -81,18 +81,31 @@ public sealed class PcmNormalizerTests
     [InlineData(true)]
     public void SteadyStateConversionAllocatesOnlyTheReturnedPcm(bool int16)
     {
-        var normalizer = new PcmNormalizer(48000, 2);
-        var input = new byte[960 * 2 * (int16 ? sizeof(short) : sizeof(float))];
-        for (var i = 0; i < 100; i++) Convert();
-
-        var before = GC.GetAllocatedBytesForCurrentThread();
         long outputBytes = 0;
-        for (var i = 0; i < 100; i++) outputBytes += Convert().Length;
-        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        long allocated = 0;
+        Exception? failure = null;
+        // Keep the test runner's worker-thread activity outside this synchronous measurement.
+        var worker = new Thread(() =>
+        {
+            try
+            {
+                var normalizer = new PcmNormalizer(48000, 2);
+                var input = new byte[960 * 2 * (int16 ? sizeof(short) : sizeof(float))];
+                for (var i = 0; i < 100; i++) Convert();
+
+                var before = GC.GetAllocatedBytesForCurrentThread();
+                for (var i = 0; i < 100; i++) outputBytes += Convert().Length;
+                allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+                byte[] Convert() => int16 ? normalizer.ConvertInt16(input) : normalizer.ConvertFloat32(input);
+            }
+            catch (Exception exception) { failure = exception; }
+        }) { IsBackground = true };
+        worker.Start();
+        Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "PCM allocation measurement did not finish.");
+        Assert.Null(failure);
 
         // Allow an array header and alignment per returned packet, but no scratch arrays.
         Assert.InRange(allocated, outputBytes, outputBytes + 100 * 32);
-        byte[] Convert() => int16 ? normalizer.ConvertInt16(input) : normalizer.ConvertFloat32(input);
     }
 
     [HardwareFact]

@@ -69,20 +69,23 @@ public sealed class StreamCoordinator
     }
 
     public void CaptureDiscontinuity() => Interlocked.Increment(ref _captureDiscontinuities);
-    public void MarkFixVerified(bool verified) => _lastFixVerified = verified;
+    public void MarkFixVerified(bool? verified) { lock (_gate) _lastFixVerified = verified; }
 
     public StreamHealth Health()
     {
         var snapshot = _snapshot();
-        var rating = Route.State switch
+        lock (_gate)
         {
-            StreamState.Streaming when snapshot.StarvedWhileActivePaddingBytes == 0 => "healthy",
-            StreamState.Streaming or StreamState.Degraded or StreamState.Reconnecting => "degraded",
-            StreamState.Standby => "standby",
-            StreamState.Idle => "idle",
-            _ => "failed"
-        };
-        return new(Route.StreamId, Route.State, rating, snapshot, Interlocked.Read(ref _captureDiscontinuities), 0, 0, 0, DateTimeOffset.UtcNow, _lastFixVerified, _lastError);
+            var rating = _route.State switch
+            {
+                StreamState.Streaming when snapshot.StarvedWhileActivePaddingBytes == 0 => "healthy",
+                StreamState.Streaming or StreamState.Degraded or StreamState.Reconnecting => "degraded",
+                StreamState.Standby => "standby",
+                StreamState.Idle => "idle",
+                _ => "failed"
+            };
+            return new(_route.StreamId, _route.State, rating, snapshot, Interlocked.Read(ref _captureDiscontinuities), 0, 0, 0, DateTimeOffset.UtcNow, _lastFixVerified, _lastError);
+        }
     }
 
     private static StreamState AggregateState(IReadOnlyList<ReceiverPlaybackInfo> destinations)
