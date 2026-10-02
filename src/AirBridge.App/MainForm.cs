@@ -832,7 +832,7 @@ public sealed class MainForm : Form
         try
         {
             var text = await PushToTalkRecorder.TranscribeAsync(wav, apiKey, cancellation.Token, _activityStore);
-            if (!PushToTalkRecorder.ContainsTranscript(text))
+            if (string.IsNullOrWhiteSpace(text))
             {
                 AppendConversation("System", "No speech was detected. Check that your microphone isn’t muted, then try again.");
                 if (!_previewMode) _voiceHud.ShowNoSpeech();
@@ -1166,9 +1166,6 @@ public sealed class MainForm : Form
                     "AirBridge will play calibration chirps, briefly mute non-target speakers, capture the selected microphone in memory, and apply bounded timing trims. Microphone audio is discarded locally."),
                 "measure_acoustic_delay" => ("Allow delay measurement?",
                     "AirBridge will play five calibration chirps and capture the selected microphone in memory. Microphone audio is discarded locally."),
-                "save_routing_rule" => ("Save routing rule?", "Allow AirBridge to save this routing rule?"),
-                "change_startup_behavior" => ("Change startup behavior?", "Allow AirBridge to change its startup behavior?"),
-                "enable_microphone_calibration" => ("Enable microphone calibration?", "Allow AirBridge to enable microphone calibration?"),
                 _ => ("Allow AirBridge action?", $"Allow the requested {request.ToolName.Replace('_', ' ')} action once?")
             };
             CompleteFromHudAsync();
@@ -1177,7 +1174,7 @@ public sealed class MainForm : Form
             {
                 try
                 {
-                    var usesMicrophone = request.ToolName is "align_group" or "measure_acoustic_delay" or "enable_microphone_calibration";
+                    var usesMicrophone = request.ToolName is "align_group" or "measure_acoustic_delay";
                     completion.TrySetResult(await _voiceHud.ShowConfirmation(title, message, cancellationToken, usesMicrophone));
                 }
                 catch (Exception ex)

@@ -10,7 +10,7 @@
 {"id":"select-reconnect-01","utterance":"Reconnect all active receivers.","expectedTool":"reconnect_stream","expectedArguments":{"receiver_id":null,"all":true},"category":"selection","note":"global reconnect"}
 {"id":"select-measure-01","utterance":"Measure the acoustic delay for receiver-2.","expectedTool":"measure_acoustic_delay","expectedArguments":{"receiver_id":"receiver-2"},"category":"arguments","note":"microphone measurement request"}
 {"id":"select-align-01","utterance":"Align receiver-1 and receiver-2.","expectedTool":"align_group","expectedArguments":{"receiver_ids":["receiver-1","receiver-2"]},"category":"arguments","note":"group alignment request"}
-{"id":"select-browser-01","utterance":"Enable browser sync with a 250 millisecond offset.","expectedTool":"enable_browser_sync","expectedArguments":{"offset_ms":250},"category":"arguments","note":"browser sync enablement"}
+{"id":"refuse-browser-01","utterance":"Enable browser sync with a 250 millisecond offset.","expectedTool":null,"expectedArguments":{},"category":"refusal","note":"browser picture delay is configured manually in the extension popup"}
 {"id":"refuse-info-01","utterance":"What does speaker alignment do?","expectedTool":null,"expectedArguments":{},"category":"refusal","note":"informational question requires no tool"}
 {"id":"refuse-negated-01","utterance":"Do not align receiver-1 and receiver-2.","expectedTool":null,"expectedArguments":{},"category":"refusal","note":"explicit refusal"}
 {"id":"refuse-hypothetical-01","utterance":"If I measured receiver-1's delay, what would happen?","expectedTool":null,"expectedArguments":{},"category":"refusal","note":"hypothetical request"}
