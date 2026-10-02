@@ -34,7 +34,15 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private readonly Dictionary<string, string> _toolAliasesByReceiverId = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _receiverIdsByToolAlias = new(StringComparer.Ordinal);
     private IReadOnlyList<ReceiverInfo> _receivers = [];
-    private (DateTimeOffset ChangedUtc, long BaselineUnderruns)? _pendingBufferVerification;
+    private readonly TimeProvider _timeProvider;
+    private readonly object _verificationGate = new();
+    private StreamVerificationWindow? _pendingBufferVerification;
+    private CancellationTokenSource? _verificationCancellation;
+    private Task? _verificationTask;
+    private StreamVerificationResult? _lastBufferVerification;
+    private string? _verificationStreamId;
+    private StreamVerificationObservation? _completedVerificationObservation;
+    private bool _verificationStopped;
     private bool _captureRunning;
     private bool _isStandby;
     private volatile bool _measurementInProgress;
@@ -46,9 +54,11 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
 
     public AirBridgeController() : this(null, null) { }
 
-    internal AirBridgeController(IRaopClient? raop, IAudioCaptureService? capture)
+    internal AirBridgeController(IRaopClient? raop, IAudioCaptureService? capture, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         Coordinator = new(_hub.Snapshot, _hub.Clear);
+        Coordinator.RouteChanged += (_, _) => ObservePendingBufferVerification();
         _raop = raop ?? new PythonRaopClient();
         _capture = capture ?? new WasapiCaptureService(_hub, Coordinator);
         _pump = new(_hub.MonitorBuffer, advanceCalibration: () => _hub.AdvanceCalibration(SharedAudioPump.BlockBytes));
@@ -72,6 +82,28 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     public AcousticDelayResult? LastAcousticDelay { get; private set; }
     public GroupAlignmentResult? LastGroupAlignment { get; private set; }
     public bool IsResumingFromStandby { get; private set; }
+    public StreamVerificationResult? LastBufferVerification
+    {
+        get
+        {
+            lock (_verificationGate)
+            {
+                if (_pendingBufferVerification is null) ObservePendingBufferVerification();
+                return _lastBufferVerification;
+            }
+        }
+    }
+
+    public StreamVerificationObservation ObserveStreamVerification()
+    {
+        var route = Coordinator.Route;
+        var buffers = _hub.ReceiverSnapshots();
+        var playback = ReceiverPlayback.ToDictionary(item => item.Receiver.Id, item => item.State, StringComparer.Ordinal);
+        return new(route.StreamId, route.State, buffers.ToDictionary(item => item.Key,
+            item => new ReceiverVerificationObservation(playback.GetValueOrDefault(item.Key, StreamState.Idle), item.Value), StringComparer.Ordinal));
+    }
+
+    internal void AppendCapturedPcm(byte[] pcm, bool producerActive) => _hub.Write(pcm, producerActive);
 
     public void ConfigureSettings(AirBridgeSettings settings)
     {
@@ -775,8 +807,14 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
     }
 
-    private Task<object> ConnectivityTestAsync(CancellationToken cancellationToken) =>
-        Task.FromResult<object>(new { raop_host = "running", receivers = Receivers.Count, active_receivers = ReceiverPlayback.Count });
+    private async Task<object> ConnectivityTestAsync(CancellationToken cancellationToken)
+    {
+        var response = await _raop.PingAsync(cancellationToken);
+        if (!response.TryGetProperty("ok", out var acknowledged) || acknowledged.ValueKind != JsonValueKind.True)
+            throw new InvalidOperationException("The RAOP host did not acknowledge the connectivity probe.");
+        return new { raop_host = "responsive", ping_acknowledged = true, receivers = Receivers.Count,
+            active_receivers = ReceiverPlayback.Count, receiver_transport_verified = false, acoustic_output_verified = false };
+    }
 
     private IReadOnlyCollection<ReceiverInfo> ResolveReceivers(JsonElement arguments)
     {
@@ -887,22 +925,109 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     {
         var before = _hub.Snapshot();
         var target = arguments.GetProperty("milliseconds").GetInt32();
-        _hub.SetTarget(target);
-        _pendingBufferVerification = (DateTimeOffset.UtcNow, before.Underruns);
+        lock (_verificationGate)
+        {
+            if (_verificationStopped) throw new ObjectDisposedException(nameof(AirBridgeController));
+            _hub.SetTarget(target);
+            _verificationCancellation?.Cancel();
+            var cancellation = new CancellationTokenSource();
+            _verificationCancellation = cancellation;
+            var observation = ObserveStreamVerification();
+            _verificationStreamId = observation.StreamId;
+            _completedVerificationObservation = null;
+            var window = new StreamVerificationWindow(observation, _timeProvider);
+            _pendingBufferVerification = window;
+            _lastBufferVerification = window.Result();
+            Coordinator.MarkFixVerified(null);
+            _verificationTask = MonitorBufferVerificationAsync(window, cancellation);
+        }
         return new { before_ms = before.TargetMilliseconds, after_ms = target, verification_required = true, measure_after_seconds = 10 };
     }
 
     private async Task<StreamHealth> GetVerifiedHealthAsync(CancellationToken cancellationToken)
     {
-        if (_pendingBufferVerification is { } pending)
+        Task? monitoring;
+        lock (_verificationGate) monitoring = _verificationTask;
+        if (monitoring is not null) await monitoring.WaitAsync(cancellationToken);
+        var result = LastBufferVerification;
+        if (result is not null)
+            result = result with { Receivers = result.Receivers.ToDictionary(item => GetToolReceiverAlias(item.Key), item => item.Value, StringComparer.Ordinal) };
+        return Coordinator.Health() with { Verification = result };
+    }
+
+    private void ObservePendingBufferVerification()
+    {
+        lock (_verificationGate)
         {
-            var remaining = pending.ChangedUtc.AddSeconds(10) - DateTimeOffset.UtcNow;
-            if (remaining > TimeSpan.Zero) await Task.Delay(remaining, cancellationToken);
-            var verified = _hub.Snapshot().Underruns == pending.BaselineUnderruns && Coordinator.Route.State == StreamState.Streaming;
-            Coordinator.MarkFixVerified(verified);
-            _pendingBufferVerification = null;
+            if (_verificationStopped) return;
+            var observation = ObserveStreamVerification();
+            if (_pendingBufferVerification is not { } window)
+            {
+                if (_lastBufferVerification is { } previous &&
+                    (observation.StreamId != _verificationStreamId ||
+                     previous.Receivers.Count != observation.Receivers.Count ||
+                     !previous.Receivers.Keys.All(observation.Receivers.ContainsKey) ||
+                     previous.Verified == true &&
+                        (_completedVerificationObservation is not { } completed ||
+                         !StreamVerificationWindow.AppliesToCurrentStream(completed, observation))))
+                {
+                    _lastBufferVerification = previous with { Status = StreamVerificationStatus.Inconclusive,
+                        Note = "The route or receiver health changed after verification; this evidence does not verify the current stream." };
+                    Coordinator.MarkFixVerified(null);
+                }
+                return;
+            }
+            window.Observe(observation);
+            _lastBufferVerification = window.Result();
         }
-        return Coordinator.Health();
+    }
+
+    private Task? CancelBufferVerification(string reason)
+    {
+        lock (_verificationGate)
+        {
+            _verificationStopped = true;
+            if (_pendingBufferVerification is { } window)
+                _lastBufferVerification = window.Result() with { Status = StreamVerificationStatus.Inconclusive, Note = reason };
+            _pendingBufferVerification = null;
+            _verificationCancellation?.Cancel();
+            Coordinator.MarkFixVerified(null);
+            var monitoring = _verificationTask;
+            _verificationTask = null;
+            return monitoring;
+        }
+    }
+
+    private async Task MonitorBufferVerificationAsync(StreamVerificationWindow window, CancellationTokenSource cancellation)
+    {
+        try
+        {
+            while (!window.Complete)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(250), _timeProvider, cancellation.Token).ConfigureAwait(false);
+                lock (_verificationGate)
+                {
+                    if (!ReferenceEquals(_pendingBufferVerification, window)) return;
+                    window.Observe(ObserveStreamVerification());
+                    _lastBufferVerification = window.Result();
+                }
+            }
+            lock (_verificationGate)
+            {
+                if (!ReferenceEquals(_pendingBufferVerification, window)) return;
+                _lastBufferVerification = window.Result();
+                _completedVerificationObservation = ObserveStreamVerification();
+                Coordinator.MarkFixVerified(_lastBufferVerification.Verified);
+                _pendingBufferVerification = null;
+            }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        finally
+        {
+            lock (_verificationGate)
+                if (ReferenceEquals(_verificationCancellation, cancellation)) _verificationCancellation = null;
+            cancellation.Dispose();
+        }
     }
 
     private async Task<object> ReconnectToolAsync(JsonElement arguments, CancellationToken cancellationToken)
@@ -1010,6 +1135,8 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     public async Task ShutdownAsync(CancellationToken cancellationToken)
     {
         AppLog.Info("lifecycle", "Controller graceful shutdown started.");
+        var verification = CancelBufferVerification("Verification was cancelled during shutdown; no completed observation window is available.");
+        if (verification is not null) await verification.WaitAsync(cancellationToken).ConfigureAwait(false);
         try { await StopAsync(cancellationToken).ConfigureAwait(false); } catch when (cancellationToken.IsCancellationRequested) { throw; }
         _capture.Dispose();
         await _pump.DisposeAsync().ConfigureAwait(false);
@@ -1024,6 +1151,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     public void ForceCleanup()
     {
         AppLog.Warning("lifecycle", "Controller force cleanup started.");
+        CancelBufferVerification("Verification was cancelled during forced cleanup; no completed observation window is available.");
         _raop.ForceTerminate();
         ReceiverLeg[] legs;
         lock (_legsGate)

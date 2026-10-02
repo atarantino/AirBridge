@@ -1,118 +1,194 @@
+using System.Text.Json;
 using AirBridge.App;
 using AirBridge.Core;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
-if (args.Length > 0 && args[0] == "--devices")
-{
-    using var enumerator = new MMDeviceEnumerator();
-    using var defaultCapture = enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Communications);
-    Console.WriteLine($"Default communications microphone: {defaultCapture.FriendlyName} | {defaultCapture.ID}");
-    using var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
-    foreach (var device in devices) Console.WriteLine($"Capture: {device.FriendlyName} | {device.ID}");
-    return;
-}
-
+RuntimeProfile.Configure(null, requireIsolatedProfile: true);
+AppLog.Initialize();
 var command = args.FirstOrDefault() ?? "--full-pipeline";
-var target = command.StartsWith("--", StringComparison.Ordinal) ? args.ElementAtOrDefault(1) : command;
-if (string.IsNullOrWhiteSpace(target))
-    throw new ArgumentException("Specify the discovered receiver name after the command.");
-await using var controller = new AirBridgeController();
-await controller.InitializeAsync();
-var receivers = await controller.DiscoverAsync();
-var receiver = receivers.SingleOrDefault(item => item.Name.Equals(target, StringComparison.OrdinalIgnoreCase))
-    ?? throw new InvalidOperationException($"Receiver {target} was not discovered.");
-
-if (command == "--start-volume")
+var report = new Dictionary<string, object?>
 {
-    var count = int.TryParse(args.ElementAtOrDefault(2), out var parsedCount) ? Math.Clamp(parsedCount, 1, 20) : 10;
-    for (var attempt = 1; attempt <= count; attempt++)
-    {
-        await controller.StartSystemAsync(receiver);
-        await WaitForStreamingAsync(controller, receiver.Id, TimeSpan.FromSeconds(20));
-        var playback = controller.ReceiverPlayback.Single(item => item.Receiver.Id == receiver.Id);
-        Console.WriteLine($"attempt={attempt}/{count} state={playback.State} configured_volume={playback.Volume}%");
-        await Task.Delay(500);
-        await controller.StopAsync();
-        await Task.Delay(500);
-    }
-    Console.WriteLine($"Completed {count} post-RECORD starts to {receiver.Name} at 30% default volume.");
-    return;
-}
-
-if (command == "--measure-delay")
-{
-    await controller.StartSystemAsync(receiver);
-    await WaitForStreamingAsync(controller, receiver.Id, TimeSpan.FromSeconds(20));
-    var result = await controller.MeasureAcousticDelayAsync(receiver.Id);
-    Console.WriteLine($"receiver={result.ReceiverName} median_delay_ms={result.MedianMilliseconds} samples_ms=[{string.Join(",", result.DelaysMilliseconds)}]");
-    Console.WriteLine("Use this value in the browser extension.");
-    await controller.StopAsync();
-    return;
-}
-
-if (command == "--volume-live")
-{
-    const int initialVolume = 14;
-    await controller.StartSystemAsync(
-        [receiver],
-        new Dictionary<string, int> { [receiver.Id] = initialVolume });
-    await WaitForStreamingAsync(controller, receiver.Id, TimeSpan.FromSeconds(20));
-
-    Console.WriteLine($"receiver={receiver.Name} streaming initial_volume={CurrentVolume(controller, receiver.Id)}%");
-    foreach (var volume in new[] { 10, 18, 12 })
-    {
-        await controller.SetReceiverVolumeAsync(receiver.Id, volume);
-        Console.WriteLine($"set_volume={volume}% controller_volume={CurrentVolume(controller, receiver.Id)}%");
-        await Task.Delay(750);
-    }
-
-    await controller.StopAsync();
-    Console.WriteLine("Live volume diagnostic completed.");
-    return;
-}
-
-var seconds = int.TryParse(args.ElementAtOrDefault(command.StartsWith("--", StringComparison.Ordinal) ? 2 : 1), out var parsed) ? Math.Clamp(parsed, 2, 30) : 8;
-var pipelineVolume = int.TryParse(args.ElementAtOrDefault(command.StartsWith("--", StringComparison.Ordinal) ? 3 : 2), out var parsedVolume)
-    ? Math.Clamp(parsedVolume, 0, 100)
-    : ReceiverVolumePlan.SafeDefault;
-Console.WriteLine($"Starting full Windows loopback pipeline to {receiver.Name} ({receiver.Id})");
-await controller.StartSystemAsync(
-    [receiver],
-    new Dictionary<string, int> { [receiver.Id] = pipelineVolume });
-
-using var output = new WaveOut();
-var signal = new SignalGenerator(48000, 2)
-{
-    Gain = 0.15,
-    Frequency = 523.25,
-    Type = SignalGeneratorType.Sin
+    ["command"] = command, ["status"] = "failed", ["acoustic_output_proven"] = false,
+    ["started_utc"] = DateTimeOffset.UtcNow
 };
-output.Init(signal.Take(TimeSpan.FromSeconds(seconds)).ToWaveProvider());
-output.Play();
-
-for (var index = 0; index < seconds + 3; index++)
+AirBridgeController? controller = null;
+PythonRaopClient? host = null;
+FileStream? hardwareLock = null;
+var exitCode = 1;
+try
 {
-    await Task.Delay(1000);
-    var health = controller.Coordinator.Health();
-    Console.WriteLine($"t={index + 1,2}s state={health.State,-12} fill={health.Buffer.FillPercent,3}% underruns={health.Buffer.Underruns} overruns={health.Buffer.Overruns} idlePad={health.Buffer.ProducerIdlePaddingMilliseconds}ms starvedPad={health.Buffer.StarvedWhileActivePaddingMilliseconds}ms");
+    if (command == "--ping")
+    {
+        host = new PythonRaopClient();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await host.StartAsync(deadline.Token).WaitAsync(deadline.Token);
+        var response = await host.PingAsync(deadline.Token);
+        var acknowledged = response.TryGetProperty("ok", out var ok) && ok.ValueKind == JsonValueKind.True;
+        report["criteria"] = new { host_ping_acknowledged = acknowledged, receiver_transport_tested = false };
+        if (!acknowledged) throw new InvalidOperationException("The RAOP host did not acknowledge ping.");
+    }
+    else
+    {
+        if (Environment.GetEnvironmentVariable("AIRBRIDGE_RUN_HARDWARE_TESTS") != "1")
+            throw new InvalidOperationException("Set AIRBRIDGE_RUN_HARDWARE_TESTS=1 to explicitly enable audio-device and receiver diagnostics.");
+        try
+        {
+            hardwareLock = new FileStream(Path.Combine(Path.GetTempPath(), "AirBridge.HardwareDiagnostics.lock"),
+                FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException) { throw new InvalidOperationException("Another worktree owns the hardware diagnostic lease."); }
+
+        if (command == "--devices")
+        {
+            using var enumerator = new MMDeviceEnumerator();
+            using var devices = enumerator.EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active);
+            report["devices"] = devices.Select(device => device.FriendlyName).ToArray();
+            report["criteria"] = new { devices_enumerated = true, microphone_recorded = false };
+        }
+        else
+        {
+            var namedCommand = command.StartsWith("--", StringComparison.Ordinal);
+            if (namedCommand && command is not ("--full-pipeline" or "--start-volume" or "--measure-delay" or "--volume-live"))
+                throw new ArgumentException("Unknown diagnostic command.");
+            var target = namedCommand ? args.ElementAtOrDefault(1) : command;
+            if (string.IsNullOrWhiteSpace(target)) throw new ArgumentException("Specify one exact discovered receiver name after the command.");
+            using var operationDeadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+            var token = operationDeadline.Token;
+            controller = new AirBridgeController();
+            controller.ConfigureSettings(new AirBridgeSettings { SilenceStandbyEnabled = false });
+            await controller.InitializeAsync(token);
+            var receivers = await controller.DiscoverAsync(token);
+            var receiver = receivers.SingleOrDefault(item => item.Name.Equals(target, StringComparison.OrdinalIgnoreCase))
+                ?? throw new InvalidOperationException("The exact target receiver was not discovered.");
+            report["target"] = receiver.Name;
+
+            if (command == "--start-volume")
+            {
+                var count = ParseBounded(args.ElementAtOrDefault(2), 10, 1, 20);
+                var attempts = new List<object>();
+                for (var attempt = 1; attempt <= count; attempt++)
+                {
+                    await controller.StartSystemAsync(receiver, token);
+                    await WaitForStreamingAsync(controller, receiver.Id, token);
+                    var configured = CurrentVolume(controller, receiver.Id);
+                    if (configured != ReceiverVolumePlan.SafeDefault) throw new InvalidOperationException("Unexpected initial volume configuration.");
+                    attempts.Add(new { attempt, state = "Streaming", configured_volume = configured });
+                    await controller.StopAsync(token);
+                }
+                report["attempts"] = attempts;
+                report["criteria"] = new { every_start_reached_streaming = true, initial_volume_configuration = ReceiverVolumePlan.SafeDefault };
+            }
+            else if (command == "--measure-delay")
+            {
+                await controller.StartSystemAsync(receiver, token);
+                await WaitForStreamingAsync(controller, receiver.Id, token);
+                var result = await controller.MeasureAcousticDelayAsync(receiver.Id, token);
+                report["measurement"] = new { median_delay_ms = result.MedianMilliseconds, samples_ms = result.DelaysMilliseconds };
+                report["criteria"] = new { acoustic_chirps_detected = result.DelaysMilliseconds.Count > 0, clean_program_audio_measured = false };
+                if (result.DelaysMilliseconds.Count == 0) throw new InvalidOperationException("No acoustic chirps were detected.");
+            }
+            else if (command == "--volume-live")
+            {
+                await controller.StartSystemAsync([receiver], new Dictionary<string, int> { [receiver.Id] = 14 }, token);
+                await WaitForStreamingAsync(controller, receiver.Id, token);
+                var values = new List<int>();
+                foreach (var volume in new[] { 10, 18, 12 })
+                {
+                    await controller.SetReceiverVolumeAsync(receiver.Id, volume, token);
+                    if (CurrentVolume(controller, receiver.Id) != volume) throw new InvalidOperationException("Controller volume did not update after host acknowledgement.");
+                    values.Add(volume);
+                }
+                report["criteria"] = new { host_volume_commands_acknowledged = true, configured_volumes = values, audible_loudness_tested = false };
+            }
+            else
+            {
+                var seconds = ParseBounded(args.ElementAtOrDefault(namedCommand ? 2 : 1), 8, 2, 30);
+                var volume = ParseBounded(args.ElementAtOrDefault(namedCommand ? 3 : 2), ReceiverVolumePlan.SafeDefault, 0, 100);
+                await controller.StartSystemAsync([receiver], new Dictionary<string, int> { [receiver.Id] = volume }, token);
+                await WaitForStreamingAsync(controller, receiver.Id, token);
+                using var output = new WaveOut();
+                var signal = new SignalGenerator(48000, 2) { Gain = 0.15, Frequency = 523.25, Type = SignalGeneratorType.Sin };
+                output.Init(signal.Take(TimeSpan.FromSeconds(seconds + 1)).ToWaveProvider());
+                var observationGate = new object();
+                var window = new StreamVerificationWindow(controller.ObserveStreamVerification(), window: TimeSpan.FromSeconds(seconds));
+                void ObserveRoute(object? sender, RouteInfo route) { lock (observationGate) window.Observe(controller.ObserveStreamVerification()); }
+                controller.Coordinator.RouteChanged += ObserveRoute;
+                try
+                {
+                    output.Play();
+                    while (!window.Complete)
+                    {
+                        await Task.Delay(250, token);
+                        lock (observationGate) window.Observe(controller.ObserveStreamVerification());
+                    }
+                    StreamVerificationResult result;
+                    lock (observationGate) result = window.Result();
+                    report["verification"] = result with { Receivers = result.Receivers.ToDictionary(_ => "receiver-1", item => item.Value) };
+                    report["criteria"] = new { state_continuity_checked = true, pcm_progress_checked = true,
+                        per_receiver_active_starvation_checked = true, bounded_ring_checked = true, microphone_recorded = false };
+                    if (result.Status != StreamVerificationStatus.Verified)
+                    {
+                        report["status"] = result.Status == StreamVerificationStatus.Inconclusive ? "inconclusive" : "failed";
+                        throw new InvalidOperationException(result.Note);
+                    }
+                }
+                finally
+                {
+                    controller.Coordinator.RouteChanged -= ObserveRoute;
+                    output.Stop();
+                }
+            }
+        }
+    }
+    report["status"] = "passed";
+    exitCode = 0;
 }
-
-await controller.StopAsync();
-Console.WriteLine("Full-pipeline diagnostic completed.");
-
-static async Task WaitForStreamingAsync(AirBridgeController controller, string receiverId, TimeSpan timeout)
+catch (Exception exception)
 {
-    var deadline = DateTimeOffset.UtcNow + timeout;
-    while (DateTimeOffset.UtcNow < deadline)
+    report["error"] = AgentActivitySanitizer.Sanitize(exception.Message);
+    exitCode = report["status"] as string == "inconclusive" ? 2 : 1;
+}
+finally
+{
+    try
+    {
+        using var cleanupDeadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        if (controller is not null) await Task.Run(() => controller.ShutdownAsync(cleanupDeadline.Token)).WaitAsync(cleanupDeadline.Token);
+        if (host is not null) await host.ShutdownAsync(cleanupDeadline.Token).WaitAsync(cleanupDeadline.Token);
+        report["cleanup_completed"] = true;
+    }
+    catch (Exception exception)
+    {
+        controller?.ForceCleanup();
+        host?.ForceTerminate();
+        report["cleanup_completed"] = false;
+        report["cleanup_error"] = AgentActivitySanitizer.Sanitize(exception.Message);
+        report["status"] = "failed";
+        exitCode = 1;
+    }
+    hardwareLock?.Dispose();
+    AppLog.Shutdown();
+    report["finished_utc"] = DateTimeOffset.UtcNow;
+    Console.WriteLine(JsonSerializer.Serialize(report, new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower }));
+}
+return exitCode;
+
+static int ParseBounded(string? value, int fallback, int minimum, int maximum) =>
+    int.TryParse(value, out var parsed) ? Math.Clamp(parsed, minimum, maximum) : fallback;
+
+static async Task WaitForStreamingAsync(AirBridgeController controller, string receiverId, CancellationToken cancellationToken)
+{
+    using var startup = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    startup.CancelAfter(TimeSpan.FromSeconds(20));
+    while (true)
     {
         var playback = controller.ReceiverPlayback.FirstOrDefault(item => item.Receiver.Id == receiverId);
         if (playback?.State == StreamState.Streaming) return;
         if (playback?.State == StreamState.Failed) throw new InvalidOperationException(playback.LastError ?? "Receiver failed to start.");
-        await Task.Delay(100);
+        await Task.Delay(100, startup.Token);
     }
-    throw new TimeoutException("Receiver did not reach Streaming within the hardware acceptance window.");
 }
 
 static int CurrentVolume(AirBridgeController controller, string receiverId) =>

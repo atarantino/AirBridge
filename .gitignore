@@ -10,6 +10,9 @@ publish/
 *.msi
 *.msix
 TestResults/
+node_modules/
+playwright-report/
+test-results/
 src/AirBridge.RaopHost/__pycache__/
 *.pyc
 

@@ -9,7 +9,7 @@ public sealed class SettingsStore
 
     public SettingsStore(string? path = null)
     {
-        Path = path ?? System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AirBridge", "settings.json");
+        Path = path ?? System.IO.Path.Combine(RuntimeProfile.DataDirectory, "settings.json");
     }
 
     public AirBridgeSettings Load()

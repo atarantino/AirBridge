@@ -9,6 +9,7 @@ public sealed class BoundedPcmBuffer : IPcmSink
     private int _write;
     private int _count;
     private long _written;
+    private long _activeWritten;
     private long _readTotal;
     private long _overruns;
     private long _underruns;
@@ -62,6 +63,7 @@ public sealed class BoundedPcmBuffer : IPcmSink
             _write = (_write + source.Length) % _buffer.Length;
             _count += source.Length;
             _written += source.Length;
+            if (producerActive) _activeWritten += source.Length;
         }
     }
 
@@ -121,7 +123,7 @@ public sealed class BoundedPcmBuffer : IPcmSink
 
     public BufferSnapshot Snapshot()
     {
-        lock (_gate) return new(_buffer.Length, _count, TargetMilliseconds, _written, _readTotal, _overruns, _underruns, _epoch, _producerIdlePaddingBytes, _starvedWhileActivePaddingBytes);
+        lock (_gate) return new(_buffer.Length, _count, TargetMilliseconds, _written, _readTotal, _overruns, _underruns, _epoch, _producerIdlePaddingBytes, _starvedWhileActivePaddingBytes, _activeWritten);
     }
 }
 

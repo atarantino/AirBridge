@@ -14,19 +14,20 @@ public sealed class TrayFlyoutForm : Form
     private const uint RdwAllchildren = 0x0080;
     private readonly AntiAliasedLabel _status = new() { Dock = DockStyle.Fill };
     private readonly LetterSpacedLabel _wordmark = new() { Text = "AIRBRIDGE", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8F, FontStyle.Bold), Tracking = 1.5f };
-    private readonly LetterSpacedLabel _outputLabel = new() { Text = "OUTPUT", Dock = DockStyle.Fill, Font = UiGeometry.UiFont(8.5F, FontStyle.Regular), Tracking = 1.2f, Padding = new Padding(0, 2, 0, 0) };
+    private readonly LetterSpacedLabel _outputLabel = new() { Text = "OUTPUT", Dock = DockStyle.Fill, Margin = Padding.Empty, Font = UiGeometry.UiFont(8.5F, FontStyle.Regular), Tracking = 1.2f, Padding = new Padding(0, 2, 0, 0) };
     private readonly AntiAliasedLabel _browserDelay = new() { Text = "Browser extension: delay picture 2,000 ms  ›", Dock = DockStyle.Fill, Cursor = Cursors.Hand };
     private readonly FlowLayoutPanel _receivers = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, Padding = new Padding(0, 4, 0, 0) };
     private readonly LoadingIndicator _receiverLoading = new();
-    private readonly PillButton _toggle = new() { Text = "Start", Primary = true, Width = 92, Height = 36 };
-    private readonly PillButton _groups = new() { Text = "Groups", Quiet = true, Width = 96, Height = 36 };
-    private readonly PillButton _refresh = new() { IconGlyph = "\uE72C", Quiet = true, Width = 36, Height = 36 };
-    private readonly PillButton _settings = new() { IconGlyph = "\uE713", Quiet = true, Width = 36, Height = 36 };
+    private readonly PillButton _toggle = new() { Name = "TogglePlayback", Text = "Start", Primary = true, Width = 92, Height = 36 };
+    private readonly PillButton _groups = new() { Name = "SpeakerGroups", Text = "Groups", Quiet = true, Width = 96, Height = 36 };
+    private readonly PillButton _refresh = new() { Name = "RefreshSpeakers", IconGlyph = "\uE72C", Quiet = true, Width = 36, Height = 36 };
+    private readonly PillButton _settings = new() { Name = "OpenSettings", IconGlyph = "\uE713", Quiet = true, Width = 36, Height = 36 };
     private readonly PillButton _quit = new() { IconGlyph = "\uE7E8", Quiet = true, Width = 36, Height = 36 };
     private readonly ToolTip _toolTip = new();
     private readonly Dictionary<string, ReceiverRowControl> _rows = new(StringComparer.Ordinal);
     private AppThemeMode _themeMode;
     private readonly TableLayoutPanel _root;
+    private readonly ColumnStyle _toggleColumn = new(SizeType.Absolute, 98);
     private ThemePalette _palette;
     private StreamState _streamState;
     private Rectangle? _trayWorkingArea;
@@ -81,7 +82,7 @@ public sealed class TrayFlyoutForm : Form
         heading.Controls.Add(_status, 0, 1);
 
         var actions = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, Margin = Padding.Empty, Padding = new Padding(0, 7, 0, 0) };
-        actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        actions.ColumnStyles.Add(_toggleColumn);
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         actions.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var quiet = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty };
@@ -116,7 +117,7 @@ public sealed class TrayFlyoutForm : Form
         Deactivate += (_, _) => { if (AutoHide) Hide(); };
         _receivers.Layout += (_, _) => ResizeRows();
         _receivers.ClientSizeChanged += (_, _) => ResizeRows();
-        Shown += (_, _) => WindowEffects.ConfigureBorderlessPopup(this);
+        Shown += (_, _) => { WindowEffects.ConfigureBorderlessPopup(this); UpdateTextSizedControls(); };
         SystemTextScale.Changed += OnTextScaleChanged;
         UiGeometry.ScaleInitialTextLayout(this);
         UpdateTextSizedControls();
@@ -159,6 +160,7 @@ public sealed class TrayFlyoutForm : Form
             {
                 var row = new ReceiverRowControl { Width = Math.Max(340, _receivers.ClientSize.Width - SystemInformation.VerticalScrollBarWidth) };
                 row.UseCompactLayout();
+                row.MinimumSize = new Size(1, row.MinimumSize.Height);
                 row.SetCompactStreamActive(IsGlobalStreamActive);
                 var selected = selectedIds?.Contains(receiver.Id) == true;
                 var volume = volumes?.TryGetValue(receiver.Id, out var savedVolume) == true ? savedVolume : 30;
@@ -346,7 +348,7 @@ public sealed class TrayFlyoutForm : Form
 
     private void ResizeRows()
     {
-        var width = Math.Max(340, _receivers.ClientSize.Width - (_receivers.VerticalScroll.Visible ? SystemInformation.VerticalScrollBarWidth : 0));
+        var width = Math.Max(1, _receivers.ClientSize.Width - _receivers.Padding.Horizontal);
         if (_receiverLoading.Width != width) _receiverLoading.Width = width;
         foreach (var row in _rows.Values) if (row.Width != width) row.Width = width;
     }
@@ -361,6 +363,14 @@ public sealed class TrayFlyoutForm : Form
     }
 
     private bool IsGlobalStreamActive => _streamState is not StreamState.Idle and not StreamState.Failed;
+
+    internal void SettleSnapshotLayout()
+    {
+        UpdateTextSizedControls();
+        foreach (var row in _rows.Values) row.ApplyTextScale();
+        ReflowReceiverRows();
+        PerformLayout();
+    }
 
     private void OnTextScaleChanged(object? sender, TextScaleChangedEventArgs args)
     {
@@ -378,8 +388,15 @@ public sealed class TrayFlyoutForm : Form
     private void UpdateTextSizedControls()
     {
         var maximum = Math.Max(UiGeometry.Scale(this, 110), ClientSize.Width / 3);
-        _toggle.Width = Math.Min(maximum, Math.Max(UiGeometry.Scale(this, 92), TextRenderer.MeasureText(_toggle.Text, _toggle.Font).Width + UiGeometry.Scale(this, 24)));
+        var toggleWidth = Math.Min(maximum, Math.Max(UiGeometry.Scale(this, 92), TextRenderer.MeasureText(_toggle.Text, _toggle.Font).Width + UiGeometry.Scale(this, 24)));
+        _toggleColumn.Width = toggleWidth + _toggle.Margin.Horizontal;
+        _toggle.Width = toggleWidth;
         _groups.Width = Math.Min(maximum, Math.Max(UiGeometry.Scale(this, 96), TextRenderer.MeasureText(_groups.Text, _groups.Font).Width + UiGeometry.Scale(this, 24)));
+        var footerWidth = toggleWidth + _toggle.Margin.Horizontal +
+            new[] { _groups, _refresh, _settings, _quit }.Sum(button => button.Width + button.Margin.Horizontal);
+        var minimumWidth = Math.Min(MaximumSize.Width, footerWidth + Padding.Horizontal);
+        if (MinimumSize.Width < minimumWidth) MinimumSize = new(minimumWidth, MinimumSize.Height);
+        if (ClientSize.Width < minimumWidth) ClientSize = new(minimumWidth, ClientSize.Height);
     }
 
     private static float TextWidthScale(float textScale) => 1f + (Math.Min(2.25f, Math.Max(1f, textScale)) - 1f) * 0.4f;
@@ -396,13 +413,13 @@ public sealed class TrayFlyoutForm : Form
 
     private void UpdateContentHeight()
     {
-        _receivers.AutoScroll = _rows.Count > 6;
         var loadingHeight = _receiverLoadingActive ? _receiverLoading.Height + _receiverLoading.Margin.Vertical : 0;
         var rowsHeight = _receiverRowsPending ? 0 : _rows.Values.Take(6).Sum(row => row.Height + row.Margin.Vertical);
         var chromeHeight = _root.RowStyles.Cast<RowStyle>()
             .Where(style => style.SizeType == SizeType.Absolute)
             .Sum(style => (int)Math.Ceiling(style.Height));
         var desired = Padding.Vertical + chromeHeight + _receivers.Padding.Vertical + loadingHeight + rowsHeight;
+        _receivers.AutoScroll = _rows.Count > 6 || desired > MaximumSize.Height;
         SetAnchoredClientHeight(Math.Min(MaximumSize.Height, Math.Max(MinimumSize.Height, desired)));
     }
 
@@ -417,9 +434,8 @@ public sealed class TrayFlyoutForm : Form
         var targetSize = SizeFromClientSize(new Size(ClientSize.Width, clientHeight));
         var workingArea = _trayWorkingArea ?? Screen.FromRectangle(Bounds).WorkingArea;
         var margin = UiGeometry.Scale(this, 8);
-        var x = Math.Clamp(workingArea.Right - targetSize.Width - margin, workingArea.Left, workingArea.Right - targetSize.Width);
-        var y = Math.Clamp(workingArea.Bottom - targetSize.Height - margin, workingArea.Top, workingArea.Bottom - targetSize.Height);
-        SetBounds(x, y, targetSize.Width, targetSize.Height, BoundsSpecified.All);
+        var location = PopupLocation(workingArea, targetSize, margin);
+        SetBounds(location.X, location.Y, targetSize.Width, targetSize.Height, BoundsSpecified.All);
     }
 
     private bool SuspendFlyoutRedraw()
@@ -446,9 +462,13 @@ public sealed class TrayFlyoutForm : Form
     {
         var workingArea = _trayWorkingArea ?? Screen.FromRectangle(Bounds).WorkingArea;
         var margin = UiGeometry.Scale(this, 8);
-        var x = Math.Clamp(workingArea.Right - Width - margin, workingArea.Left, workingArea.Right - Width);
-        var y = Math.Clamp(workingArea.Bottom - Height - margin, workingArea.Top, workingArea.Bottom - Height);
-        Location = new Point(x, y);
+        Location = PopupLocation(workingArea, Size, margin);
     }
+
+    // QA renders can exceed a CI desktop's working area. Keep their origin on
+    // screen without producing an invalid Math.Clamp interval.
+    internal static Point PopupLocation(Rectangle workingArea, Size size, int margin) => new(
+        Math.Clamp(workingArea.Right - size.Width - margin, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - size.Width)),
+        Math.Clamp(workingArea.Bottom - size.Height - margin, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - size.Height)));
 
 }

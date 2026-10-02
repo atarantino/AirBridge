@@ -7,6 +7,21 @@ namespace AirBridge.Tests;
 public sealed class ReceiverRowControlTests
 {
     [Fact]
+    public void FailedCompactRowKeepsSpaceForErrorTextWithoutShowingVolume()
+    {
+        using var row = new ReceiverRowControl();
+        row.UseCompactLayout();
+        row.Bind(new ReceiverInfo("speaker-a", "Speaker A", "local", false, DateTimeOffset.UtcNow));
+        row.SetCompactStreamActive(true);
+        row.SetPlaybackState(StreamState.Failed, "Password required");
+        row.ApplyTextScale();
+        Assert.True(row.Height >= UiGeometry.ScaleText(row, 64));
+        Assert.False(Assert.Single(row.Controls.OfType<OwnerDrawnSlider>()).Visible);
+        row.SetPlaybackState(StreamState.Idle);
+        row.ApplyTextScale();
+        Assert.Equal(UiGeometry.ScaleText(row, 44), row.Height);
+    }
+    [Fact]
     public void HiddenVolumeBoundsDoNotBlockCompactRowSelection()
     {
         using var row = new ReceiverRowControl();

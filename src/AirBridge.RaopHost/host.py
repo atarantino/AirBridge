@@ -40,7 +40,8 @@ class Host:
         self.devices = {}
         self.sessions: dict[str, Session] = {}
         self.pairings: dict[str, Any] = {}
-        storage_root = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AirBridge"
+        configured_root = os.environ.get("AIRBRIDGE_DATA_DIR", "").strip()
+        storage_root = Path(configured_root).resolve() if configured_root else Path(os.environ.get("LOCALAPPDATA", Path.home())) / "AirBridge"
         storage_root.mkdir(parents=True, exist_ok=True)
         self.storage = FileStorage((storage_root / "pyatv.conf").as_posix(), asyncio.get_running_loop())
 

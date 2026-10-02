@@ -7,6 +7,8 @@ public interface IRaopClient
 {
     event EventHandler<(string? ReceiverId, StreamState State, string? Error)>? StateChanged;
     Task StartAsync(CancellationToken cancellationToken = default);
+    Task<JsonElement> PingAsync(CancellationToken cancellationToken = default) =>
+        Task.FromException<JsonElement>(new NotSupportedException("This RAOP client does not support a liveness probe."));
     Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default);
     Task<JsonElement> BeginPairingAsync(string receiverId, bool controlPairing = false, CancellationToken cancellationToken = default) =>
         Task.FromException<JsonElement>(new NotSupportedException("Pairing is not supported by this RAOP client."));

@@ -10,7 +10,7 @@
                                                SuppressOptionsUI="yes" />
     </BootstrapperApplication>
     <Chain>
-      <MsiPackage SourceFile="$(sys.CURRENTDIR)\artifacts\AirBridge.msi"
+      <MsiPackage SourceFile="$(var.SourceRoot)\artifacts\AirBridge.msi"
                   Compressed="yes"
                   Vital="yes" />
     </Chain>

@@ -6,7 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\AirBridge.App\AirBridge.App.csproj" />
-    <PackageReference Include="NAudio" Version="3.0.0-preview.18" />
   </ItemGroup>
 </Project>
 
