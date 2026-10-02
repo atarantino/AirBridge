@@ -85,7 +85,6 @@ internal static class AppLog
     private static RuntimeLog? _current;
     internal static string DirectoryPath => System.IO.Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AirBridge", "logs");
-    internal static string? CurrentPath => Volatile.Read(ref _current)?.Path;
 
     internal static void Initialize()
     {

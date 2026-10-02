@@ -72,18 +72,12 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
     public Task<JsonElement> StartStreamAsync(ReceiverInfo receiver, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default) =>
         SendAsync("start", new { receiver_id = receiver.Id, receiver_name = receiver.Name, pipe_name = pipeName, initial_volume = Math.Clamp(initialVolume, 0, 100) }, cancellationToken);
 
-    /// <summary>Stops all sessions. Retained for compatibility with the original single-receiver controller.</summary>
-    public Task<JsonElement> StopStreamAsync(CancellationToken cancellationToken = default) => SendAsync("stop", new { }, cancellationToken);
     public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) =>
         SendAsync("stop", new { receiver_id = receiverId }, cancellationToken);
     public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) => SendAsync("stop_all", new { }, cancellationToken);
 
-    /// <summary>Targets the sole connected session. Retained for compatibility with the original controller.</summary>
-    public Task<JsonElement> SetVolumeAsync(int percent, CancellationToken cancellationToken = default) => SendAsync("set_volume", new { percent }, cancellationToken);
     public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) =>
         SendAsync("set_volume", new { receiver_id = receiverId, percent }, cancellationToken);
-    public Task<JsonElement> PlayDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default) =>
-        SendAsync("diagnostic_tone", new { receiver_name = receiverName, seconds = Math.Clamp(seconds, 0.1, 10.0) }, cancellationToken);
 
     private async Task<JsonElement> SendAsync(string command, object arguments, CancellationToken cancellationToken)
     {

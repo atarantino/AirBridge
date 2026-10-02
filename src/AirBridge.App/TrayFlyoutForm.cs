@@ -116,7 +116,7 @@ public sealed class TrayFlyoutForm : Form
         Deactivate += (_, _) => { if (AutoHide) Hide(); };
         _receivers.Layout += (_, _) => ResizeRows();
         _receivers.ClientSizeChanged += (_, _) => ResizeRows();
-        Shown += (_, _) => WindowEffects.TryEnableRoundedCorners(this);
+        Shown += (_, _) => WindowEffects.ConfigureBorderlessPopup(this);
         SystemTextScale.Changed += OnTextScaleChanged;
         UiGeometry.ScaleInitialTextLayout(this);
         UpdateTextSizedControls();
@@ -302,13 +302,20 @@ public sealed class TrayFlyoutForm : Form
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         if (_palette.IsHighContrast) { e.Graphics.Clear(SystemColors.Window); return; }
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.Clear(_palette.Surface);
-        var radius = UiGeometry.Scale(this, 14);
         var bounds = Rectangle.Inflate(ClientRectangle, -1, -1);
-        using var path = UiGeometry.Rounded(bounds, radius);
         using var sidePen = new Pen(_palette.Border);
-        e.Graphics.DrawPath(sidePen, path);
+        if (WindowEffects.UseRoundedPopupCorners)
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using var path = UiGeometry.Rounded(bounds, UiGeometry.Scale(this, 14));
+            e.Graphics.DrawPath(sidePen, path);
+        }
+        else
+        {
+            e.Graphics.SmoothingMode = SmoothingMode.None;
+            e.Graphics.DrawRectangle(sidePen, bounds);
+        }
         var separatorY = ClientSize.Height - Padding.Bottom - UiGeometry.Scale(this, 49);
         e.Graphics.DrawLine(sidePen, Padding.Left, separatorY, ClientSize.Width - Padding.Right, separatorY);
     }
@@ -346,9 +353,11 @@ public sealed class TrayFlyoutForm : Form
 
     private void UpdateRoundedRegion()
     {
-        if (_palette.IsHighContrast || OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000)) { Region = null; return; }
-        using var path = UiGeometry.Rounded(ClientRectangle, UiGeometry.Scale(this, 14));
-        Region = new Region(path);
+        // Windows 10's binary rounded regions produce visibly jagged outer
+        // edges. Keep the popup rectangular there and let DWM round Windows 11.
+        var previousRegion = Region;
+        Region = null;
+        previousRegion?.Dispose();
     }
 
     private bool IsGlobalStreamActive => _streamState is not StreamState.Idle and not StreamState.Failed;

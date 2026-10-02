@@ -20,7 +20,6 @@ public sealed class ToolPrivacyTests
         public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
-        public Task<JsonElement> PlayDiagnosticToneAsync(string receiverName, double seconds, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
         public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public void ForceTerminate() { }
     }

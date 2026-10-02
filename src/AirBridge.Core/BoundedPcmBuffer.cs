@@ -24,7 +24,6 @@ public sealed class BoundedPcmBuffer : IPcmSink
         TargetMilliseconds = targetMilliseconds;
     }
 
-    public int Capacity => _buffer.Length;
     public int TargetMilliseconds { get; private set; }
 
     public void SetTarget(int milliseconds)

@@ -8,11 +8,30 @@ Read-only telemetry includes the current route, buffer fill percentage, underrun
 
 RAOP receiver identifiers also remain local. GPT tools see short process-local aliases such as `receiver-1`; the controller translates those aliases only after a tool call passes policy validation. Route, buffer, alignment, and measurement results are projected through the same alias boundary.
 
-The confirmation-required `measure_acoustic_delay` tool targets one already-streaming receiver, temporarily floors every non-target receiver, and advances five in-memory chirps from the shared clock into the normalized capture fanout before the receiver rings, trims, pipes, and RAOP sessions. It captures the microphone selected under Settings > Speaker sync into memory, rejects local onsets under 300 ms, restores every prior receiver volume, and returns the median delay. `align_group` uses the same confirmation boundary; a clear direct user request to align speakers authorizes that one tool call and its auto-applied proposal. Pending confirmation remains bound to the exact tool arguments if the agent is recreated, and ordinary approvals such as “sure” or “go ahead” are accepted. Microphone PCM is destroyed locally and never enters a model request.
+The confirmation-required `measure_acoustic_delay` tool targets one already-streaming receiver, temporarily floors every non-target receiver, and advances five in-memory chirps from the shared clock into the normalized capture fanout before the receiver rings, trims, pipes, and RAOP sessions. It captures the microphone selected under Settings > Speaker sync into memory, rejects local onsets under 300 ms, restores every prior receiver volume, and returns the median delay. `align_group` uses the same confirmation boundary; a clear direct user request to align speakers authorizes that one tool call and its auto-applied proposal. Bare room-name pairs fall through to the local dialog because the lexical gate does not receive configured receiver aliases. Pending confirmation remains bound to the exact tool arguments if the agent is recreated, and ordinary approvals such as “sure” or “go ahead” are accepted. Microphone PCM is destroyed locally and never enters a model request.
 
 The diagnosis prompt requires observe → classify → gather → explain → act → verify. A buffer change records the pre-change underrun counter. A later health read waits for the ten-second measurement window when needed, compares fresh counters, and marks the fix verified only when no new underrun occurred and the stream remained in `Streaming`. This makes verification deterministic rather than a prose convention.
 
 Persistent tools require explicit confirmation. When a model requests one, AirBridge presents a local Allow/Cancel dialog; Allow executes that exact tool call immediately, so the user never has to discover a special approval phrase or wait through another model round trip. Streaming remains completely functional when no API key or OpenAI connection is available.
+
+## Agent intent evals
+
+`tests/AirBridge.Evals` contains the deterministic microphone-authorization eval that runs in CI. It loads a tagged primary corpus plus externally sourced held-out cases, evaluates both microphone tools for every utterance, prints overall accuracy plus authorize precision and recall, and lists every false positive and false negative. A false positive can bypass the local microphone confirmation dialog, so its CI budget is zero; safe false negatives fall back to the dialog, with a small separate budget that prevents an always-refuse implementation from passing. Run it with `dotnet test tests/AirBridge.Evals` on any .NET 9 platform.
+
+`tests/AirBridge.ModelEvals` is a separate local-only project, intentionally outside `AirBridge.sln` and the CI workflow. Its 20-case model-in-the-loop fixture independently scores tool selection, exact argument construction, and the no-tool response rate against synthetic aliases such as `receiver-1`. A no-tool case passes when the model returns nonempty text without calling a tool; the grader does not evaluate the text's meaning or verify that it is an appropriate refusal. It makes paid API requests and requires both `AIRBRIDGE_MODEL_EVALS=1` and `OPENAI_API_KEY`. With either setting absent, an explicit run fails with setup instructions before making a network request; it never reports an unexecuted eval as passed.
+
+Both eval projects reject empty fixtures and require positive and negative coverage before scoring. Each microphone tool must have more authorize cases than the allowed false-negative budget, so an always-refuse gate cannot pass after those cases are removed. Undefined metrics display `n/a`.
+
+With `OPENAI_API_KEY` set in your local environment, run from the repository root in PowerShell:
+
+```powershell
+$env:AIRBRIDGE_MODEL_EVALS = '1'
+try {
+    dotnet test tests/AirBridge.ModelEvals --configuration Release
+} finally {
+    Remove-Item Env:AIRBRIDGE_MODEL_EVALS
+}
+```
 
 Calibration failures are shown immediately in the main conversation and as a Windows notification, including the locally selected microphone and the speaker that failed. AirBridge records local sample count, capture duration, peak, RMS, and chirp-emission count so it can distinguish an unavailable or silent input from a live microphone whose audio did not contain matching chirps. The same sanitized error is retained in diagnostics; users do not need to open the Activity Inspector or log files to discover a failed operation.
 

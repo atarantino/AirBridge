@@ -10,4 +10,4 @@ This picture-only mechanism is required: pausing the real video delays both its 
 
 DRM/EME and cross-origin media may prohibit frame capture. After repeated capture failure, AirBridge closes queued bitmaps, removes the canvas, restores the video's original opacity/accessibility state, logs an explicit warning, and skips that element. Canvas-only players and protected browser surfaces are also unsupported.
 
-The native messaging host implements Chromium's four-byte little-endian framing. Before distribution, the installed extension ID and native-host executable path must be written into `com.airbridge.sync.json` and registered for Chrome or Edge.
+The extensions run independently of the desktop app. Enter the measured delay in the extension popup; no native messaging host or browser registration is required.

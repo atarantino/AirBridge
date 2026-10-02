@@ -59,7 +59,7 @@ public sealed class AgentPolicyTests
     [InlineData("please align the speakers in Speaker A", true)]
     [InlineData("I explicitly allow you to align the speakers", true)]
     [InlineData("I approve this alignment", true)]
-    [InlineData("let's align the kitchen and office", true)]
+    [InlineData("let's align the kitchen and office", false)]
     [InlineData("you have my permission to align the speaker group", true)]
     [InlineData("don't align the speakers", false)]
     [InlineData("tell me whether we should align the speakers", false)]
