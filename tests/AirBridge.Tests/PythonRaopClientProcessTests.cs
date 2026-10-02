@@ -1,9 +1,12 @@
 using System.Diagnostics;
+using System.Text;
+using System.Text.Json;
 using AirBridge.App;
 using AirBridge.Core;
 
 namespace AirBridge.Tests;
 
+[Collection("Console encoding")]
 public sealed class PythonRaopClientProcessTests
 {
     private sealed class HostFixture : IDisposable
@@ -136,6 +139,55 @@ public sealed class PythonRaopClientProcessTests
     }
 
     [Fact]
+    public async Task JsonLinesUseBomFreeUtf8RegardlessOfConsoleInputEncoding()
+    {
+        const string source = """
+            import json, sys
+            received = []
+            for raw in sys.stdin.buffer:
+                request = json.loads(raw.decode("utf-8"))
+                received.append({"hex": raw.hex(), "request": request})
+                response = {"request_id": request["request_id"], "ok": True,
+                            "result": {"received": received, "label": "音乐 🎵",
+                                       "stdio_encoding": [sys.stdin.encoding, sys.stdout.encoding, sys.stderr.encoding]}}
+                sys.stdout.buffer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
+                sys.stdout.buffer.flush()
+            """;
+        var originalEncoding = Console.InputEncoding;
+        try
+        {
+            Console.InputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+            Assert.Equal(new byte[] { 0xef, 0xbb, 0xbf }, Console.InputEncoding.GetPreamble());
+            using var fixture = new HostFixture(source);
+            await using var client = fixture.CreateClient();
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            await client.StartAsync(deadline.Token);
+            const string receiver = "餐厅—🦜";
+            await client.SetVolumeAsync(receiver, 23, deadline.Token);
+            var result = await client.SetVolumeAsync(receiver, 41, deadline.Token);
+            Assert.Equal("音乐 🎵", result.GetProperty("label").GetString());
+            Assert.All(result.GetProperty("stdio_encoding").EnumerateArray(), encoding => Assert.Equal("utf-8", encoding.GetString()));
+            var lines = result.GetProperty("received").EnumerateArray().ToArray();
+            Assert.Equal(3, lines.Length);
+            var startupId = lines[0].GetProperty("request").GetProperty("request_id").GetString();
+            Assert.Equal(Encoding.UTF8.GetBytes($"{{\"request_id\":\"{startupId}\",\"command\":\"ping\"}}{Environment.NewLine}"),
+                Convert.FromHexString(lines[0].GetProperty("hex").GetString()!));
+            for (var index = 1; index < lines.Length; index++)
+            {
+                var request = lines[index].GetProperty("request");
+                Assert.Equal(receiver, request.GetProperty("receiver_id").GetString());
+                var expected = JsonSerializer.Serialize(new
+                {
+                    receiver_id = receiver, percent = index == 1 ? 23 : 41,
+                    request_id = request.GetProperty("request_id").GetString(), command = "set_volume"
+                }) + Environment.NewLine;
+                Assert.Equal(Encoding.UTF8.GetBytes(expected), Convert.FromHexString(lines[index].GetProperty("hex").GetString()!));
+            }
+        }
+        finally { Console.InputEncoding = originalEncoding; }
+    }
+
+    [Fact]
     public async Task StartupFailureCleansUpTheOwnedHostWithoutLeavingAPendingCommand()
     {
         using var fixture = new HostFixture("import sys\nsys.exit(0)\n");
@@ -145,3 +197,6 @@ public sealed class PythonRaopClientProcessTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => client.PingAsync(deadline.Token));
     }
 }
+
+[CollectionDefinition("Console encoding", DisableParallelization = true)]
+public sealed class ConsoleEncodingCollection { }

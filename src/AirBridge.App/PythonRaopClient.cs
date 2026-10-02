@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using AirBridge.Core;
 
@@ -48,6 +49,9 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardInputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8,
                 CreateNoWindow = true,
                 WorkingDirectory = Path.GetDirectoryName(host)!
             },
@@ -77,6 +81,7 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
     {
         startInfo.Environment[RuntimeProfile.DataDirectoryVariable] = RuntimeProfile.DataDirectory;
         startInfo.Environment["AIRBRIDGE_RUN_ID"] = RuntimeProfile.RunId;
+        startInfo.Environment["PYTHONIOENCODING"] = "utf-8";
         foreach (var name in new[] { "OPENAI_API_KEY", "AIRBRIDGE_MODEL_EVAL_KEY", "AIRBRIDGE_RUN_HARDWARE_TESTS", "AIRBRIDGE_MODEL_EVALS", "AIRBRIDGE_RUN_MODEL_EVALS" })
             startInfo.Environment.Remove(name);
     }

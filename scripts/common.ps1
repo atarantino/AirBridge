@@ -43,16 +43,35 @@ function New-AirBridgeProcess([string]$FilePath, [string[]]$Arguments = @(), [st
     # to OEM 437, corrupting UTF-8 Git diffs and their provenance hashes.
     $info.StandardOutputEncoding = [Text.UTF8Encoding]::new($false)
     $info.StandardErrorEncoding = [Text.UTF8Encoding]::new($false)
+    $hasInputEncoding = $null -ne $info.GetType().GetProperty('StandardInputEncoding')
+    if ($hasInputEncoding) { $info.StandardInputEncoding = [Text.UTF8Encoding]::new($false) }
     # The default verification tiers must never inherit paid API/hardware opt-ins.
     $info.EnvironmentVariables.Remove('OPENAI_API_KEY')
     $info.EnvironmentVariables.Remove('AIRBRIDGE_RUN_HARDWARE_TESTS')
     $info.EnvironmentVariables.Remove('AIRBRIDGE_MODEL_EVALS')
     $info.EnvironmentVariables['AIRBRIDGE_DATA_DIR'] = Get-AirBridgeProfile
     $info.EnvironmentVariables['PYTHONUTF8'] = '1'
+    $info.EnvironmentVariables['PYTHONIOENCODING'] = 'utf-8'
     foreach ($key in $Environment.Keys) { $info.EnvironmentVariables[$key] = [string]$Environment[$key] }
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $info
-    if (-not $process.Start()) { throw "Could not start $FilePath" }
+    try {
+        if ($hasInputEncoding) {
+            if (-not $process.Start()) { throw "Could not start $FilePath" }
+        }
+        else {
+            # Framework creates an autoflushing stdin writer during Start and
+            # has no per-process encoding setting. Normalize only this
+            # synchronous startup; restore the caller's encoding on every exit.
+            $previousInputEncoding = [Console]::InputEncoding
+            try {
+                [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+                if (-not $process.Start()) { throw "Could not start $FilePath" }
+            }
+            finally { [Console]::InputEncoding = $previousInputEncoding }
+        }
+    }
+    catch { $process.Dispose(); throw }
     return $process
 }
 
@@ -85,8 +104,16 @@ function Invoke-AirBridgeCheck($Run, [string]$Name, [string]$FilePath, [string[]
         $check.executable = $process.StartInfo.FileName
         $outTask = $process.StandardOutput.ReadToEndAsync()
         $errTask = $process.StandardError.ReadToEndAsync()
-        if ($StandardInput) { $process.StandardInput.WriteLine($StandardInput) }
-        $process.StandardInput.Close()
+        # .NET Framework's redirected StreamWriter can emit the console UTF-8
+        # preamble. JSON-lines peers require BOM-free UTF-8 regardless of shell.
+        $inputStream = $process.StandardInput.BaseStream
+        if ($StandardInput) {
+            $inputBytes = [Text.UTF8Encoding]::new($false).GetBytes($StandardInput + "`n")
+            $inputStream.Write($inputBytes, 0, $inputBytes.Length)
+            $inputStream.Flush()
+        }
+        # Closing the StreamWriter can append its preamble even when unused.
+        $inputStream.Close()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             $check.timedOut = $true
             $check.error = "Exceeded deadline of $TimeoutSeconds seconds."
