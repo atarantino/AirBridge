@@ -2,10 +2,17 @@ import asyncio
 import inspect
 import struct
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 import pyatv.protocols.raop as raop
+from pyatv.const import Protocol
+from pyatv.core.facade import FacadeStream
 from pyatv.protocols.airplay.auth import hap_transient
+from pyatv.protocols.airplay.utils import pct_to_dbfs
 from pyatv.protocols.raop.audio_source import AudioSource, _to_audio_samples
+from pyatv.protocols.raop.stream_client import StreamClient
+from pyatv.settings import Settings
 
 from live_stream import (
     DiagnosticToneSource,
@@ -13,6 +20,7 @@ from live_stream import (
     install_pyatv_adapter,
     pcm_s16be_to_uncompressed_alac,
     s16le_to_airplay,
+    stream_with_initial_volume,
 )
 
 
@@ -80,6 +88,83 @@ class LivePcmSourceTests(unittest.TestCase):
         for index, bit in enumerate(bits):
             output[index // 8] |= bit << (7 - index % 8)
         return bytes(output)
+
+
+class InitialVolumeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_facade_volume_and_readiness_follow_record_and_volume_response(self):
+        install_pyatv_adapter()
+        for requested, expected in ((14, 14), (0, 0.01), (-20, 0.01), (120, 100)):
+            with self.subTest(initial_volume=requested):
+                events = []
+                record_started = asyncio.Event()
+                release_record = asyncio.Event()
+                volume_started = asyncio.Event()
+                release_volume = asyncio.Event()
+                ready = asyncio.Event()
+
+                async def record():
+                    record_started.set()
+                    await release_record.wait()
+                    events.append("RECORD")
+
+                async def set_parameter(parameter, value):
+                    self.assertEqual("volume", parameter)
+                    events.append(("SET_VOLUME", float(value)))
+                    volume_started.set()
+                    await release_volume.wait()
+
+                core = SimpleNamespace(
+                    service=SimpleNamespace(credentials=None, password=None, properties={}),
+                    takeover=Mock(return_value=Mock()),
+                )
+                manager = raop.RaopPlaybackManager(core)
+                rtsp = SimpleNamespace(
+                    connection=SimpleNamespace(remote_ip="127.0.0.1"),
+                    record=AsyncMock(side_effect=record),
+                    flush=AsyncMock(),
+                    set_parameter=AsyncMock(side_effect=set_parameter),
+                    teardown=AsyncMock(),
+                )
+                protocol = SimpleNamespace(start_feedback=AsyncMock(), teardown=Mock())
+                client = StreamClient(rtsp, manager.context, protocol, Settings())
+                client.control_client = Mock()
+                client.timing_server = Mock()
+                client.initialize = AsyncMock()
+                client._stream_data = AsyncMock()
+                # A receiver-advertised volume must not override the requested level.
+                client.info["initialVolume"] = -12.0
+                manager._stream_client = client
+                manager._rtsp = rtsp
+                audio = raop.RaopAudio(manager, Mock())
+                low_level_stream = raop.RaopStream(core, Mock(), audio, manager)
+                facade = FacadeStream(Mock())
+                facade.register(low_level_stream, Protocol.RAOP)
+
+                # Keep the real facade, RAOP stream and volume methods; stub UDP
+                # creation and PCM delivery so no receiver or network is required.
+                with patch.object(client.loop, "create_datagram_endpoint", new=AsyncMock(return_value=(Mock(), None))):
+                    playback = asyncio.create_task(stream_with_initial_volume(
+                        facade, DiagnosticToneSource(0.01), requested, ready
+                    ))
+                    try:
+                        await asyncio.wait_for(record_started.wait(), timeout=1)
+                        self.assertFalse(ready.is_set())
+                        self.assertEqual([], events)
+                        self.assertAlmostEqual(pct_to_dbfs(expected), manager.context.volume)
+
+                        release_record.set()
+                        await asyncio.wait_for(volume_started.wait(), timeout=1)
+                        self.assertFalse(ready.is_set())
+                        self.assertEqual("RECORD", events[0])
+                        self.assertEqual("SET_VOLUME", events[1][0])
+                        self.assertAlmostEqual(pct_to_dbfs(expected), events[1][1])
+
+                        release_volume.set()
+                        await asyncio.wait_for(playback, timeout=1)
+                        self.assertTrue(ready.is_set())
+                    finally:
+                        playback.cancel()
+                        await asyncio.gather(playback, return_exceptions=True)
 
 
 if __name__ == "__main__":

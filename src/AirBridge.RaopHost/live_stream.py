@@ -299,25 +299,21 @@ async def stream_with_initial_volume(
     ready_event: asyncio.Event | None = None,
 ) -> None:
     """Start a stream with the first network volume command after RECORD."""
+    from pyatv.const import Protocol
+    from pyatv.core.facade import FacadeStream
     from pyatv.protocols.airplay.utils import pct_to_dbfs
 
     # pyatv 0.18 uses a truthiness check before its post-RECORD setter. Keep a
     # requested mute truthy but acoustically negligible so it cannot fall back
     # to the receiver's manual volume.
     level = max(0.01, min(100.0, float(initial_volume)))
-    playback_manager = getattr(stream, "playback_manager", None)
-    if playback_manager is not None:
-        playback_manager.context.volume = pct_to_dbfs(level)
-    elif ready_event is not None:
-        # Test and alternate adapters perform RECORD inside stream_file but do not
-        # expose pyatv's low-level StreamClient readiness seam.
-        ready_event.set()
+    # The public stream facade does not expose the RAOP playback context.
+    raop_stream = stream.get(Protocol.RAOP) if isinstance(stream, FacadeStream) else stream
+    raop_stream.playback_manager.context.volume = pct_to_dbfs(level)
     token = _deferred_initial_volume.set(level)
     ready_token = _stream_ready_event.set(ready_event)
     try:
-        # pyatv currently accepts but ignores this kwarg at the public layer;
-        # the context + deferred setter above route it to send_audio(volume=).
-        await stream.stream_file(source, initial_volume=level)
+        await stream.stream_file(source)
     finally:
         _stream_ready_event.reset(ready_token)
         _deferred_initial_volume.reset(token)

@@ -16,14 +16,6 @@ public sealed class AgentActivityTests
         Assert.Equal($"I don’t see Bathroom.{Environment.NewLine}• Kitchen{Environment.NewLine}• Living room", formatted);
     }
 
-    [Theory]
-    [InlineData(null, false)]
-    [InlineData("", false)]
-    [InlineData("   \r\n", false)]
-    [InlineData("Stream to Kitchen", true)]
-    public void TranscriptMustContainNonWhitespaceText(string? text, bool expected) =>
-        Assert.Equal(expected, PushToTalkRecorder.ContainsTranscript(text));
-
     [Fact]
     public void MutedMicrophoneWavIsDistinguishedFromCapturedAudio()
     {

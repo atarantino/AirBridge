@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Diagnostics;
 using System.Text.Json;
 using AirBridge.Core;
+using NAudio.Utils;
 using NAudio.Wave;
 
 namespace AirBridge.App;
@@ -24,7 +25,7 @@ public sealed class PushToTalkRecorder : IDisposable
             if (_input is not null) return;
             _audio = new MemoryStream();
             _input = new WaveIn { WaveFormat = new WaveFormat(16000, 16, 1), BufferMilliseconds = 50 };
-            _writer = new WaveFileWriter(new NonClosingStream(_audio), _input.WaveFormat);
+            _writer = new WaveFileWriter(new IgnoreDisposeStream(_audio), _input.WaveFormat);
             _input.DataAvailable += (_, args) =>
             {
                 var peak = 0;
@@ -108,7 +109,7 @@ public sealed class PushToTalkRecorder : IDisposable
         var root = document.RootElement;
         var apiUsage = OpenAiCostEstimator.FromTranscriptionResponse(root);
         var text = root.GetProperty("text").GetString() ?? string.Empty;
-        if (!ContainsTranscript(text))
+        if (string.IsNullOrWhiteSpace(text))
         {
             activity?.Publish(new(DateTimeOffset.Now, AgentActivityKind.Transcription, "No speech detected",
                 TranscriptionSummary("The transcription was empty", apiUsage), DurationMilliseconds: timer.ElapsedMilliseconds,
@@ -124,8 +125,6 @@ public sealed class PushToTalkRecorder : IDisposable
     private static string TranscriptionSummary(string summary, OpenAiApiUsage? usage) => usage is null
         ? summary
         : $"{summary} · est. {OpenAiCostEstimator.FormatUsd(usage.EstimatedCostUsd)}";
-
-    internal static bool ContainsTranscript(string? text) => !string.IsNullOrWhiteSpace(text);
 
     internal static bool ContainsAudibleAudio(byte[] wav)
     {
@@ -152,20 +151,5 @@ public sealed class PushToTalkRecorder : IDisposable
     public void Dispose()
     {
         Cancel();
-    }
-
-    private sealed class NonClosingStream(Stream inner) : Stream
-    {
-        public override bool CanRead => inner.CanRead;
-        public override bool CanSeek => inner.CanSeek;
-        public override bool CanWrite => inner.CanWrite;
-        public override long Length => inner.Length;
-        public override long Position { get => inner.Position; set => inner.Position = value; }
-        public override void Flush() => inner.Flush();
-        public override int Read(byte[] buffer, int offset, int count) => inner.Read(buffer, offset, count);
-        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
-        public override void SetLength(long value) => inner.SetLength(value);
-        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
-        protected override void Dispose(bool disposing) { }
     }
 }
