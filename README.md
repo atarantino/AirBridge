@@ -100,6 +100,15 @@ GPT-5.6 contributed directly to the final product as the optional in-app assista
 
 ## Tests and packaging
 
+Before packaging, review the [WiX 7 EULA](https://github.com/wixtoolset/wix/blob/v7.0.0/OSMFEULA.txt), then restore WiX and record acceptance once for the current user on this computer:
+
+```powershell
+dotnet tool restore
+dotnet wix eula accept wix7
+```
+
+Fresh CI runners also need this acceptance step before packaging. The packaging script uses the WiX version from the tool manifest for its bootstrapper extension.
+
 ```powershell
 .\scripts\verify.ps1
 # Include dark/light, scale, text-size and HUD snapshot generation:

@@ -7,6 +7,7 @@ $python = Join-Path $script:AirBridgeRoot '.venv\Scripts\python.exe'
 $publish = Join-Path $script:AirBridgeRoot 'artifacts\publish'
 $raopPublish = Join-Path $publish 'RaopHost'
 $installer = Join-Path $script:AirBridgeRoot 'artifacts\AirBridge-Setup.exe'
+$toolManifest = Join-Path $script:AirBridgeRoot '.config\dotnet-tools.json'
 
 function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 240) {
     $check = Invoke-AirBridgeCheck $run $Name $FilePath $Arguments $TimeoutSeconds
@@ -14,6 +15,8 @@ function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Argume
 }
 
 try {
+    $wixVersion = (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($toolManifest))).tools.wix.version
+    $wixExtension = 'WixToolset.BootstrapperApplications.wixext/' + $wixVersion
     $shell = Join-Path $PSHOME 'powershell.exe'
     if (-not (Test-Path -LiteralPath $shell)) { $shell = Join-Path $PSHOME 'pwsh.exe' }
     Invoke-PackageCheck 'bootstrap' $shell @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'bootstrap.ps1'), '-OutputDirectory', (Join-Path $run.outputDirectory 'bootstrap')) 360
@@ -32,11 +35,11 @@ try {
     Invoke-PackageCheck 'raop-publish' $python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--name', 'AirBridge.RaopHost', '--collect-all', 'pyatv', '--collect-all', 'miniaudio', '--distpath', $raopPublish, '--workpath', (Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-work'), '--specpath', (Join-Path $script:AirBridgeRoot 'artifacts'), (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\host.py')) 360
     $ping = Test-AirBridgeHostPing $run (Join-Path $raopPublish 'AirBridge.RaopHost.exe') 'packaged-host-ping'
     if ($ping.status -ne 'passed') { throw 'Packaged RAOP host failed its protocol handshake.' }
-    Invoke-PackageCheck 'wix-restore' 'dotnet' @('tool', 'restore', '--tool-manifest', (Join-Path $script:AirBridgeRoot '.config\dotnet-tools.json'))
-    Invoke-PackageCheck 'wix-extension' 'dotnet' @('wix', 'extension', 'add', 'WixToolset.BootstrapperApplications.wixext/6.0.2')
+    Invoke-PackageCheck 'wix-restore' 'dotnet' @('tool', 'restore', '--tool-manifest', $toolManifest)
+    Invoke-PackageCheck 'wix-extension' 'dotnet' @('wix', 'extension', 'add', $wixExtension)
     $sourceDefine = 'SourceRoot=' + $script:AirBridgeRoot
     Invoke-PackageCheck 'msi-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Package.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-out', (Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'))
-    Invoke-PackageCheck 'installer-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Bundle.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-ext', 'WixToolset.BootstrapperApplications.wixext', '-out', $installer)
+    Invoke-PackageCheck 'installer-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Bundle.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-ext', $wixExtension, '-out', $installer)
     $run.artifacts = @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, $publish)
     $run.artifactHashes = @()
     foreach ($artifact in @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, (Join-Path $raopPublish 'AirBridge.RaopHost.exe'))) {
