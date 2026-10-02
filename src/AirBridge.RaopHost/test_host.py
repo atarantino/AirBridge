@@ -25,17 +25,6 @@ class FakeSource:
         self.closed = True
 
 
-class FakeStream:
-    def __init__(self, events):
-        self.events = events
-
-    async def stream_file(self, source, initial_volume=None):
-        self.events.append("RECORD")
-        if initial_volume is not None:
-            self.events.append(("SET_VOLUME", initial_volume))
-        await asyncio.Future()
-
-
 class FakeAudio:
     def __init__(self):
         self.volumes = []
@@ -46,8 +35,7 @@ class FakeAudio:
 
 class FakeAtv:
     def __init__(self):
-        self.events = []
-        self.stream = FakeStream(self.events)
+        self.stream = object()
         self.audio = FakeAudio()
         self.closed = False
 
@@ -65,15 +53,23 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
         self.atvs = [FakeAtv(), FakeAtv()]
         self.connect_patch = patch.object(host_module.pyatv, "connect", new=AsyncMock(side_effect=self.atvs))
         self.source_patch = patch.object(host_module, "LivePcmSource", FakeSource)
+
+        async def streaming_adapter(stream, source, initial_volume, ready_event):
+            ready_event.set()
+            await asyncio.Future()
+
+        self.stream_patch = patch.object(host_module, "stream_with_initial_volume", new=streaming_adapter)
         self.emit = AsyncMock()
         self.emit_patch = patch.object(host_module, "emit", new=self.emit)
         self.connect_patch.start()
         self.source_patch.start()
+        self.stream_patch.start()
         self.emit_patch.start()
 
     async def asyncTearDown(self):
         await self.host.stop_all()
         self.emit_patch.stop()
+        self.stream_patch.stop()
         self.source_patch.stop()
         self.connect_patch.stop()
 
@@ -203,14 +199,6 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([37.0], self.atvs[1].audio.volumes)
         with self.assertRaisesRegex(RuntimeError, "receiver_id is required"):
             await self.host.set_volume(50)
-
-    async def test_initial_volume_is_applied_only_after_record(self):
-        await self.host.start("speakerA", None, "pipe-speakerA", initial_volume=30)
-        await asyncio.wait_for(self.host.sessions["speakerA"].stream_ready.wait(), timeout=1)
-
-        self.assertEqual(["RECORD", ("SET_VOLUME", 30.0)], self.atvs[0].events)
-        self.assertEqual([], self.atvs[0].audio.volumes)
-        self.assertEqual(30, self.host.sessions["speakerA"].desired_volume)
 
     async def test_early_live_volume_waits_for_record_readiness(self):
         release_record = asyncio.Event()

@@ -69,8 +69,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     {
         get { lock (_legsGate) return _legs.Values.Select(item => item.Snapshot()).OrderBy(item => item.Receiver.Name).ToArray(); }
     }
-    public bool BrowserSyncActive { get; private set; }
-    public int BrowserSyncOffsetMs { get; private set; } = 2000;
     public AcousticDelayResult? LastAcousticDelay { get; private set; }
     public GroupAlignmentResult? LastGroupAlignment { get; private set; }
     public bool IsResumingFromStandby { get; private set; }
@@ -492,7 +490,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
                 receivers = _hub.ReceiverSnapshots().ToDictionary(item => GetToolReceiverAlias(item.Key), item => item.Value, StringComparer.Ordinal)
             },
             "get_network_metrics" => new { available = false, note = "Per-receiver transport counters are exposed when supported by pyatv." },
-            "get_sync_status" => new { active = BrowserSyncActive, offset_ms = BrowserSyncOffsetMs },
             "get_alignment" => GetAlignmentTrimTool(arguments),
             "get_standby" => GetSilenceStandbyTool(),
             "run_connectivity_test" => await ConnectivityTestAsync(cancellationToken),
@@ -507,9 +504,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             "reconnect_stream" => await ReconnectToolAsync(arguments, cancellationToken),
             "measure_acoustic_delay" => await MeasureAcousticDelayToolAsync(arguments, cancellationToken),
             "align_group" => await AlignGroupToolAsync(arguments, cancellationToken),
-            "enable_browser_sync" => EnableBrowserSync(arguments.GetProperty("offset_ms").GetInt32()),
-            "disable_browser_sync" => DisableBrowserSync(),
-            "apply_sync_offset" => EnableBrowserSync(arguments.GetProperty("offset_ms").GetInt32()),
             _ => throw new InvalidOperationException("Tool handler is not implemented.")
         };
     }
@@ -704,21 +698,16 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         try
         {
             if (_isStandby || Coordinator.Route.StreamId is null || Coordinator.Route.StreamId != expectedStreamId || _standbyWakeRequested || _latestCaptureActive) return;
-            await StandbyRouteTransition.EnterAsync(
-                token => _raop.StopAllStreamsAsync(token),
-                () =>
+            await _raop.StopAllStreamsAsync(CancellationToken.None).ConfigureAwait(false);
+            _isStandby = true;
+            _pump.SetStandby(true);
+            lock (_legsGate)
+                foreach (var leg in _legs.Values)
                 {
-                    _isStandby = true;
-                    _pump.SetStandby(true);
-                    lock (_legsGate)
-                        foreach (var leg in _legs.Values)
-                        {
-                            leg.Pipe.DisconnectClient();
-                            leg.State = StreamState.Standby;
-                        }
-                    PublishDestinations();
-                },
-                CancellationToken.None).ConfigureAwait(false);
+                    leg.Pipe.DisconnectClient();
+                    leg.State = StreamState.Standby;
+                }
+            PublishDestinations();
         }
         finally { _routeGate.Release(); }
     }
@@ -745,17 +734,17 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             _isStandby = false;
             IsResumingFromStandby = true;
             PublishDestinations();
-            await StandbyRouteTransition.ResumeAsync(
-                resumePlan,
-                (receiverId, trim) => _pump.SetAlignmentTrim(receiverId, trim),
-                receiverIds => _pump.BeginGroup(receiverIds, discardBufferedUntilGateOpen: true),
-                (receiverId, volume, token) =>
-                {
-                    lock (_legsGate)
-                        if (_legs.TryGetValue(receiverId, out var leg)) leg.Volume = volume;
-                    return StartExistingLegAsync(receiverId, token);
-                },
-                CancellationToken.None).ConfigureAwait(false);
+            foreach (var setting in resumePlan)
+                _pump.SetAlignmentTrim(setting.ReceiverId, setting.AlignmentTrimMilliseconds);
+
+            _pump.BeginGroup(resumePlan.Select(setting => setting.ReceiverId), discardBufferedUntilGateOpen: true);
+
+            await Task.WhenAll(resumePlan.Select(setting =>
+            {
+                lock (_legsGate)
+                    if (_legs.TryGetValue(setting.ReceiverId, out var leg)) leg.Volume = setting.Volume;
+                return StartExistingLegAsync(setting.ReceiverId, CancellationToken.None);
+            })).ConfigureAwait(false);
         }
         finally { _routeGate.Release(); }
     }
@@ -960,8 +949,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         };
     }
 
-    private object EnableBrowserSync(int offset) { BrowserSyncActive = true; BrowserSyncOffsetMs = Math.Clamp(offset, 0, 10000); return new { active = true, offset_ms = BrowserSyncOffsetMs }; }
-    private object DisableBrowserSync() { BrowserSyncActive = false; return new { active = false }; }
     private object GetToolRoute()
     {
         var route = Coordinator.Route;
