@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ArtifactDirectory,
     [Parameter(Mandatory = $true)][string]$PriorMsi,
-    [Parameter(Mandatory = $true)][string]$OutputDirectory
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [string]$PriorVersion = '1.0.2'
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -247,7 +248,7 @@ try {
     Assert-Uninstalled 'bundle-uninstall-state'
     Invoke-Msi 'prior-version-install' '/i' $PriorMsi
     $oldProducts = @(Get-AirBridgeProducts)
-    Assert-QA ($oldProducts.Count -eq 1 -and $oldProducts[0].version -eq '1.0.2') 'Upgrade baseline is not v1.0.2.'
+    Assert-QA ($oldProducts.Count -eq 1 -and $oldProducts[0].version -eq $PriorVersion) "Upgrade baseline is not v$PriorVersion."
     [IO.File]::WriteAllText($settingsPath, $seed)
     Invoke-Msi 'prior-version-upgrade' '/i' $msi
     Assert-InstalledPayload 'upgrade-installed-payload'

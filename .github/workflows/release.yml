@@ -1,0 +1,151 @@
+name: Release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: airbridge-release
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      prior_tag: ${{ steps.plan.outputs.prior_tag }}
+      prior_version: ${{ steps.plan.outputs.prior_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Plan only an unpublished newer version
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN: ${{ github.event.workflow_run.id }}
+        run: python scripts/release.py plan --repository "$GITHUB_REPOSITORY" --commit "$SOURCE_COMMIT" --ci-run "$CI_RUN" --output artifacts/release-plan.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.plan.outputs.release == 'true'
+        with:
+          name: release-plan
+          path: artifacts/release-plan.json
+          if-no-files-found: error
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-plan
+          path: artifacts
+      - name: Prepare the pinned WiX tool on the disposable build runner
+        shell: powershell
+        run: |
+          dotnet tool restore
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet wix eula accept wix7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build with the full offline gate and bundled-host handshake
+        shell: powershell
+        run: ./scripts/package.ps1 -OutputDirectory artifacts/qa/ci-package
+      - name: Inspect the MSI and record exact tested installer hashes
+        shell: powershell
+        run: ./scripts/release-manifest.ps1 -Plan artifacts/release-plan.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate
+          path: artifacts/release-candidate/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-build-evidence
+          path: artifacts/qa/
+          retention-days: 30
+
+  installer:
+    needs: [plan, build]
+    runs-on: windows-2022
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-candidate
+          path: artifacts/release-candidate
+      - name: Download and verify the previous stable MSI
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRIOR_TAG: ${{ needs.plan.outputs.prior_tag }}
+        run: |
+          gh release download $env:PRIOR_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts/prior-release --pattern AirBridge.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/release.py verify-prior --directory artifacts/release-candidate --msi artifacts/prior-release/AirBridge.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test install, upgrade, settings retention, repair and uninstall
+        shell: powershell
+        env:
+          PRIOR_VERSION: ${{ needs.plan.outputs.prior_version }}
+        run: ./scripts/installer-qa.ps1 -ArtifactDirectory artifacts/release-candidate -PriorMsi artifacts/prior-release/AirBridge.msi -PriorVersion $env:PRIOR_VERSION -OutputDirectory artifacts/qa/release-installer
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-installer-evidence
+          path: artifacts/qa/release-installer/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: [plan, build, installer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-candidate
+          path: artifacts/release-candidate
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-installer-evidence
+          path: artifacts/qa/release-installer
+      - name: Publish only the exact bytes that passed installer QA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
+        run: python scripts/release.py publish --directory artifacts/release-candidate --lifecycle artifacts/qa/release-installer/report.json --repository "$GITHUB_REPOSITORY" --commit "$SOURCE_COMMIT"

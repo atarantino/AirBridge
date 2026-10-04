@@ -11,6 +11,7 @@ $testDirectory = Join-Path $run.outputDirectory 'test-results'
 Invoke-AirBridgeCheck $run 'dotnet-tests' 'dotnet' @('test', (Join-Path $script:AirBridgeRoot 'tests\AirBridge.Tests\AirBridge.Tests.csproj'), '-c', $Configuration, '--filter', 'Category!=Hardware', '--logger', 'trx;LogFileName=AirBridge.Tests.trx', '--results-directory', $testDirectory, '--blame-hang-timeout', '90s') 300 | Out-Null
 Invoke-AirBridgeCheck $run 'deterministic-agent-evals' 'dotnet' @('test', (Join-Path $script:AirBridgeRoot 'tests\AirBridge.Evals\AirBridge.Evals.csproj'), '-c', $Configuration, '--logger', 'trx;LogFileName=AirBridge.Evals.trx', '--results-directory', $testDirectory, '--blame-hang-timeout', '90s') 180 | Out-Null
 Invoke-AirBridgeCheck $run 'python-tests' $python @('-m', 'unittest', 'discover', '-s', (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost'), '-p', 'test_*.py', '-v') 120 | Out-Null
+Invoke-AirBridgeCheck $run 'release-policy-tests' $python @('-m', 'unittest', 'discover', '-s', (Join-Path $script:AirBridgeRoot 'tests'), '-p', 'test_release.py', '-v') 30 | Out-Null
 Invoke-AirBridgeCheck $run 'browser-extension-tests' 'node' @('--test', (Join-Path $script:AirBridgeRoot 'tests\browser-extension.test.js'), (Join-Path $script:AirBridgeRoot 'tests\firefox-extension.test.js')) 120 | Out-Null
 Test-AirBridgeHostPing $run | Out-Null
 Invoke-AirBridgeCheck $run 'managed-host-ping' 'dotnet' @('run', '--project', (Join-Path $script:AirBridgeRoot 'tools\AirBridge.Diagnostics\AirBridge.Diagnostics.csproj'), '-c', $Configuration, '--', '--ping') 120 | Out-Null

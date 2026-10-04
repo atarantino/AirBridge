@@ -117,6 +117,8 @@ dotnet wix eula accept wix7
 
 Fresh CI runners also need this acceptance step before packaging. The packaging script uses the WiX version from the tool manifest for its bootstrapper extension.
 
+After a merge into `main`, successful CI triggers the Release workflow. A new three-part `Version` in `Directory.Build.props` starts packaging and installer lifecycle tests on disposable Windows runners. Only the exact tested installers are published as `v<Version>`, with generated release notes, SHA-256 checksums and validation manifests. Already published versions are skipped, so ordinary merges do not create duplicate releases. See [release QA and recovery](docs/release-qa.md).
+
 ```powershell
 .\scripts\verify.ps1
 # Include dark/light, scale, text-size and HUD snapshot generation:
