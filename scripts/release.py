@@ -159,6 +159,24 @@ def validate_candidate(directory, lifecycle):
     return manifest
 
 
+def verify_uploaded_draft(directory, manifest, repository):
+    directory = Path(directory)
+    # The tag REST endpoint cannot retrieve an unpublished draft. The CLI resolves
+    # drafts for authenticated users and returns their stable release ID URL.
+    metadata = json.loads(gh("release", "view", manifest["tag"], "--repo", repository, "--json", "apiUrl"))
+    prefix = f"https://api.github.com/repos/{repository}/releases/"
+    api_url = metadata["apiUrl"]
+    if not api_url.startswith(prefix) or not api_url[len(prefix):].isdigit():
+        raise ValueError("Unexpected draft release API URL")
+    uploaded = json.loads(gh("api", api_url))
+    names = [*INSTALLERS, "release-validation.json", "installer-lifecycle-validation.json", "SHA256SUMS.txt"]
+    expected = {name: "sha256:" + sha256(directory / name) for name in names}
+    if not uploaded["draft"] or uploaded["tag_name"] != manifest["tag"] or \
+            uploaded["target_commitish"] != manifest["sourceCommit"] or \
+            {asset["name"]: asset.get("digest") for asset in uploaded["assets"]} != expected:
+        raise ValueError("Draft assets or target do not match the tested candidate; leaving draft unpublished")
+
+
 def publish(directory, lifecycle_path, repository, expected_commit):
     directory = Path(directory)
     manifest = validate_candidate(directory, read_json(lifecycle_path))
@@ -187,11 +205,7 @@ def publish(directory, lifecycle_path, repository, expected_commit):
        "--title", "AirBridge for Windows " + manifest["tag"], "--generate-notes", "--draft",
        *(str(directory / name) for name in [*names, "SHA256SUMS.txt"]))
     # A failed upload stays private; only a complete, verified upload becomes an update.
-    uploaded = json.loads(gh("api", f"repos/{repository}/releases/tags/{manifest['tag']}"))
-    expected = {name: "sha256:" + sha256(directory / name) for name in [*names, "SHA256SUMS.txt"]}
-    if not uploaded["draft"] or uploaded["target_commitish"] != expected_commit or \
-            {asset["name"]: asset.get("digest") for asset in uploaded["assets"]} != expected:
-        raise ValueError("Draft assets or target do not match the tested candidate; leaving draft unpublished")
+    verify_uploaded_draft(directory, manifest, repository)
     gh("release", "edit", manifest["tag"], "--repo", repository, "--draft=false", "--latest")
 
 
