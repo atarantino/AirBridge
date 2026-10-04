@@ -113,10 +113,13 @@ class ReleaseTests(unittest.TestCase):
                     return "created draft"
                 if args[0:2] == ("release", "edit"):
                     return "published"
+                if args[0:2] == ("release", "view"):
+                    return json.dumps({"apiUrl": "https://api.github.com/repos/owner/repo/releases/123"})
                 if "matching-refs" in args[1]:
                     return "[]"
+                self.assertEqual(("api", "https://api.github.com/repos/owner/repo/releases/123"), args)
                 names = [*release.INSTALLERS, "release-validation.json", "installer-lifecycle-validation.json", "SHA256SUMS.txt"]
-                return json.dumps({"draft": True, "target_commitish": COMMIT, "assets":
+                return json.dumps({"draft": True, "tag_name": "v1.0.4", "target_commitish": COMMIT, "assets":
                     [{"name": name, "digest": "sha256:" + release.sha256(directory / name)} for name in names]})
             with patch.object(release, "releases", return_value=[stable()]), patch.object(release, "gh", side_effect=response) as gh:
                 release.publish(directory, report, "owner/repo", COMMIT)
@@ -133,12 +136,19 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as path:
             directory = Path(path)
             _, _, report = self.candidate(directory)
-            incomplete = json.dumps({"draft": True, "target_commitish": COMMIT, "assets": []})
-            with patch.object(release, "releases", return_value=[stable()]), patch.object(release, "gh", side_effect=["[]", "created", incomplete]) as gh:
+            incomplete = json.dumps({"draft": True, "tag_name": "v1.0.4", "target_commitish": COMMIT, "assets": []})
+            metadata = json.dumps({"apiUrl": "https://api.github.com/repos/owner/repo/releases/123"})
+            with patch.object(release, "releases", return_value=[stable()]), patch.object(release, "gh", side_effect=["[]", "created", metadata, incomplete]) as gh:
                 with self.assertRaises(ValueError):
                     release.publish(directory, report, "owner/repo", COMMIT)
-            self.assertEqual(3, gh.call_count)
+            self.assertEqual(4, gh.call_count)
             self.assertFalse(any(call.args[:2] == ("release", "edit") for call in gh.call_args_list))
+
+    def test_unexpected_draft_url_prevents_authenticated_api_request(self):
+        metadata = json.dumps({"apiUrl": "https://example.com/repos/owner/repo/releases/123"})
+        with patch.object(release, "gh", return_value=metadata) as gh, self.assertRaises(ValueError):
+            release.verify_uploaded_draft(Path(), {"tag": "v1.0.4"}, "owner/repo")
+        self.assertEqual(1, gh.call_count)
 
     def test_package_must_be_clean_exact_commit_with_all_build_checks(self):
         report = {"status": "passed", "commit": COMMIT, "dirty": False,
