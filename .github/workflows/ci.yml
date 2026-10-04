@@ -11,11 +11,52 @@ on:
         description: Build installer and verify packaged RAOP host
         type: boolean
         default: false
+      installer_lifecycle:
+        description: Test the draft release installers on a disposable Windows runner
+        type: boolean
+        default: false
+      release_tag:
+        description: Release whose exact installer assets should be tested
+        type: string
+        default: v1.0.3
 
 permissions:
   contents: read
 
 jobs:
+  installer-lifecycle:
+    name: Installer lifecycle
+    if: github.event_name == 'workflow_dispatch' && inputs.installer_lifecycle
+    runs-on: windows-2022
+    timeout-minutes: 20
+    permissions:
+      # GitHub requires push access to download unpublished draft assets.
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+      - name: Download exact release and prior-version installers
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          New-Item -ItemType Directory -Path artifacts/release-under-test, artifacts/prior-release -Force | Out-Null
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --dir artifacts/release-under-test --pattern AirBridge-Setup.exe --pattern AirBridge.msi --pattern release-validation.json --pattern SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          gh release download v1.0.2 --repo $env:GITHUB_REPOSITORY --dir artifacts/prior-release --pattern AirBridge.msi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise install, bundle UI, upgrade, repair, downgrade, and uninstall
+        shell: powershell
+        run: ./scripts/installer-qa.ps1 -ArtifactDirectory artifacts/release-under-test -PriorMsi artifacts/prior-release/AirBridge.msi -OutputDirectory artifacts/qa/installer-lifecycle
+      - name: Upload installer lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installer-lifecycle
+          path: artifacts/qa/installer-lifecycle/
+          if-no-files-found: warn
+          retention-days: 30
+
   test:
     name: Test
     runs-on: windows-latest
