@@ -114,6 +114,9 @@ function Test-InstalledApp([string]$Name, [switch]$Fixture) {
         Assert-QA ($manifest -and $manifest.ready) 'Installed Start menu launch did not become ready.'
         $process = Get-Process -Id $manifest.pid
         Assert-QA ($process.Path -eq $installedApp) 'Session manifest identifies a different executable.'
+        # A shell-launched process is not our Process.Start child. Keep its
+        # handle open while alive so .NET can read the exit code after it exits.
+        $null = $process.Handle
         $ownedChildren = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $process.Id } | ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
         $state = & (Join-Path $PSScriptRoot 'debug.ps1') -PipeName $pipe -Method state
         Assert-QA $state.result.ready 'Installed app debug handshake failed.'
@@ -127,7 +130,7 @@ function Test-InstalledApp([string]$Name, [switch]$Fixture) {
         }
         $final = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
         Assert-QA (-not $final.ready) 'Shutdown left the app ready.'
-        $run.checks.Add([ordered]@{ name = $Name; status = 'passed'; mode = $state.result.mode; pid = $process.Id; gracefulExit = $true }) | Out-Null
+        $run.checks.Add([ordered]@{ name = $Name; status = 'passed'; mode = $state.result.mode; pid = $process.Id; exitCode = $process.ExitCode; gracefulExit = $true }) | Out-Null
     }
     finally {
         $shortcut.Arguments = $originalArguments
