@@ -1,4 +1,4 @@
-param([string]$Configuration = 'Release', [switch]$SkipTests, [string]$OutputDirectory = '')
+param([string]$Configuration = 'Release', [switch]$SkipTests, [string]$OutputDirectory = '', [string]$ReleaseVersion = '')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $run = New-AirBridgeRun 'package' $OutputDirectory
@@ -8,6 +8,7 @@ $publish = Join-Path $script:AirBridgeRoot 'artifacts\publish'
 $raopPublish = Join-Path $publish 'RaopHost'
 $installer = Join-Path $script:AirBridgeRoot 'artifacts\AirBridge-Setup.exe'
 $toolManifest = Join-Path $script:AirBridgeRoot '.config\dotnet-tools.json'
+$previousReleaseVersion = $env:AIRBRIDGE_RELEASE_VERSION
 
 function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds = 240) {
     $check = Invoke-AirBridgeCheck $run $Name $FilePath $Arguments $TimeoutSeconds
@@ -17,10 +18,13 @@ function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Argume
 try {
     # One version for the application, MSI and bootstrapper, so real upgrades advance together.
     $versionProperties = [xml]([IO.File]::ReadAllText((Join-Path $script:AirBridgeRoot 'Directory.Build.props')))
-    $productVersion = [string]$versionProperties.Project.PropertyGroup.Version
+    $productVersion = [string]@($versionProperties.Project.PropertyGroup.Version)[0]
+    if ($ReleaseVersion) { $productVersion = $ReleaseVersion }
     if ($productVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Directory.Build.props must define a three-part release Version.' }
     $parsedVersion = [Version]$productVersion
     if ($parsedVersion.Major -gt 255 -or $parsedVersion.Minor -gt 255 -or $parsedVersion.Build -gt 65535) { throw 'Release Version exceeds Windows Installer limits.' }
+    # All child builds/tests use the planned version without modifying the checkout.
+    $env:AIRBRIDGE_RELEASE_VERSION = $productVersion
     $versionDefine = 'ProductVersion=' + $productVersion
     $run.productVersion = $productVersion
     $wixVersion = (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($toolManifest))).tools.wix.version
@@ -39,6 +43,9 @@ try {
         Remove-Item -LiteralPath $resolvedPublish -Recurse -Force
     }
     Invoke-PackageCheck 'dotnet-publish' 'dotnet' @('publish', (Join-Path $script:AirBridgeRoot 'src\AirBridge.App\AirBridge.App.csproj'), '-c', $Configuration, '-r', 'win-x64', '--self-contained', 'true', '-p:PublishSingleFile=true', '-o', $publish)
+    $appVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $publish 'AirBridge.App.exe')).ProductVersion.Split('+')[0]
+    if ($appVersion -ne $productVersion) { throw "Published app version $appVersion differs from planned version $productVersion." }
+    $run.checks.Add([ordered]@{ name = 'packaged-app-version'; status = 'passed'; productVersion = $appVersion }) | Out-Null
     New-Item -ItemType Directory -Force -Path $raopPublish | Out-Null
     Invoke-PackageCheck 'raop-publish' $python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--name', 'AirBridge.RaopHost', '--collect-all', 'pyatv', '--collect-all', 'miniaudio', '--distpath', $raopPublish, '--workpath', (Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-work'), '--specpath', (Join-Path $script:AirBridgeRoot 'artifacts'), (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\host.py')) 360
     $ping = Test-AirBridgeHostPing $run (Join-Path $raopPublish 'AirBridge.RaopHost.exe') 'packaged-host-ping'
@@ -57,4 +64,5 @@ try {
     Write-Host "Installer: $installer"
 }
 catch { $run.checks.Add([ordered]@{ name = 'package'; status = 'failed'; error = $_.Exception.Message }) | Out-Null }
+finally { $env:AIRBRIDGE_RELEASE_VERSION = $previousReleaseVersion }
 if (-not (Complete-AirBridgeRun $run)) { exit 1 }
