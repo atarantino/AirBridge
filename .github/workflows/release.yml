@@ -35,7 +35,7 @@ jobs:
           SOURCE_COMMIT: ${{ github.event.workflow_run.head_sha }}
           CI_RUN: ${{ github.event.workflow_run.id }}
         run: python scripts/release.py plan --repository "$GITHUB_REPOSITORY" --commit "$SOURCE_COMMIT" --ci-run "$CI_RUN" --output artifacts/release-plan.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: steps.plan.outputs.release == 'true'
         with:
           name: release-plan
@@ -80,12 +80,12 @@ jobs:
       - name: Inspect the MSI and record exact tested installer hashes
         shell: powershell
         run: ./scripts/release-manifest.ps1 -Plan artifacts/release-plan.json
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-candidate
           path: artifacts/release-candidate/
           if-no-files-found: error
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: release-build-evidence
@@ -120,7 +120,7 @@ jobs:
         env:
           PRIOR_VERSION: ${{ needs.plan.outputs.prior_version }}
         run: ./scripts/installer-qa.ps1 -ArtifactDirectory artifacts/release-candidate -PriorMsi artifacts/prior-release/AirBridge.msi -PriorVersion $env:PRIOR_VERSION -OutputDirectory artifacts/qa/release-installer
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: release-installer-evidence
