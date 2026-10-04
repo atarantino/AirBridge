@@ -78,6 +78,38 @@ def plan_release(current, published):
                              "sha256": assets[0]["digest"][7:].lower()}}
 
 
+def plan_automatic_release(current, published, commit):
+    floor = version(current)
+    stable = [item for item in published if not item["draft"] and not item["prerelease"]]
+    if not stable:
+        raise ValueError("A prior stable release is required for upgrade validation")
+    prior = max(stable, key=lambda item: version(item["tag_name"].removeprefix("v")))
+    if any(item.get("target_commitish") == commit for item in stable):
+        return {"release": False, "version": prior["tag_name"].removeprefix("v"), "tag": prior["tag_name"]}
+    major, minor, patch = version(prior["tag_name"].removeprefix("v"))
+    next_number = max(floor, (major, minor, patch + 1))
+    # Exhausting the MSI patch range requires a deliberate major/minor floor bump.
+    return plan_release(".".join(map(str, next_number)), published)
+
+
+def already_released(commit, prior_tag):
+    # Full tag history is fetched by the plan job. Compare actual tag commits,
+    # because historical release target_commitish fields can be branch names.
+    def ancestor(left, right):
+        result = subprocess.run(["git", "merge-base", "--is-ancestor", left, right],
+                                cwd=ROOT, text=True, capture_output=True, timeout=30)
+        if result.returncode not in (0, 1):
+            raise ValueError("Cannot establish release ancestry: " + result.stderr.strip())
+        return result.returncode == 0
+
+    tag_commit = prior_tag + "^{commit}"
+    if ancestor(commit, tag_commit):
+        return True
+    if not ancestor(tag_commit, commit):
+        raise ValueError("Candidate does not descend from the latest stable release")
+    return False
+
+
 def require_passed(report, required, commit=None):
     passed = {check["name"] for check in report["checks"] if check["status"] == "passed"}
     if report["status"] != "passed" or not required <= passed:
@@ -123,7 +155,7 @@ def payload_files(xml_path, extracted):
 
 def make_manifest(directory, package_report, xml_path, extracted, plan):
     commit = plan["sourceCommit"]
-    require_passed(package_report, {"verify", "packaged-host-ping", "msi-build", "installer-build"}, commit)
+    require_passed(package_report, {"verify", "packaged-app-version", "packaged-host-ping", "msi-build", "installer-build"}, commit)
     if package_report["productVersion"] != plan["version"]:
         raise ValueError("Package version does not match release plan")
     package_version, payload = payload_files(xml_path, extracted)
@@ -229,8 +261,12 @@ def main():
     args = parser.parse_args()
     if args.command == "plan":
         current = ET.parse(ROOT / "Directory.Build.props").findtext("PropertyGroup/Version")
-        decision = plan_release(current, releases(args.repository))
+        decision = plan_automatic_release(current, releases(args.repository), args.commit)
+        if decision["release"] and already_released(args.commit, decision["priorRelease"]["tag"]):
+            prior = decision["priorRelease"]
+            decision = {"release": False, "version": prior["version"], "tag": prior["tag"]}
         decision.update(sourceCommit=args.commit, ciRunId=args.ci_run)
+        print(json.dumps(decision, indent=2))
         write_json(args.output, decision)
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write(f"release={str(decision['release']).lower()}\ntag={decision['tag']}\n")

@@ -21,6 +21,40 @@ def stable(tag="v1.0.3", **changes):
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_automatic_version_advances_without_changing_source_version(self):
+        published = [stable("v1.0.4")]
+        first = release.plan_automatic_release("1.0.4", published, COMMIT)
+        self.assertEqual("1.0.5", first["version"])
+        published.append(stable("v1.0.5", target_commitish=COMMIT))
+        second = release.plan_automatic_release("1.0.4", published, "c" * 40)
+        self.assertEqual("1.0.6", second["version"])
+        self.assertEqual("v1.0.5", second["priorRelease"]["tag"])
+
+    def test_automatic_rerun_of_published_commit_is_noop(self):
+        published = [stable("v1.0.4", target_commitish=COMMIT), stable("v1.0.5")]
+        self.assertFalse(release.plan_automatic_release("1.0.4", published, COMMIT)["release"])
+
+    def test_automatic_version_honors_explicit_floor_and_msi_patch_limit(self):
+        self.assertEqual("2.0.0", release.plan_automatic_release("2.0.0", [stable()], COMMIT)["version"])
+        with self.assertRaises(ValueError):
+            release.plan_automatic_release("1.0.4", [stable("v1.0.65535")], COMMIT)
+        self.assertEqual("1.1.0", release.plan_automatic_release("1.1.0", [stable("v1.0.65535")], COMMIT)["version"])
+
+    def test_automatic_version_rejects_reserved_next_version(self):
+        with self.assertRaises(ValueError):
+            release.plan_automatic_release("1.0.4", [stable("v1.0.4"), stable("v1.0.5", draft=True)], COMMIT)
+
+    def test_ancestry_skips_older_commits_and_rejects_divergent_history(self):
+        from subprocess import CompletedProcess
+        with patch.object(release.subprocess, "run", return_value=CompletedProcess([], 0)):
+            self.assertTrue(release.already_released(COMMIT, "v1.0.4"))
+        with patch.object(release.subprocess, "run", side_effect=[CompletedProcess([], 1), CompletedProcess([], 0)]):
+            self.assertFalse(release.already_released(COMMIT, "v1.0.4"))
+        with patch.object(release.subprocess, "run", return_value=CompletedProcess([], 1)), self.assertRaises(ValueError):
+            release.already_released(COMMIT, "v1.0.4")
+        with patch.object(release.subprocess, "run", return_value=CompletedProcess([], 128, stderr="missing tag")), self.assertRaises(ValueError):
+            release.already_released(COMMIT, "v1.0.4")
+
     def test_new_version_uses_newest_stable_not_prerelease_or_draft(self):
         plan = release.plan_release("1.0.4", [stable("v1.0.2"), stable(),
             stable("v9.0.0", prerelease=True), stable("v8.0.0", draft=True)])
@@ -172,7 +206,7 @@ class ReleaseTests(unittest.TestCase):
 <Directory Name="RaopHost"><Component><File Id="host" Name="AirBridge.RaopHost.exe"/></Component></Directory>
 </Directory></Package></Wix>''')
             report = {"status": "passed", "commit": COMMIT, "dirty": False, "productVersion": "1.0.4",
-                      "checks": [{"name": name, "status": "passed"} for name in ("verify", "packaged-host-ping", "msi-build", "installer-build")],
+                      "checks": [{"name": name, "status": "passed"} for name in ("verify", "packaged-app-version", "packaged-host-ping", "msi-build", "installer-build")],
                       "artifactHashes": [{"path": str(directory / asset["name"]), "sha256": asset["sha256"]} for asset in plan["assets"]]}
             manifest = release.make_manifest(directory, report, xml, extracted.parent, plan)
             self.assertEqual({"AirBridge.App.exe", "RaopHost/AirBridge.RaopHost.exe"},

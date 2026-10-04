@@ -26,8 +26,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
           persist-credentials: false
-      - name: Plan only an unpublished newer version
+      - name: Choose the next version for an unreleased main commit
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,7 +74,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build with the full offline gate and bundled-host handshake
         shell: powershell
-        run: ./scripts/package.ps1 -OutputDirectory artifacts/qa/ci-package
+        run: |
+          $plan = Get-Content -LiteralPath artifacts/release-plan.json -Raw | ConvertFrom-Json
+          ./scripts/package.ps1 -ReleaseVersion $plan.version -OutputDirectory artifacts/qa/ci-package
       - name: Inspect the MSI and record exact tested installer hashes
         shell: powershell
         run: ./scripts/release-manifest.ps1 -Plan artifacts/release-plan.json
