@@ -2,6 +2,12 @@
 
 This is a release acceptance gate to run in a disposable Windows 10/11 VM. The packaging job builds artifacts and checks the bundled host; it does not prove install, upgrade or uninstall. No script can infer reliably that the current machine is disposable, so installer execution is deliberately kept as an explicit VM procedure.
 
+## Automated hosted-runner checks
+
+The manual CI workflow's `installer_lifecycle` option downloads the selected release's exact assets (including drafts), checks their recorded SHA-256 hashes, and runs `scripts/installer-qa.ps1` on a disposable GitHub-hosted Windows runner. The script refuses to install outside that environment or replace an existing AirBridge installation. It tests MSI installation and payloads, the real setup UI's Install button, Start menu launches and graceful shutdown, the installed RAOP host handshake, upgrade from the independently downloaded v1.0.2 MSI, settings preservation, downgrade rejection, repair, and uninstall. Reports and verbose installer logs are retained as the `installer-lifecycle` workflow artifact.
+
+This runner is Windows Server and already has developer runtimes installed. Its passing result establishes installer lifecycle behavior on the recorded server image; Windows 10/11 desktop behavior and clean-machine independence from installed Python/.NET remain separate client-VM checks. The existing manual procedure below covers those gaps. A hosted-runner pass must not be described as completion of the full client-VM acceptance gate.
+
 ## Prepare the VM
 
 1. Snapshot a clean VM with no Python or .NET runtime installed. Use a Windows build supported by AirBridge, an interactive desktop, and an administrative installer session.
