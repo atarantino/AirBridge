@@ -128,6 +128,7 @@ public sealed partial class MainForm : Form
         {
             Hide();
             _trayFlyout.ShowNearTrayIcon();
+            StartUpdateChecks();
             await InitializeAsync();
         };
         FormClosing += OnFormClosing;
@@ -1154,6 +1155,7 @@ public sealed partial class MainForm : Form
 
     private void ShowSettingsDialog(string? initialTab = null)
     {
+        if (_openSettings is { IsDisposed: false }) { _openSettings.Activate(); return; }
         _trayFlyout.Hide();
         var environmentApiKey = IsTestSession ? null : Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         bool storedApiKeyConfigured;
@@ -1171,8 +1173,13 @@ public sealed partial class MainForm : Form
         dialog.OpenActivityInspectorRequested += (_, _) => ShowActivityInspector();
         dialog.BrowserDelayMeasureRequested += async (_, _) => await MeasureSelectedDelayAsync(dialog);
         dialog.SaveRequested += (_, _) => ApplySettings(dialog);
+        _openSettings = dialog;
+        dialog.CheckUpdatesRequested += async (_, _) => await CheckUpdatesAsync();
+        dialog.InstallUpdateRequested += async (_, _) => await InstallUpdateAsync(dialog);
+        RefreshUpdateStatus();
         if (Visible) dialog.StartPosition = FormStartPosition.CenterParent;
-        if (Visible) dialog.ShowDialog(this); else dialog.ShowDialog();
+        try { if (Visible) dialog.ShowDialog(this); else dialog.ShowDialog(); }
+        finally { _openSettings = null; }
     }
 
     private void OnAgentActivityPublished(AgentActivityEvent activity)
@@ -1237,6 +1244,7 @@ public sealed partial class MainForm : Form
 
     private void ApplySettings(SettingsForm dialog)
     {
+        var previouslyCheckedAutomatically = _settings.AutomaticallyCheckForUpdates;
         try
         {
             if (dialog.ReplacementApiKey is { } replacement) _openAiCredentials.Write(replacement);
@@ -1262,7 +1270,8 @@ public sealed partial class MainForm : Form
             CalibrationMicrophoneName = dialog.CalibrationMicrophoneName,
             ReceiverAlignmentTrimMs = alignmentTrims,
             SpeakerGroups = dialog.SpeakerGroups,
-            AiEnabled = dialog.AiEnabled
+            AiEnabled = dialog.AiEnabled,
+            AutomaticallyCheckForUpdates = dialog.AutomaticallyCheckForUpdates
         };
         var previousGesture = _hotkeyGesture;
         var candidateGesture = HotkeyGesture.TryParse(next.PushToTalkShortcut, out var parsedGesture) ? parsedGesture : HotkeyGesture.Default;
@@ -1304,6 +1313,7 @@ public sealed partial class MainForm : Form
             : null;
         UpdateTelemetry();
         dialog.MarkSaved();
+        if (!previouslyCheckedAutomatically && _settings.AutomaticallyCheckForUpdates) _ = CheckUpdatesAsync();
     }
 
     private string? ResolveOpenAiApiKey()
@@ -1519,6 +1529,8 @@ public sealed partial class MainForm : Form
         if (_shutdownStarted) return;
         AppLog.Info("lifecycle", "Quit requested; beginning bounded shutdown.");
         _shutdownStarted = true;
+        _updateCancellation.Cancel();
+        _updateTimer.Stop();
         UnregisterHotKey(Handle, HotkeyId);
         CancelVoiceCommand();
         _timer.Stop();
@@ -1547,6 +1559,9 @@ public sealed partial class MainForm : Form
     {
         if (_uiResourcesDisposed) return;
         _uiResourcesDisposed = true;
+        _updateCancellation.Cancel();
+        _updateTimer.Dispose();
+        _updateHttp.Dispose();
         SystemTextScale.Changed -= OnTextScaleChanged;
         _shutdownWatchdog?.Dispose();
         _shutdownWatchdog = null;

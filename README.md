@@ -14,6 +14,14 @@ AirBridge sends live Windows system audio—or one application's audio—to one 
 
 For a second test path, start one speaker, open **Settings → Browser sync**, and choose **Measure delay**. Load the browser extension as described below, enter the measured delay, and enable it on a video site to delay the picture while leaving its audio playing normally.
 
+### Updating AirBridge
+
+In **Settings → Advanced → Updates**, choose **Check now**, then **Download and install** when a newer stable release is available. AirBridge verifies the installer, stops streaming and closes before opening setup. Approve Windows' installer prompt and reopen AirBridge when setup finishes.
+
+**Automatically check for updates** is enabled by default. Checks run at startup and every six hours while the app is running; a tray notification opens Settings when a new version is available. Uncheck it and choose **Save** to disable automatic checks. Installation always requires your action. Closing Settings during a download cancels it.
+
+Updates keep preferences, speaker pairings, saved API keys and local logs. Preferences and pairing records remain in `%LOCALAPPDATA%\AirBridge`; API keys remain in Windows Credential Manager for the same Windows user. Installing or uninstalling does not remove that user data. Development/fixture profiles do not check for or install updates.
+
 ### Push-to-talk judge walkthrough
 
 1. Open the tray flyout, choose the **Settings** gear, and select **Assistant**.

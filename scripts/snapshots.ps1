@@ -28,6 +28,14 @@ foreach ($theme in @('Dark', 'Light')) {
         $check = Invoke-AirBridgeCheck $run $name $app @("--$surface", $path, $theme) 20 -Environment $environment
         if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
     }
+    foreach ($text in @('100', '150')) {
+        $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = $text
+        $name = "settings-updates-$theme-text$text"
+        $path = Join-Path $images ($name + '.png')
+        $check = Invoke-AirBridgeCheck $run $name $app @('--snapshot-settings', $path, $theme, '5') 20 -Environment $environment
+        if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+    }
+    $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = '100'
     foreach ($state in @('listening', 'thinking', 'silence', 'response', 'pairing', 'confirmation')) {
         $name = "hud-$theme-$state"
         $path = Join-Path $images ($name + '.png')
