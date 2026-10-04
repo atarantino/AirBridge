@@ -148,6 +148,32 @@ function Test-InstalledApp([string]$Name, [switch]$Fixture) {
 function Test-BundleUI {
     Add-Type -AssemblyName UIAutomationClient
     Add-Type -AssemblyName UIAutomationTypes
+    Add-Type -TypeDefinition @'
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class InstallerQaNativeButton {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern int GetClassName(IntPtr hwnd, StringBuilder text, int count);
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool PostMessage(IntPtr hwnd, uint message, UIntPtr wparam, IntPtr lparam);
+}
+'@
+    function Invoke-ObservedButton($Button) {
+        $pattern = $null
+        if ($Button.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+            ([Windows.Automation.InvokePattern]$pattern).Invoke()
+            return
+        }
+        # WiX's native standard buttons can appear as UIA panes without Invoke.
+        # Use only the handle returned for this observed, enabled button.
+        $handle = [IntPtr]$Button.Current.NativeWindowHandle
+        $class = [Text.StringBuilder]::new(256)
+        [InstallerQaNativeButton]::GetClassName($handle, $class, $class.Capacity) | Out-Null
+        Assert-QA ($handle -ne [IntPtr]::Zero -and $class.ToString() -eq 'Button') 'Observed setup control is not a native Button.'
+        Assert-QA ([InstallerQaNativeButton]::PostMessage($handle, 0x00F5, [UIntPtr]::Zero, [IntPtr]::Zero)) 'Native setup button invocation failed.'
+    }
     $process = Start-Process -FilePath $bundle -ArgumentList ('/norestart /log "' + (Join-Path $run.outputDirectory 'bundle-ui.log') + '"') -PassThru -WindowStyle Hidden
     try {
         $deadline = [DateTime]::UtcNow.AddSeconds(60)
@@ -173,8 +199,8 @@ function Test-BundleUI {
         Assert-QA ($null -ne $install) 'Setup Install button was not available on the runner desktop.'
         $run.bundleWindowTitle = $window.Current.Name
         $elements = $window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
-        @($elements | ForEach-Object { [ordered]@{name=$_.Current.Name;type=$_.Current.ControlType.ProgrammaticName;enabled=$_.Current.IsEnabled} }) | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $run.outputDirectory 'bundle-ui.json') -Encoding UTF8
-        ([Windows.Automation.InvokePattern]$install.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke()
+        @($elements | ForEach-Object { [ordered]@{name=$_.Current.Name;type=$_.Current.ControlType.ProgrammaticName;enabled=$_.Current.IsEnabled;handle=$_.Current.NativeWindowHandle} }) | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $run.outputDirectory 'bundle-ui.json') -Encoding UTF8
+        Invoke-ObservedButton $install
         $deadline = [DateTime]::UtcNow.AddSeconds(180)
         $closed = $false
         do {
@@ -183,7 +209,7 @@ function Test-BundleUI {
                 $texts = @($window.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name })
                 if ($texts -match 'success') {
                     $close = $window.FindFirst([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.PropertyCondition]::new([Windows.Automation.AutomationElement]::NameProperty, 'Close'))
-                    if ($close) { ([Windows.Automation.InvokePattern]$close.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)).Invoke(); $closed = $true }
+                    if ($close) { Invoke-ObservedButton $close; $closed = $true }
                 }
             } catch [Windows.Automation.ElementNotAvailableException] { }
             Start-Sleep -Milliseconds 250
