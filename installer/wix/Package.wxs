@@ -1,5 +1,6 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="1.0.2" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E" Scope="perMachine">
+  <!-- User profiles and Credential Manager entries are deliberately not installer components. -->
+  <Package Name="AirBridge for Windows" Manufacturer="AirBridge" Version="$(var.ProductVersion)" UpgradeCode="2D36DA4C-F691-4482-9401-15B81645548E" Scope="perMachine">
     <MajorUpgrade DowngradeErrorMessage="A newer AirBridge version is already installed." />
     <MediaTemplate EmbedCab="yes" />
     <Icon Id="AirBridgeAppIcon" SourceFile="$(var.SourceRoot)\src\AirBridge.App\Assets\AirBridge.AppIcon.ico" />

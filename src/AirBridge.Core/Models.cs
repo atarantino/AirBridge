@@ -125,6 +125,10 @@ public sealed record StreamHealth(
 
 public sealed record AirBridgeSettings
 {
+    public bool AutomaticallyCheckForUpdates { get; init; } = true;
+    // Preserve fields from newer versions when an older build saves preferences.
+    [System.Text.Json.Serialization.JsonExtensionData]
+    public Dictionary<string, System.Text.Json.JsonElement>? AdditionalSettings { get; init; }
     public string DefaultReceiverName { get; init; } = string.Empty;
     public string? DefaultReceiverId { get; init; }
     public CaptureMode DefaultCaptureMode { get; init; } = CaptureMode.SystemMix;

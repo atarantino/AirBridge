@@ -26,6 +26,10 @@ internal sealed class SettingsForm : Form
     private readonly Label _pushToTalkError = new() { AutoSize = true };
     private readonly NumericUpDown _holdThreshold = new() { Minimum = 100, Maximum = 1000, Increment = 50, Dock = DockStyle.Left, Width = 110 };
     private readonly CheckBox _aiEnabled = new() { Text = "Enable the AirBridge assistant when an API key is available", AutoSize = true };
+    private readonly CheckBox _automaticUpdates = new() { Text = "Automatically check for updates", AutoSize = true };
+    private readonly Label _updateStatus = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
+    private readonly Button _checkUpdates = new() { Text = "Check now", AutoSize = true };
+    private readonly Button _installUpdate = new() { Text = "Download and install", AutoSize = true, Visible = false };
     private readonly TextBox _apiKey = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
     private readonly Button _removeApiKey = new() { Text = "Remove", AutoSize = true };
     private readonly Label _apiKeyStatus = new() { AutoSize = true };
@@ -138,6 +142,20 @@ internal sealed class SettingsForm : Form
     public event EventHandler? OpenActivityInspectorRequested;
     public event EventHandler? BrowserDelayMeasureRequested;
     public event EventHandler? SaveRequested;
+    public event EventHandler? CheckUpdatesRequested;
+    public event EventHandler? InstallUpdateRequested;
+
+    public bool AutomaticallyCheckForUpdates => _automaticUpdates.Checked;
+
+    public void SetUpdateStatus(string status, bool busy, bool canInstall)
+    {
+        if (IsDisposed) return;
+        _updateStatus.Text = status;
+        _updateStatus.AccessibleDescription = status;
+        _checkUpdates.Enabled = !busy;
+        _installUpdate.Visible = canInstall;
+        _installUpdate.Enabled = !busy;
+    }
 
     public AppThemeMode ThemeMode => _theme.SelectedIndex switch { 1 => AppThemeMode.Light, 2 => AppThemeMode.Dark, _ => AppThemeMode.System };
     public CaptureMode DefaultCaptureMode => _capture.SelectedIndex == 1 ? CaptureMode.ProcessTreeInclude : CaptureMode.SystemMix;
@@ -201,6 +219,7 @@ internal sealed class SettingsForm : Form
 
     private void InitializeValues(AirBridgeSettings settings, ThemePalette palette, bool storedApiKeyConfigured, bool apiKeyManagedByEnvironment)
     {
+        _automaticUpdates.Checked = settings.AutomaticallyCheckForUpdates;
         _theme.Items.AddRange(["Use Windows setting", "Light", "Dark"]);
         _theme.SelectedIndex = ParseTheme(settings.ThemeMode) switch { AppThemeMode.Light => 1, AppThemeMode.Dark => 2, _ => 0 };
         _theme.AccessibleName = "App theme";
@@ -622,6 +641,27 @@ internal sealed class SettingsForm : Form
     {
         var page = CreatePage("Advanced");
         var content = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(24, 22, 24, 16) };
+        content.AutoScroll = true;
+        content.Controls.Add(new Label { Text = "Updates", AutoSize = true, Font = UiGeometry.UiFont(10F, FontStyle.Bold) });
+        content.Controls.Add(_automaticUpdates);
+        content.Controls.Add(SecondaryText("Checks at startup and every six hours. Choose Save to apply.\nYou choose when to install; streaming stops while AirBridge updates.", palette));
+        _updateStatus.Text = "Check for a newer version of AirBridge.";
+        _updateStatus.Margin = new Padding(0, 8, 0, 0);
+        content.Controls.Add(_updateStatus);
+        var updateActions = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(560, 0), Margin = new Padding(0, 8, 0, 12) };
+        _checkUpdates.Click += (_, _) => CheckUpdatesRequested?.Invoke(this, EventArgs.Empty);
+        _installUpdate.Click += (_, _) => InstallUpdateRequested?.Invoke(this, EventArgs.Empty);
+        var releases = new LinkLabel
+        {
+            Text = "Release notes", AutoSize = true, Margin = new Padding(8, 8, 0, 0),
+            LinkColor = palette.IsHighContrast ? SystemColors.HotTrack : palette.Accent,
+            ActiveLinkColor = palette.Text,
+            VisitedLinkColor = palette.IsHighContrast ? SystemColors.HotTrack : palette.Accent
+        };
+        releases.LinkClicked += (_, _) => System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(AppUpdateClient.ReleasesUrl) { UseShellExecute = true });
+        updateActions.Controls.AddRange([_checkUpdates, _installUpdate, releases]);
+        content.Controls.Add(updateActions);
+        content.Controls.Add(SecondaryText("Your API key, speaker pairings and preferences are kept when you update.", palette));
         content.Controls.Add(new Label { Text = "Troubleshooting", AutoSize = true, Font = UiGeometry.UiFont(10F, FontStyle.Bold) });
         content.Controls.Add(SecondaryText("Runtime logs include receiver state and transport errors. Audio is never logged.", palette));
         var actions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 12, 0, 26) };

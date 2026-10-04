@@ -117,7 +117,10 @@ internal static class Program
             settings.Show();
             Application.DoEvents();
             if (args.Length >= 4 && int.TryParse(args[3], out var tabIndex) && settings.Controls.OfType<TabControl>().FirstOrDefault() is { } tabs)
+            {
                 tabs.SelectedIndex = Math.Clamp(tabIndex, 0, tabs.TabCount - 1);
+                if (tabIndex == 5) settings.SetUpdateStatus("AirBridge 1.0.4 is available.", busy: false, canInstall: true);
+            }
             using var bitmap = new Bitmap(settings.Width, settings.Height);
             settings.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
             Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(settingsPath))!);
@@ -199,6 +202,19 @@ internal static class Program
         main.StartDebugSession(options);
         Application.Run(main);
         main.CompleteDebugSession();
+        if (main.PendingUpdateInstaller is { } installer)
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(installer) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                AppLog.Error("updates", "Could not open the downloaded installer.", ex);
+                MessageBox.Show($"Windows couldn't open setup. Your settings are intact. Reopen AirBridge to try again.\n\nDownloaded installer: {installer}",
+                    "AirBridge update", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
 
         // Returning from Main can leave the process alive when a native audio
         // library owns a foreground thread. MainForm has already completed its

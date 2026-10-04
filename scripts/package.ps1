@@ -15,6 +15,14 @@ function Invoke-PackageCheck([string]$Name, [string]$FilePath, [string[]]$Argume
 }
 
 try {
+    # One version for the application, MSI and bootstrapper, so real upgrades advance together.
+    $versionProperties = [xml]([IO.File]::ReadAllText((Join-Path $script:AirBridgeRoot 'Directory.Build.props')))
+    $productVersion = [string]$versionProperties.Project.PropertyGroup.Version
+    if ($productVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'Directory.Build.props must define a three-part release Version.' }
+    $parsedVersion = [Version]$productVersion
+    if ($parsedVersion.Major -gt 255 -or $parsedVersion.Minor -gt 255 -or $parsedVersion.Build -gt 65535) { throw 'Release Version exceeds Windows Installer limits.' }
+    $versionDefine = 'ProductVersion=' + $productVersion
+    $run.productVersion = $productVersion
     $wixVersion = (ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($toolManifest))).tools.wix.version
     $wixExtension = 'WixToolset.BootstrapperApplications.wixext/' + $wixVersion
     $shell = Join-Path $PSHOME 'powershell.exe'
@@ -38,8 +46,8 @@ try {
     Invoke-PackageCheck 'wix-restore' 'dotnet' @('tool', 'restore', '--tool-manifest', $toolManifest)
     Invoke-PackageCheck 'wix-extension' 'dotnet' @('wix', 'extension', 'add', $wixExtension)
     $sourceDefine = 'SourceRoot=' + $script:AirBridgeRoot
-    Invoke-PackageCheck 'msi-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Package.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-out', (Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'))
-    Invoke-PackageCheck 'installer-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Bundle.wxs'), '-d', $sourceDefine, '-arch', 'x64', '-ext', $wixExtension, '-out', $installer)
+    Invoke-PackageCheck 'msi-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Package.wxs'), '-d', $sourceDefine, '-d', $versionDefine, '-arch', 'x64', '-out', (Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'))
+    Invoke-PackageCheck 'installer-build' 'dotnet' @('wix', 'build', (Join-Path $script:AirBridgeRoot 'installer\wix\Bundle.wxs'), '-d', $sourceDefine, '-d', $versionDefine, '-arch', 'x64', '-ext', $wixExtension, '-out', $installer)
     $run.artifacts = @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, $publish)
     $run.artifactHashes = @()
     foreach ($artifact in @((Join-Path $script:AirBridgeRoot 'artifacts\AirBridge.msi'), $installer, (Join-Path $raopPublish 'AirBridge.RaopHost.exe'))) {

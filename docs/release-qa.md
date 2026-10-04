@@ -24,9 +24,16 @@ Test the setup bootstrapper UI separately: restore the clean VM snapshot, run `A
 
 ## Upgrade and settings preservation
 
-1. Restore the clean snapshot. Install the independently saved prior version; create identifiable harmless settings such as theme and default receiver volume. Quit the app and record a redacted settings snapshot.
+1. Restore the clean snapshot. Install the independently saved prior version; create identifiable harmless settings such as theme, speaker groups, receiver volume and update-check preference. Add a dummy API key through Settings (do not call any paid API), and preserve a pairing fixture if available. Quit the app and record a redacted settings snapshot. Never put API keys or pairing secrets in evidence.
 2. Install the new MSI. Verify a single product entry, expected version, preserved supported settings, no duplicate shortcuts, successful launch and owned-process cleanup. Save the upgrade MSI log and before/after evidence.
-3. Check documented downgrade rejection using the saved prior MSI. Keep same-version reinstall/repair separate from a true version upgrade; WiX's current hardcoded version must advance before an upgrade test can prove new-version behavior.
+3. Check documented downgrade rejection using the saved prior MSI. Keep same-version reinstall/repair separate from a true version upgrade; advance `Version` in `Directory.Build.props` before packaging. The app, MSI and bundle all use that version; retain both upgrade codes across releases.
+4. Verify the API key is still configured, speaker groups/volumes/shortcuts and pairings remain available, and the saved update-check preference survives. Changing a preference and saving must retain unknown future settings fields as well.
+
+## In-app update release contract and VM checks
+
+Publish a stable GitHub release in `atarantino/AirBridge` with a tag matching `Directory.Build.props` (`v1.0.3` or `1.0.3`) and exactly one uploaded `AirBridge-Setup.exe` asset. The updater checks GitHub's latest stable release and requires its SHA-256 `digest` and size from the [GitHub releases API](https://docs.github.com/en/rest/releases/releases#get-the-latest-release). An absent installer or digest leaves in-app installation unavailable with a manual release-page link. Build CI artifacts alone are not an update feed. Do not publish solely to test the updater.
+
+On the disposable VM with an older updater-capable release installed, verify **Settings → Advanced → Check now**, a newer-version notification, and **Download and install**. Confirm streaming/host shutdown precede setup, Windows elevation is interactive, setup installs the expected version, and restarting preserves the same user's profile and Credential Manager target. Cancel the install confirmation and close Settings during download separately: both must leave the current app usable. Test offline/rate-limit failure and disable/save automatic checks. No automatic check may install or stop streaming. Downloaded executables must not launch after checksum/size verification failures. The offline tests cover feed parsing, corrupt/truncated downloads and settings round trips; they do not establish VM lifecycle acceptance.
 
 ## Uninstall and report
 
