@@ -29,6 +29,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.installer_lifecycle
     runs-on: windows-2022
     timeout-minutes: 20
+    permissions:
+      # GitHub requires push access to download unpublished draft assets.
+      contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
       - name: Download exact release and prior-version installers

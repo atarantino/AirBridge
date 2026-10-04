@@ -38,11 +38,12 @@ function Assert-QA([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
 }
 
-function Get-AirBridgeProducts {
+function Get-AirBridgeProducts([switch]$IncludeBundle) {
     foreach ($registry in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
         Get-ChildItem -LiteralPath $registry | ForEach-Object {
             $product = Get-ItemProperty -LiteralPath $_.PSPath
-            if ($product.PSObject.Properties['DisplayName'] -and $product.DisplayName -eq 'AirBridge for Windows') {
+            $isMsi = $product.PSObject.Properties['WindowsInstaller'] -and $product.WindowsInstaller -eq 1
+            if ($product.PSObject.Properties['DisplayName'] -and $product.DisplayName -eq 'AirBridge for Windows' -and ($IncludeBundle -or $isMsi)) {
                 [pscustomobject]@{ productCode = $_.PSChildName; version = $product.DisplayVersion }
             }
         }
@@ -77,7 +78,7 @@ function Assert-InstalledPayload([string]$CheckName) {
 }
 
 function Assert-Uninstalled([string]$Name) {
-    Assert-QA (@(Get-AirBridgeProducts).Count -eq 0) 'Uninstall left the MSI registered.'
+    Assert-QA (@(Get-AirBridgeProducts -IncludeBundle).Count -eq 0) 'Uninstall left an AirBridge product registered.'
     Assert-QA (-not (Test-Path -LiteralPath $installedApp)) 'Uninstall left the installed app executable.'
     Assert-QA (-not (Test-Path -LiteralPath $installedHost)) 'Uninstall left the installed RAOP executable.'
     Assert-QA (-not (Test-Path -LiteralPath $shortcutPath)) 'Uninstall left the Start menu shortcut.'
@@ -113,12 +114,17 @@ function Test-InstalledApp([string]$Name, [switch]$Fixture) {
         Assert-QA ($manifest -and $manifest.ready) 'Installed Start menu launch did not become ready.'
         $process = Get-Process -Id $manifest.pid
         Assert-QA ($process.Path -eq $installedApp) 'Session manifest identifies a different executable.'
+        $ownedChildren = @(Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $process.Id } | ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
         $state = & (Join-Path $PSScriptRoot 'debug.ps1') -PipeName $pipe -Method state
         Assert-QA $state.result.ready 'Installed app debug handshake failed.'
         $state | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $directory 'state.json') -Encoding UTF8
         & (Join-Path $PSScriptRoot 'debug.ps1') -PipeName $pipe -Method snapshot -Parameters (@{surface='flyout';path=(Join-Path $directory 'flyout.png')} | ConvertTo-Json -Compress) | Out-Null
         & (Join-Path $PSScriptRoot 'debug.ps1') -PipeName $pipe -Method shutdown | Out-Null
         Assert-QA ($process.WaitForExit(15000) -and $process.ExitCode -eq 0) 'Installed app did not exit gracefully.'
+        foreach ($child in $ownedChildren) {
+            try { Assert-QA ($child.WaitForExit(10000)) 'Installed app left an owned child process running.' }
+            finally { $child.Dispose() }
+        }
         $final = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
         Assert-QA (-not $final.ready) 'Shutdown left the app ready.'
         $run.checks.Add([ordered]@{ name = $Name; status = 'passed'; mode = $state.result.mode; pid = $process.Id; gracefulExit = $true }) | Out-Null
@@ -189,7 +195,7 @@ function Test-BundleUI {
 }
 
 try {
-    Assert-QA (@(Get-AirBridgeProducts).Count -eq 0 -and -not (Test-Path -LiteralPath $installedApp)) 'Runner was not clean; refusing to replace an existing AirBridge installation.'
+    Assert-QA (@(Get-AirBridgeProducts -IncludeBundle).Count -eq 0 -and -not (Test-Path -LiteralPath $installedApp)) 'Runner was not clean; refusing to replace an existing AirBridge installation.'
     foreach ($asset in $provenance.assets) {
         Assert-QA ((Get-FileHash -LiteralPath (Join-Path $ArtifactDirectory $asset.name)).Hash.ToLowerInvariant() -eq $asset.sha256) ('Release artifact checksum mismatch: ' + $asset.name)
     }
