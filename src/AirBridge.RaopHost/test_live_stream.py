@@ -1,7 +1,11 @@
 import asyncio
 import inspect
+import os
 import struct
+import sys
+import threading
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -13,6 +17,9 @@ from pyatv.protocols.airplay.utils import pct_to_dbfs
 from pyatv.protocols.raop.audio_source import AudioSource, _to_audio_samples
 from pyatv.protocols.raop.stream_client import StreamClient
 from pyatv.settings import Settings
+
+if sys.platform == "win32":
+    import _winapi
 
 from live_stream import (
     DiagnosticToneSource,
@@ -88,6 +95,85 @@ class LivePcmSourceTests(unittest.TestCase):
         for index, bit in enumerate(bits):
             output[index // 8] |= bit << (7 - index % 8)
         return bytes(output)
+
+
+@unittest.skipUnless(sys.platform == "win32", "named pipes require Windows")
+class LivePcmSourcePipeTests(unittest.IsolatedAsyncioTestCase):
+    """Uses a real outbound-only byte pipe, as created by PipeAudioServer."""
+
+    PIPE_ACCESS_OUTBOUND = 0x00000002
+
+    def _create_server(self):
+        name = f"AirBridge.Test.{os.getpid()}.{uuid.uuid4().hex}"
+        handle = _winapi.CreateNamedPipe(
+            rf"\\.\pipe\{name}", self.PIPE_ACCESS_OUTBOUND, 0, 1, 14112, 14112, 0, _winapi.NULL
+        )
+        return name, handle
+
+    async def test_reads_exact_packets_then_reports_eof_once(self):
+        name, handle = self._create_server()
+        payload = bytes(range(256)) * 50
+        connected = threading.Event()
+
+        def serve():
+            _winapi.ConnectNamedPipe(handle, _winapi.NULL)
+            connected.set()
+            # Several writes that do not line up with the 1,408-byte packet size.
+            for start in range(0, len(payload), 3000):
+                _winapi.WriteFile(handle, payload[start:start + 3000])
+            _winapi.CloseHandle(handle)
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        source = await LivePcmSource(name).open()
+        packets = []
+        while frames := await asyncio.wait_for(source.readframes(352), 5):
+            packets.append(frames)
+        server.join(5)
+
+        self.assertEqual([1408] * 9 + [128], [len(packet) for packet in packets])
+        self.assertEqual(s16le_to_airplay(payload), b"".join(packets))
+        self.assertEqual(b"", await source.readframes(352))
+        await source.close()
+
+    async def test_close_releases_a_pending_read(self):
+        name, handle = self._create_server()
+        server = threading.Thread(target=_winapi.ConnectNamedPipe, args=(handle, _winapi.NULL), daemon=True)
+        server.start()
+        try:
+            source = await LivePcmSource(name).open()
+            pending = asyncio.create_task(source.readframes(352))
+            await asyncio.sleep(0.05)
+            self.assertFalse(pending.done())
+            await source.close()
+            self.assertEqual(b"", await asyncio.wait_for(pending, 5))
+        finally:
+            server.join(5)
+            _winapi.CloseHandle(handle)
+
+    async def test_reader_pauses_at_high_water_and_resumes_after_consumption(self):
+        name, handle = self._create_server()
+        block = bytes(3528)
+        server = threading.Thread(
+            target=lambda: (_winapi.ConnectNamedPipe(handle, _winapi.NULL), [_winapi.WriteFile(handle, block) for _ in range(6)]),
+            daemon=True,
+        )
+        server.start()
+        try:
+            source = await LivePcmSource(name).open()
+            reader = source._reader
+            for _ in range(100):
+                if reader._paused:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertTrue(reader._paused)
+            for _ in range(15):
+                self.assertEqual(1408, len(await asyncio.wait_for(source.readframes(352), 5)))
+            self.assertFalse(reader._paused)
+            await source.close()
+        finally:
+            server.join(5)
+            _winapi.CloseHandle(handle)
 
 
 class InitialVolumeTests(unittest.IsolatedAsyncioTestCase):
