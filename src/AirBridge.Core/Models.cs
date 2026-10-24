@@ -8,9 +8,6 @@ public enum StreamState { Idle, Discovering, Connecting, Negotiating, Buffering,
 [JsonConverter(typeof(JsonStringEnumConverter<CaptureMode>))]
 public enum CaptureMode { SystemMix, ProcessTreeInclude, ProcessTreeExclude, EndpointLoopback }
 
-[JsonConverter(typeof(JsonStringEnumConverter<QualityProfile>))]
-public enum QualityProfile { Balanced, Stable, LowLatency }
-
 public sealed record ReceiverInfo(
     string Id,
     string Name,
@@ -132,10 +129,7 @@ public sealed record AirBridgeSettings
     public string DefaultReceiverName { get; init; } = string.Empty;
     public string? DefaultReceiverId { get; init; }
     public CaptureMode DefaultCaptureMode { get; init; } = CaptureMode.SystemMix;
-    public QualityProfile QualityProfile { get; init; } = QualityProfile.Balanced;
-    public int BufferTargetMilliseconds { get; init; } = 500;
     public bool AiEnabled { get; init; } = true;
-    public bool RestorePreviousRoute { get; init; }
     public string PushToTalkShortcut { get; init; } = "Ctrl+Alt+Space";
     public int PushToTalkHoldThresholdMs { get; init; } = 250;
     public string? CalibrationMicrophoneName { get; init; }
