@@ -199,19 +199,11 @@ public sealed class StreamVerificationTests
         public void ForceTerminate() { }
     }
 
-    private sealed class NoCapture : IAudioCaptureService
-    {
-        public Task StartSystemAsync(CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null) => Task.CompletedTask;
-        public Task StartProcessTreeAsync(int processId, bool exclude = false, CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null) => Task.CompletedTask;
-        public void Stop() { }
-        public void Dispose() { }
-    }
-
     [Fact]
     public async Task ConnectivityInvokesTheHostInsteadOfReportingACannedRunningState()
     {
         var raop = new PingRaop();
-        await using var controller = new AirBridgeController(raop, new NoCapture());
+        await using var controller = new AirBridgeController(raop, new FakeCaptureService());
         var result = await controller.ExecuteAsync("run_connectivity_test", JsonSerializer.SerializeToElement(new { }), CancellationToken.None);
         Assert.Equal(1, raop.PingCount);
         Assert.Contains("responsive", JsonSerializer.Serialize(result));
@@ -223,14 +215,14 @@ public sealed class StreamVerificationTests
     [InlineData(true)]
     public async Task ConnectivityCannotSucceedWithoutAnAcknowledgedHostResponse(bool fail)
     {
-        await using var controller = new AirBridgeController(new PingRaop(acknowledged: false, fail), new NoCapture());
+        await using var controller = new AirBridgeController(new PingRaop(acknowledged: false, fail), new FakeCaptureService());
         await Assert.ThrowsAnyAsync<Exception>(() => controller.ExecuteAsync("run_connectivity_test", JsonSerializer.SerializeToElement(new { }), CancellationToken.None));
     }
 
     [Fact]
     public async Task DisposalCancelsTheObservationAndNeverLeavesAVerifiedClaim()
     {
-        var controller = new AirBridgeController(new PingRaop(), new NoCapture(), new ManualClock());
+        var controller = new AirBridgeController(new PingRaop(), new FakeCaptureService(), new ManualClock());
         await controller.ExecuteAsync("set_buffer_target", JsonSerializer.SerializeToElement(new { milliseconds = 600 }), CancellationToken.None);
         Assert.Equal(StreamVerificationStatus.Observing, controller.LastBufferVerification!.Status);
         await controller.DisposeAsync();
@@ -244,7 +236,7 @@ public sealed class StreamVerificationTests
     [Fact]
     public async Task ReplacingABufferChangeStartsANewObservationInsteadOfUsingPriorEvidence()
     {
-        await using var controller = new AirBridgeController(new PingRaop(), new NoCapture(), new ManualClock());
+        await using var controller = new AirBridgeController(new PingRaop(), new FakeCaptureService(), new ManualClock());
         await controller.ExecuteAsync("set_buffer_target", JsonSerializer.SerializeToElement(new { milliseconds = 600 }), CancellationToken.None);
         var first = controller.LastBufferVerification;
         await controller.ExecuteAsync("set_buffer_target", JsonSerializer.SerializeToElement(new { milliseconds = 700 }), CancellationToken.None);

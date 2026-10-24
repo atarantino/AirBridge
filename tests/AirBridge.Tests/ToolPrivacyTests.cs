@@ -24,14 +24,6 @@ public sealed class ToolPrivacyTests
         public void ForceTerminate() { }
     }
 
-    private sealed class FakeCapture : IAudioCaptureService
-    {
-        public Task StartSystemAsync(CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null) => Task.CompletedTask;
-        public Task StartProcessTreeAsync(int processId, bool exclude = false, CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null) => Task.CompletedTask;
-        public void Stop() { }
-        public void Dispose() { }
-    }
-
     [Fact]
     public async Task AlignmentToolsUseOpaqueAliasesAndNeverExposeStoredRaopIdentifier()
     {
@@ -59,7 +51,7 @@ public sealed class ToolPrivacyTests
     {
         const string privateReceiverId = "48A6B845CCEE";
         var receiver = new ReceiverInfo(privateReceiverId, "Family Room", "192.0.2.10", false, DateTimeOffset.UtcNow);
-        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCapture());
+        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCaptureService());
         await controller.InitializeAsync();
         await controller.DiscoverAsync();
         using var empty = JsonDocument.Parse("{}");
@@ -86,7 +78,7 @@ public sealed class ToolPrivacyTests
     {
         var receiver = new ReceiverInfo("private-id", "Bedroom", "local", false, DateTimeOffset.UtcNow,
             RequiresPairing: true, SupportsPairing: true);
-        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCapture());
+        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCaptureService());
         await controller.InitializeAsync();
         await controller.DiscoverAsync();
         using var start = JsonDocument.Parse("""{"receiver_ids":["receiver-1"],"quality_profile":"balanced"}""");
