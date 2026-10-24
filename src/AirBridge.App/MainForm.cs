@@ -59,7 +59,6 @@ public sealed partial class MainForm : Form
     private ActivityInspectorForm? _activityInspector;
     private Icon? _ownedTrayIcon;
     private StreamState? _trayIconState;
-    private StreamState _lastDisplayedState = StreamState.Idle;
     private bool _allowClose;
     private bool _shutdownStarted;
     private bool _shutdownCompleted;
@@ -799,7 +798,6 @@ public sealed partial class MainForm : Form
         _trayFlyout.UpdateStatus(route.State, traySummary, route.StreamId is null ? traySource : string.Empty);
         _tray.Text = route.StreamId is null ? "AirBridge — idle" : TruncateTooltip($"AirBridge — {route.State} · {route.ReceiverName}");
         ReplaceTrayIcon(route.State);
-        _lastDisplayedState = route.State;
         UpdateDashboardPresentation(active);
     }
 
