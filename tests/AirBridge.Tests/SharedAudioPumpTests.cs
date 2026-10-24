@@ -394,6 +394,41 @@ public sealed class SharedAudioPumpTests
         Assert.All(endpoint.Writes[2], value => Assert.Equal(0x62, value));
     }
 
+    [Fact]
+    public async Task ClockSleepsWithoutLegsAndWakesForLegsOrCalibration()
+    {
+        var ticks = 0;
+        await using var pump = new SharedAudioPump(advanceCalibration: () => Interlocked.Increment(ref ticks));
+        pump.Start();
+        await Task.Delay(200);
+        Assert.Equal(0, Volatile.Read(ref ticks));
+
+        var endpoint = new FakeEndpoint("leg");
+        pump.AddLeg("leg", BufferWithBlocks(0x10, 1), endpoint, 0);
+        await WaitUntilAsync(() => Volatile.Read(ref ticks) >= 3);
+
+        pump.RemoveLeg("leg");
+        await Task.Delay(100);
+        var afterRemoval = Volatile.Read(ref ticks);
+        await Task.Delay(200);
+        Assert.Equal(afterRemoval, Volatile.Read(ref ticks));
+        Assert.False(pump.HasWork);
+
+        pump.SetCalibrationMode(true);
+        await WaitUntilAsync(() => Volatile.Read(ref ticks) >= afterRemoval + 3);
+        pump.SetCalibrationMode(false);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, "Timed out waiting for the shared pump clock.");
+            await Task.Delay(10);
+        }
+    }
+
     private static BoundedPcmBuffer BufferWithBlocks(byte value, int count)
     {
         var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * 8, 0);
