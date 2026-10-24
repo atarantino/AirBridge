@@ -82,13 +82,16 @@ class _PipeReadProtocol(asyncio.Protocol):
         self._transport: asyncio.ReadTransport | None = None
         self._waiter: asyncio.Future[None] | None = None
         self._paused = False
+        # Bytes the current read() is waiting for; the buffer may grow to this
+        # size even when it is above the high-water mark.
+        self._wanted = 0
 
     def connection_made(self, transport) -> None:
         self._transport = transport
 
     def data_received(self, data: bytes) -> None:
         self.buffer += data
-        if not self._paused and len(self.buffer) >= _PIPE_READ_HIGH_WATER:
+        if not self._paused and len(self.buffer) >= max(_PIPE_READ_HIGH_WATER, self._wanted):
             self._paused = True
             self._transport.pause_reading()
         self._wake()
@@ -108,11 +111,17 @@ class _PipeReadProtocol(asyncio.Protocol):
     async def read(self, size: int) -> bytes:
         """Return exactly size bytes, or fewer only at end of stream."""
         while len(self.buffer) < size and not self.eof:
+            if self._paused:
+                # The request is larger than the high-water mark; keep reading.
+                self._paused = False
+                self._transport.resume_reading()
+            self._wanted = size
             self._waiter = asyncio.get_running_loop().create_future()
             try:
                 await self._waiter
             finally:
                 self._waiter = None
+                self._wanted = 0
         data = bytes(self.buffer[:size])
         del self.buffer[:size]
         if self._paused and len(self.buffer) < _PIPE_READ_HIGH_WATER and not self.eof:

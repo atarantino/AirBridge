@@ -4,6 +4,7 @@ import os
 import struct
 import sys
 import threading
+import time
 import unittest
 import uuid
 from types import SimpleNamespace
@@ -170,6 +171,30 @@ class LivePcmSourcePipeTests(unittest.IsolatedAsyncioTestCase):
             for _ in range(15):
                 self.assertEqual(1408, len(await asyncio.wait_for(source.readframes(352), 5)))
             self.assertFalse(reader._paused)
+            await source.close()
+        finally:
+            server.join(5)
+            _winapi.CloseHandle(handle)
+
+    async def test_read_larger_than_high_water_completes(self):
+        name, handle = self._create_server()
+        block = bytes(range(256)) * 14  # 3,584 bytes per write
+        writes = 4
+
+        def serve():
+            _winapi.ConnectNamedPipe(handle, _winapi.NULL)
+            # Separate writes so the reader fills past the high-water mark
+            # before the request can be satisfied.
+            for _ in range(writes):
+                _winapi.WriteFile(handle, block)
+                time.sleep(0.05)
+
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        try:
+            source = await LivePcmSource(name).open()
+            frames = await asyncio.wait_for(source.readframes(len(block) * writes // 4), 5)
+            self.assertEqual(s16le_to_airplay(block * writes), frames)
             await source.close()
         finally:
             server.join(5)
