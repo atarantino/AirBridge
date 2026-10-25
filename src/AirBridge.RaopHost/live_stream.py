@@ -24,6 +24,8 @@ _volume_patch_installed = False
 _stream_volume_patch_installed = False
 _airplay2_alac_patch_installed = False
 SENDER_NAME = "AirBridge"
+_ALAC_UNCOMPRESSED_STEREO_HEADER = 0x100001  # 23 bits
+_ALAC_END_TAG = 0b111
 
 
 class _DeferVolumeUntilRecord(Exception):
@@ -56,16 +58,14 @@ def pcm_s16be_to_uncompressed_alac(data: bytes) -> bytes:
     if len(data) % 4:
         raise ValueError("Stereo 16-bit PCM must contain whole frames")
 
-    # ALAC element header: stereo, no explicit size, and is-not-compressed.
-    # It is 23 bits long, so every following PCM byte straddles two bytes.
-    output = bytearray(b"\x20\x00\x02")
-    for value in data:
-        output[-1] |= value >> 7
-        output.append((value & 0x7F) << 1)
-    # Three-bit end tag, beginning in the one remaining bit of the last byte.
-    output[-1] |= 1
-    output.append(0xC0)
-    return bytes(output)
+    # Treat the packet as one big-endian bit string: the 23-bit ALAC element
+    # header (stereo, no explicit size, is-not-compressed), the PCM bytes, the
+    # three-bit end tag, then zero padding to a byte boundary. CPython's
+    # integer conversion does this in C; a per-byte loop costs ~0.2 ms/packet.
+    size = len(data)
+    bits = (_ALAC_UNCOMPRESSED_STEREO_HEADER << (8 * size)) | int.from_bytes(data, "big")
+    bits = ((bits << 3) | _ALAC_END_TAG) << 6
+    return bits.to_bytes(size + 4, "big")
 
 
 class LivePcmSource(AudioSource):
