@@ -1,5 +1,6 @@
 import asyncio
 import inspect
+import random
 import struct
 import unittest
 from types import SimpleNamespace
@@ -63,6 +64,12 @@ class LivePcmSourceTests(unittest.TestCase):
         encoded = pcm_s16be_to_uncompressed_alac(pcm)
         self.assertEqual(len(pcm) + 4, len(encoded))
         self.assertEqual(self._reference_uncompressed_alac(pcm), encoded)
+
+    def test_uncompressed_alac_wrapper_matches_reference_for_full_packets(self):
+        rng = random.Random(1408)
+        for pcm in (b"", bytes(1408), b"\xff" * 1408, rng.randbytes(1408), rng.randbytes(4)):
+            with self.subTest(length=len(pcm), first=pcm[:4].hex()):
+                self.assertEqual(self._reference_uncompressed_alac(pcm), pcm_s16be_to_uncompressed_alac(pcm))
 
     def test_uncompressed_alac_rejects_partial_stereo_frame(self):
         with self.assertRaises(ValueError):
