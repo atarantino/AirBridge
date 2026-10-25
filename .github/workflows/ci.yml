@@ -50,7 +50,7 @@ jobs:
         run: ./scripts/installer-qa.ps1 -ArtifactDirectory artifacts/release-under-test -PriorMsi artifacts/prior-release/AirBridge.msi -OutputDirectory artifacts/qa/installer-lifecycle
       - name: Upload installer lifecycle evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: installer-lifecycle
           path: artifacts/qa/installer-lifecycle/
@@ -94,7 +94,7 @@ jobs:
 
       - name: Upload verification evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-verification
           path: |
@@ -124,7 +124,7 @@ jobs:
         run: npm run test:e2e
       - name: Upload browser evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: chromium-extension-qa
           path: |
@@ -156,7 +156,7 @@ jobs:
         run: ./scripts/package.ps1 -OutputDirectory artifacts/qa/ci-package
       - name: Upload package smoke evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: package-smoke
           path: |
