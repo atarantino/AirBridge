@@ -522,7 +522,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
                 receivers = _hub.ReceiverSnapshots().ToDictionary(item => GetToolReceiverAlias(item.Key), item => item.Value, StringComparer.Ordinal)
             },
             "get_network_metrics" => new { available = false, note = "Per-receiver transport counters are exposed when supported by pyatv." },
-            "get_alignment" => GetAlignmentTrimTool(arguments),
+            "get_alignment" => GetAlignmentTrimTool(),
             "get_standby" => GetSilenceStandbyTool(),
             "run_connectivity_test" => await ConnectivityTestAsync(cancellationToken),
             "start_system_stream" => await StartSystemToolAsync(arguments, cancellationToken),
@@ -878,7 +878,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         return new { receiver_id = alias, volume = percent };
     }
 
-    private object GetAlignmentTrimTool(JsonElement arguments)
+    private object GetAlignmentTrimTool()
     {
         Dictionary<string, string> known;
         lock (_legsGate)

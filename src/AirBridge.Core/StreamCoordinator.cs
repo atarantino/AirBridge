@@ -8,7 +8,6 @@ public sealed class StreamCoordinator
     private RouteInfo _route = new(null, CaptureMode.SystemMix, null, null, null, StreamState.Idle, null);
     private string? _lastError;
     private bool? _lastFixVerified;
-    private long _captureDiscontinuities;
 
     public StreamCoordinator(BoundedPcmBuffer buffer) : this(buffer.Snapshot, () => buffer.Clear()) { }
 
@@ -68,7 +67,6 @@ public sealed class StreamCoordinator
         RouteChanged?.Invoke(this, Route);
     }
 
-    public void CaptureDiscontinuity() => Interlocked.Increment(ref _captureDiscontinuities);
     public void MarkFixVerified(bool? verified) { lock (_gate) _lastFixVerified = verified; }
 
     public StreamHealth Health()
@@ -84,7 +82,7 @@ public sealed class StreamCoordinator
                 StreamState.Idle => "idle",
                 _ => "failed"
             };
-            return new(_route.StreamId, _route.State, rating, snapshot, Interlocked.Read(ref _captureDiscontinuities), 0, 0, 0, DateTimeOffset.UtcNow, _lastFixVerified, _lastError);
+            return new(_route.StreamId, _route.State, rating, snapshot, 0, 0, 0, 0, DateTimeOffset.UtcNow, _lastFixVerified, _lastError);
         }
     }
 

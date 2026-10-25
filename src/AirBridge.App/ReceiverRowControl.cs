@@ -194,7 +194,7 @@ public sealed class ReceiverRowControl : UserControl
         _updating = true;
         _selected = selected;
         _volume.Value = volume;
-        SetAlignmentTrimCore(alignmentTrimMilliseconds);
+        SetAlignmentTrim(alignmentTrimMilliseconds);
         _updating = false;
         SetPlaybackState(state, detail);
     }
@@ -230,8 +230,6 @@ public sealed class ReceiverRowControl : UserControl
         _volume.Value = volume;
         _updating = false;
     }
-
-    public void SetAlignmentTrim(int milliseconds) => SetAlignmentTrimCore(milliseconds);
 
     public void ApplyTheme(ThemePalette palette)
     {
@@ -577,12 +575,12 @@ public sealed class ReceiverRowControl : UserControl
     private void AdjustAlignmentTrim(int delta)
     {
         var before = _alignmentTrimMilliseconds;
-        SetAlignmentTrimCore(before + delta);
+        SetAlignmentTrim(before + delta);
         if (_alignmentTrimMilliseconds != before && !_updating && _receiver is not null)
             AlignmentTrimChanged?.Invoke(this, new(_receiver.Id, _alignmentTrimMilliseconds));
     }
 
-    private void SetAlignmentTrimCore(int milliseconds)
+    public void SetAlignmentTrim(int milliseconds)
     {
         _alignmentTrimMilliseconds = Math.Clamp(milliseconds, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds);
         _trimValue.Text = $"Sync {_alignmentTrimMilliseconds} ms";

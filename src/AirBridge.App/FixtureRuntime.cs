@@ -175,7 +175,7 @@ internal sealed class FixtureRaopClient(string scenario) : IRaopClient
         {
             await pipe.ConnectAsync(3000, cancellationToken).ConfigureAwait(false);
             _sessions[receiver.Id] = session;
-            session.Reader = DrainAsync(receiver.Id, session);
+            session.Reader = DrainAsync(session);
             if (receiver.Id == "fixture-b" && scenario == "reconnect")
             {
                 Emit(receiver.Id, StreamState.Reconnecting, "Injected fixture retry.");
@@ -193,7 +193,7 @@ internal sealed class FixtureRaopClient(string scenario) : IRaopClient
         }
     }
 
-    private async Task DrainAsync(string receiverId, ReceiverSession session)
+    private async Task DrainAsync(ReceiverSession session)
     {
         var buffer = new byte[SharedAudioPump.BlockBytes];
         try
