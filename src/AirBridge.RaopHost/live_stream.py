@@ -8,7 +8,6 @@ import math
 import os
 import struct
 import sys
-from typing import BinaryIO
 
 from pyatv.interface import MediaMetadata
 from pyatv.protocols.raop.audio_source import AudioSource
@@ -68,38 +67,125 @@ def pcm_s16be_to_uncompressed_alac(data: bytes) -> bytes:
     return bits.to_bytes(size + 4, "big")
 
 
+# Bytes the host may hold beyond the OS pipe buffer before it stops issuing
+# reads. Two 20 ms pump blocks keep sender backpressure close to the old
+# blocking-read behaviour.
+_PIPE_READ_HIGH_WATER = 2 * 3528
+
+
+class _PipeReadProtocol(asyncio.Protocol):
+    """Buffers overlapped pipe reads delivered by the event loop's proactor."""
+
+    def __init__(self) -> None:
+        self.buffer = bytearray()
+        self.eof = False
+        self._transport: asyncio.ReadTransport | None = None
+        self._waiter: asyncio.Future[None] | None = None
+        self._paused = False
+        # Bytes the current read() is waiting for; the buffer may grow to this
+        # size even when it is above the high-water mark.
+        self._wanted = 0
+
+    def connection_made(self, transport) -> None:
+        self._transport = transport
+
+    def data_received(self, data: bytes) -> None:
+        self.buffer += data
+        if not self._paused and len(self.buffer) >= max(_PIPE_READ_HIGH_WATER, self._wanted):
+            self._paused = True
+            self._transport.pause_reading()
+        self._wake()
+
+    def eof_received(self) -> None:
+        self.eof = True
+        self._wake()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self.eof = True
+        self._wake()
+
+    def _wake(self) -> None:
+        if self._waiter is not None and not self._waiter.done():
+            self._waiter.set_result(None)
+
+    async def read(self, size: int) -> bytes:
+        """Return exactly size bytes, or fewer only at end of stream."""
+        while len(self.buffer) < size and not self.eof:
+            if self._paused:
+                # The request is larger than the high-water mark; keep reading.
+                self._paused = False
+                self._transport.resume_reading()
+            self._wanted = size
+            self._waiter = asyncio.get_running_loop().create_future()
+            try:
+                await self._waiter
+            finally:
+                self._waiter = None
+                self._wanted = 0
+        data = bytes(self.buffer[:size])
+        del self.buffer[:size]
+        if self._paused and len(self.buffer) < _PIPE_READ_HIGH_WATER and not self.eof:
+            self._paused = False
+            self._transport.resume_reading()
+        return data
+
+
+def _open_read_only_overlapped_pipe(path: str):
+    import _winapi
+    from asyncio import windows_utils
+
+    handle = _winapi.CreateFile(
+        path,
+        _winapi.GENERIC_READ,
+        0,
+        _winapi.NULL,
+        _winapi.OPEN_EXISTING,
+        _winapi.FILE_FLAG_OVERLAPPED,
+        _winapi.NULL,
+    )
+    return windows_utils.PipeHandle(handle)
+
+
 class LivePcmSource(AudioSource):
-    """Raw s16le source that reports EOF only after an explicit close."""
+    """Raw s16le source that reports EOF only after an explicit close.
+
+    The pipe is read through the event loop's IOCP proactor rather than a
+    blocking read per packet on a worker thread; pyatv requests one 352-frame
+    packet roughly every 8 ms per receiver.
+    """
 
     def __init__(self, pipe_name: str, sample_rate: int = 44100, channels: int = 2):
         self._path = rf"\\.\pipe\{pipe_name}"
         self._sample_rate = sample_rate
         self._channels = channels
         self._closed = False
-        self._pipe: BinaryIO | None = None
+        self._transport: asyncio.ReadTransport | None = None
+        self._reader: _PipeReadProtocol | None = None
 
     async def open(self) -> "LivePcmSource":
-        self._pipe = await asyncio.to_thread(open, self._path, "rb", buffering=0)
+        pipe = await asyncio.to_thread(_open_read_only_overlapped_pipe, self._path)
+        try:
+            self._transport, self._reader = await asyncio.get_running_loop().connect_read_pipe(_PipeReadProtocol, pipe)
+        except BaseException:
+            pipe.close()
+            raise
         return self
 
     async def readframes(self, nframes: int) -> bytes:
-        if self._closed or self._pipe is None:
+        if self._closed or self._reader is None:
             return self.NO_FRAMES
         requested = nframes * self.channels * self.sample_size
-        data = bytearray()
-        while len(data) < requested and not self._closed:
-            chunk = await asyncio.to_thread(self._pipe.read, requested - len(data))
-            if not chunk:
-                self._closed = True
-                break
-            data.extend(chunk)
-        return s16le_to_airplay(bytes(data))
+        data = await self._reader.read(requested)
+        if len(data) < requested:
+            self._closed = True
+        return s16le_to_airplay(data)
 
     async def close(self) -> None:
         self._closed = True
-        if self._pipe is not None:
-            await asyncio.to_thread(self._pipe.close)
-            self._pipe = None
+        if self._transport is not None:
+            self._transport.close()
+            self._transport = None
+            self._reader = None
 
     async def get_metadata(self) -> MediaMetadata:
         return MediaMetadata(title="Live Windows audio", artist="AirBridge", album="Live route", duration=0)
