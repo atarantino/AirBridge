@@ -48,6 +48,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private readonly BoundedPcmBuffer? _monitorBuffer;
     private readonly Action? _advanceCalibration;
     private readonly SemaphoreSlim _iterationGate = new(1, 1);
+    // Released (under _gate) when the clock has work again; it never exceeds one.
+    private readonly SemaphoreSlim _workAvailable = new(0, 1);
     private CancellationTokenSource? _cancellation;
     private Task? _pumpTask;
     private HashSet<string> _gateReceiverIds = new(StringComparer.Ordinal);
@@ -85,6 +87,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 ConfiguredAlignmentTrimMs = Math.Clamp(alignmentTrimMs, ReceiverAlignmentPlan.MinimumTrimMilliseconds, ReceiverAlignmentPlan.MaximumTrimMilliseconds)
             });
             ReapplyEffectiveAlignmentTrims();
+            SignalWorkAvailable();
         }
     }
 
@@ -110,6 +113,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
             if (_calibrationMode == active) return;
             _calibrationMode = active;
             ResyncGroupCore();
+            SignalWorkAvailable();
         }
     }
 
@@ -394,13 +398,38 @@ public sealed class SharedAudioPump : IAsyncDisposable
         }
     }
 
+    /// <summary>True when a tick can do useful work: a receiver leg exists or calibration is running.</summary>
+    internal bool HasWork { get { lock (_gate) return HasWorkCore(); } }
+
+    private bool HasWorkCore() => _legs.Count > 0 || _calibrationMode;
+
+    private void SignalWorkAvailable()
+    {
+        // Every release happens under _gate, so the count cannot rise between the check and the release.
+        if (HasWorkCore() && _workAvailable.CurrentCount == 0) _workAvailable.Release();
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(BlockMilliseconds));
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
-                await PumpOnceAsync(cancellationToken).ConfigureAwait(false);
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                if (!HasWork)
+                {
+                    // With no route the clock sleeps instead of waking the process 50 times a second.
+                    await _workAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    // Capture may have filled the monitor while idle; observe activity from the live edge.
+                    _monitorBuffer?.DiscardToLiveEdge(BlockBytes);
+                    continue;
+                }
+                using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(BlockMilliseconds));
+                while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    await PumpOnceAsync(cancellationToken).ConfigureAwait(false);
+                    if (!HasWork) break;
+                }
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
@@ -417,5 +446,6 @@ public sealed class SharedAudioPump : IAsyncDisposable
         _cancellation = null;
         _pumpTask = null;
         _iterationGate.Dispose();
+        _workAvailable.Dispose();
     }
 }
