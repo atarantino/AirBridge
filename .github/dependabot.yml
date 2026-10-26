@@ -11,6 +11,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # pydantic pins pydantic-core exactly; they must move together.
+      pydantic:
+        patterns:
+          - "pydantic"
+          - "pydantic-core"
 
   - package-ecosystem: github-actions
     directory: /
