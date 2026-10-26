@@ -25,7 +25,7 @@ public sealed class PushToTalkRecorder : IDisposable
             if (_input is not null) return;
             _audio = new MemoryStream();
             _input = new WaveIn { WaveFormat = new WaveFormat(16000, 16, 1), BufferMilliseconds = 50 };
-            _writer = new WaveFileWriter(new IgnoreDisposeStream(_audio), _input.WaveFormat);
+            _writer = new WaveFileWriter(_audio, _input.WaveFormat);
             _input.DataAvailable += (_, args) =>
             {
                 var peak = 0;
