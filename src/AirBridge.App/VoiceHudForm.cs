@@ -127,7 +127,6 @@ internal sealed class VoiceHudForm : Form
         _mic.ApplyTheme(palette);
         _status.ForeColor = palette.Text;
         _hint.ForeColor = palette.SecondaryText;
-        UpdateWindowRegion();
         if (IsHandleCreated)
         {
             WindowEffects.ApplyTheme(this, palette);
@@ -343,13 +342,6 @@ internal sealed class VoiceHudForm : Form
         var ratio = args.Current / args.Previous;
         UiGeometry.RescaleText(this, args.Previous, args.Current);
         ClientSize = new(Math.Max(1, (int)Math.Ceiling(ClientSize.Width * ratio)), Math.Max(1, (int)Math.Ceiling(ClientSize.Height * ratio)));
-        UpdateWindowRegion();
-    }
-
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        UpdateWindowRegion();
     }
 
     private void ShowHud()
@@ -388,15 +380,6 @@ internal sealed class VoiceHudForm : Form
             _dragging = false;
             PositionCommitted?.Invoke(this, EventArgs.Empty);
         };
-    }
-
-    private void UpdateWindowRegion()
-    {
-        // Windows 10's binary rounded regions produce visibly jagged outer
-        // edges. Keep the HUD rectangular there and let DWM round Windows 11.
-        var previousRegion = Region;
-        Region = null;
-        previousRegion?.Dispose();
     }
 
     private void SetCompactLayout()

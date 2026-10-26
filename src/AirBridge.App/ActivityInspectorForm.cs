@@ -234,7 +234,6 @@ internal sealed class ActivityInspectorForm : Form
         ReadOnly = true,
         ScrollBars = ScrollBars.Both,
         WordWrap = false,
-        Font = new Font("Consolas", 9F),
         BorderStyle = BorderStyle.None,
         Margin = Padding.Empty
     };
