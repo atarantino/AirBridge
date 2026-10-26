@@ -167,32 +167,18 @@ internal sealed class VoiceHudForm : Form
 
     public void SetToggleHint() => _hint.Text = "tap shortcut to send · Esc to cancel";
 
-    public void ShowTranscribing()
-    {
-        SetCompactLayout();
-        _responseTimer.Stop();
-        _levelProvider = null;
-        _level.Level = 0;
-        _status.Text = "Transcribing";
-        _hint.Text = "Turning speech into text…";
-        _mic.IsError = false;
-        _mic.IsWarning = false;
-        _mic.IsResponse = false;
-        _level.Indeterminate = true;
-        _level.Visible = true;
-        _cancel.Visible = true;
-        _errorTimer.Stop();
-        ShowHud();
-    }
+    public void ShowTranscribing() => ShowWorking("Transcribing", "Turning speech into text…");
 
-    public void ShowThinking()
+    public void ShowThinking() => ShowWorking("Thinking", "Working out what to do…");
+
+    private void ShowWorking(string status, string hint)
     {
         SetCompactLayout();
         _responseTimer.Stop();
         _levelProvider = null;
         _level.Level = 0;
-        _status.Text = "Thinking";
-        _hint.Text = "Working out what to do…";
+        _status.Text = status;
+        _hint.Text = hint;
         _mic.IsError = false;
         _mic.IsWarning = false;
         _mic.IsResponse = false;
