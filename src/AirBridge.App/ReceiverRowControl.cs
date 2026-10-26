@@ -44,7 +44,6 @@ public sealed class ReceiverRowControl : UserControl
     private StreamState _streamState;
     private string? _detail;
     private bool _selected;
-    private bool _updating;
     private bool _compact;
     private bool _compactStreamActive;
     private bool _dashboardStreamActive;
@@ -89,10 +88,6 @@ public sealed class ReceiverRowControl : UserControl
         _trimUp.TransparentQuiet = true;
         _action.TransparentQuiet = true;
         _sleep.TransparentQuiet = true;
-        _action.BackColor = Color.Transparent;
-        _sleep.BackColor = Color.Transparent;
-        _trimDown.BackColor = Color.Transparent;
-        _trimUp.BackColor = Color.Transparent;
         Controls.AddRange([_volume, _trimDown, _trimValue, _trimUp, _action, _sleep]);
         _toolTip.SetToolTip(_sleep, "Sleep Apple TV");
 
@@ -173,11 +168,8 @@ public sealed class ReceiverRowControl : UserControl
     public event EventHandler<ReceiverActionEventArgs>? DisconnectRequested;
     public event EventHandler<ReceiverActionEventArgs>? SleepRequested;
 
-    public string? ReceiverId => _receiver?.Id;
     public bool IsSelected => _selected;
     public bool IsActive => _streamState is not StreamState.Idle and not StreamState.Failed;
-    public int Volume => _volume.Value;
-    public int AlignmentTrimMilliseconds => _alignmentTrimMilliseconds;
     internal bool IsPendingVisual => IsPendingState(_streamState);
 
     public void Bind(ReceiverInfo receiver, bool selected = false, int volume = 30, StreamState state = StreamState.Idle, string? detail = null, int alignmentTrimMilliseconds = 0)
@@ -191,11 +183,9 @@ public sealed class ReceiverRowControl : UserControl
         _action.AccessibleName = $"Connect {receiver.Name}";
         _sleep.AccessibleName = $"Sleep {receiver.Name}";
         _sleep.Visible = receiver.SupportsPowerControl;
-        _updating = true;
         _selected = selected;
         _volume.Value = volume;
         SetAlignmentTrim(alignmentTrimMilliseconds);
-        _updating = false;
         SetPlaybackState(state, detail);
     }
 
@@ -214,9 +204,7 @@ public sealed class ReceiverRowControl : UserControl
 
     public void SetSelected(bool selected)
     {
-        _updating = true;
         _selected = selected;
-        _updating = false;
         UpdateVolumePresentation();
         UpdateAccessibility();
         UpdateCompactHeight(Visible && IsHandleCreated);
@@ -226,9 +214,7 @@ public sealed class ReceiverRowControl : UserControl
     public void SetVolume(int volume)
     {
         if (_volume.IsDragging) return;
-        _updating = true;
         _volume.Value = volume;
-        _updating = false;
     }
 
     public void ApplyTheme(ThemePalette palette)
@@ -355,17 +341,16 @@ public sealed class ReceiverRowControl : UserControl
         var s = DeviceDpi / 96f;
         var v = s * SystemTextScale.Current;
         var glyphBox = new Rectangle((int)(14 * s), (Height - (int)(34 * s)) / 2, (int)(34 * s), (int)(34 * s));
-        using var iconFont = UiGeometry.IconFont(_compact ? 15F : 17F);
+        using var iconFont = UiGeometry.IconFont(17F);
         TextRenderer.DrawText(e.Graphics, "\uE767", iconFont, glyphBox, _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
         var textLeft = glyphBox.Right + (int)(10 * s);
-        var nameRight = _compact ? _action.Left - (int)(34 * s) : _volume.Left - (int)(34 * s);
-        var statusRight = _compact ? _volume.Left - (int)(8 * s) : nameRight;
-        var nameBounds = new Rectangle(textLeft, _compact ? (int)(7 * v) : (int)(12 * v), Math.Max(40, nameRight - textLeft), (int)(23 * v));
-        var statusBounds = new Rectangle(textLeft + (int)(13 * s), nameBounds.Bottom + (_compact ? 0 : (int)(2 * v)), Math.Max(30, statusRight - textLeft - (int)(13 * s)), (int)(20 * v));
-        using var nameFont = UiGeometry.UiFont(_compact ? 9.5F : 10F, FontStyle.Bold);
-        using var secondaryFont = UiGeometry.UiFont(_compact ? 8.25F : 9F);
+        var nameRight = _volume.Left - (int)(34 * s);
+        var nameBounds = new Rectangle(textLeft, (int)(12 * v), Math.Max(40, nameRight - textLeft), (int)(23 * v));
+        var statusBounds = new Rectangle(textLeft + (int)(13 * s), nameBounds.Bottom + (int)(2 * v), Math.Max(30, nameRight - textLeft - (int)(13 * s)), (int)(20 * v));
+        using var nameFont = UiGeometry.UiFont(10F, FontStyle.Bold);
+        using var secondaryFont = UiGeometry.UiFont(9F);
         TextRenderer.DrawText(e.Graphics, _receiver?.Name ?? "Speaker", nameFont, nameBounds, _palette.IsHighContrast ? SystemColors.WindowText : _palette.Text,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
@@ -373,19 +358,13 @@ public sealed class ReceiverRowControl : UserControl
         var dot = new Rectangle(textLeft, statusBounds.Top + (statusBounds.Height - dotSize) / 2, dotSize, dotSize);
         using var stateBrush = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.StateColor(_streamState));
         e.Graphics.FillEllipse(stateBrush, dot);
-        var detail = _compact || string.IsNullOrWhiteSpace(_detail) ? StatusText(_streamState) : $"{StatusText(_streamState)} · {_detail}";
+        var detail = string.IsNullOrWhiteSpace(_detail) ? StatusText(_streamState) : $"{StatusText(_streamState)} · {_detail}";
         TextRenderer.DrawText(e.Graphics, detail, secondaryFont, statusBounds, _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
 
         if (_streamState == StreamState.Streaming) DrawEqualizer(e.Graphics, Math.Min(nameRight - (int)(24 * s), nameBounds.Left + TextRenderer.MeasureText(_receiver?.Name ?? "", nameFont).Width + (int)(7 * s)), nameBounds.Top + (int)(5 * s));
         DrawSelection(e.Graphics);
-        if (Focused && ShowFocusCues)
-        {
-            var focus = Rectangle.Inflate(ClientRectangle, -3, -3);
-            using var pen = new Pen(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Focus, UiGeometry.Scale(this, 2));
-            using var focusPath = UiGeometry.Rounded(focus, UiGeometry.Scale(this, 9));
-            e.Graphics.DrawPath(pen, focusPath);
-        }
+        DrawFocusRing(e.Graphics);
     }
 
     protected override void Dispose(bool disposing)
@@ -447,13 +426,7 @@ public sealed class ReceiverRowControl : UserControl
         }
 
         DrawCompactSelection(graphics, checkBox);
-        if (Focused && ShowFocusCues)
-        {
-            var focus = Rectangle.Inflate(ClientRectangle, -3, -3);
-            using var pen = new Pen(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Focus, UiGeometry.Scale(this, 2));
-            using var focusPath = UiGeometry.Rounded(focus, UiGeometry.Scale(this, 9));
-            graphics.DrawPath(pen, focusPath);
-        }
+        DrawFocusRing(graphics);
     }
 
     private void DrawCompactSelection(Graphics graphics, Rectangle bounds)
@@ -465,18 +438,11 @@ public sealed class ReceiverRowControl : UserControl
             return;
         }
 
+        var checkWidth = Math.Max(1.5f, 2f * DeviceDpi / 96f);
         if (IsCompactPlaybackHighlighted(_compactStreamActive, _streamState))
         {
-            using var fill = new SolidBrush(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Accent);
-            graphics.FillEllipse(fill, bounds);
-            using var checkPen = new Pen(_palette.IsHighContrast ? SystemColors.HighlightText : _palette.OnAccent, Math.Max(1.5f, 2f * DeviceDpi / 96f))
-            { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            graphics.DrawLines(checkPen,
-            [
-                new(bounds.Left + bounds.Width / 4, bounds.Top + bounds.Height / 2),
-                new(bounds.Left + bounds.Width * 5 / 12, bounds.Bottom - bounds.Height / 4),
-                new(bounds.Right - bounds.Width / 5, bounds.Top + bounds.Height / 3)
-            ]);
+            DrawCheckedCircle(graphics, bounds, _palette.IsHighContrast ? SystemColors.Highlight : _palette.Accent,
+                _palette.IsHighContrast ? SystemColors.HighlightText : _palette.OnAccent, checkWidth);
             return;
         }
 
@@ -484,16 +450,8 @@ public sealed class ReceiverRowControl : UserControl
         // the live blue treatment. Once a route is active, only route members are checked.
         if (!_compactStreamActive && _selected)
         {
-            using var fill = new SolidBrush(_palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText);
-            graphics.FillEllipse(fill, bounds);
-            using var checkPen = new Pen(_palette.IsHighContrast ? SystemColors.Window : _palette.Surface, Math.Max(1.5f, 2f * DeviceDpi / 96f))
-            { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            graphics.DrawLines(checkPen,
-            [
-                new(bounds.Left + bounds.Width / 4, bounds.Top + bounds.Height / 2),
-                new(bounds.Left + bounds.Width * 5 / 12, bounds.Bottom - bounds.Height / 4),
-                new(bounds.Right - bounds.Width / 5, bounds.Top + bounds.Height / 3)
-            ]);
+            DrawCheckedCircle(graphics, bounds, _palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText,
+                _palette.IsHighContrast ? SystemColors.Window : _palette.Surface, checkWidth);
             return;
         }
 
@@ -507,13 +465,7 @@ public sealed class ReceiverRowControl : UserControl
     private void ActivateRow()
     {
         Focus();
-        if (!_compact)
-        {
-            ToggleSelection();
-            return;
-        }
-
-        if (!_compactStreamActive)
+        if (!_compact || !_compactStreamActive)
         {
             ToggleSelection();
             return;
@@ -536,13 +488,12 @@ public sealed class ReceiverRowControl : UserControl
 
     private void ToggleSelection()
     {
-        Focus();
         _selected = !_selected;
         UpdateVolumePresentation();
         UpdateAccessibility();
         UpdateCompactHeight(Visible && IsHandleCreated);
         Invalidate();
-        if (!_updating && _receiver is not null) SelectionChanged?.Invoke(this, new(_receiver.Id, _selected));
+        if (_receiver is not null) SelectionChanged?.Invoke(this, new(_receiver.Id, _selected));
     }
 
     private void UpdateAccessibility()
@@ -569,14 +520,14 @@ public sealed class ReceiverRowControl : UserControl
 
     private void CommitVolume()
     {
-        if (!_updating && _receiver is not null) VolumeCommitted?.Invoke(this, new(_receiver.Id, _volume.Value));
+        if (_receiver is not null) VolumeCommitted?.Invoke(this, new(_receiver.Id, _volume.Value));
     }
 
     private void AdjustAlignmentTrim(int delta)
     {
         var before = _alignmentTrimMilliseconds;
         SetAlignmentTrim(before + delta);
-        if (_alignmentTrimMilliseconds != before && !_updating && _receiver is not null)
+        if (_alignmentTrimMilliseconds != before && _receiver is not null)
             AlignmentTrimChanged?.Invoke(this, new(_receiver.Id, _alignmentTrimMilliseconds));
     }
 
@@ -658,14 +609,34 @@ public sealed class ReceiverRowControl : UserControl
         var box = new Rectangle(_volume.Left - UiGeometry.Scale(this, 27), _volume.Top + (_volume.Height - size) / 2, size, size);
         if (_selected)
         {
-            using var fill = new SolidBrush(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Accent);
-            graphics.FillEllipse(fill, box);
-            using var checkPen = new Pen(_palette.IsHighContrast ? SystemColors.HighlightText : _palette.OnAccent, UiGeometry.Scale(this, 2)) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-            graphics.DrawLines(checkPen, [new(box.Left + size / 4, box.Top + size / 2), new(box.Left + size * 5 / 12, box.Bottom - size / 4), new(box.Right - size / 5, box.Top + size / 3)]);
+            DrawCheckedCircle(graphics, box, _palette.IsHighContrast ? SystemColors.Highlight : _palette.Accent,
+                _palette.IsHighContrast ? SystemColors.HighlightText : _palette.OnAccent, UiGeometry.Scale(this, 2));
             return;
         }
         using var pen = new Pen(_palette.IsHighContrast ? SystemColors.WindowText : _palette.SecondaryText, Math.Max(1f, 1.5f * DeviceDpi / 96f));
         graphics.DrawEllipse(pen, box);
+    }
+
+    private static void DrawCheckedCircle(Graphics graphics, Rectangle bounds, Color fill, Color check, float checkWidth)
+    {
+        using var brush = new SolidBrush(fill);
+        graphics.FillEllipse(brush, bounds);
+        using var pen = new Pen(check, checkWidth) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        graphics.DrawLines(pen,
+        [
+            new(bounds.Left + bounds.Width / 4, bounds.Top + bounds.Height / 2),
+            new(bounds.Left + bounds.Width * 5 / 12, bounds.Bottom - bounds.Height / 4),
+            new(bounds.Right - bounds.Width / 5, bounds.Top + bounds.Height / 3)
+        ]);
+    }
+
+    private void DrawFocusRing(Graphics graphics)
+    {
+        if (!Focused || !ShowFocusCues) return;
+        var focus = Rectangle.Inflate(ClientRectangle, -3, -3);
+        using var pen = new Pen(_palette.IsHighContrast ? SystemColors.Highlight : _palette.Focus, UiGeometry.Scale(this, 2));
+        using var focusPath = UiGeometry.Rounded(focus, UiGeometry.Scale(this, 9));
+        graphics.DrawPath(pen, focusPath);
     }
 
     private void UpdateDashboardPresentation()
@@ -680,7 +651,6 @@ public sealed class ReceiverRowControl : UserControl
         PerformLayout();
         Invalidate(true);
     }
-
 
     private void DrawEqualizer(Graphics graphics, int x, int y)
     {
@@ -720,12 +690,6 @@ public sealed class ReceiverRowControl : UserControl
         if (identity.Contains("tv", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("media", StringComparison.OrdinalIgnoreCase) ||
             identity.Contains("roku", StringComparison.OrdinalIgnoreCase)) return "\uE7F4";
-        if (identity.Contains("homepod", StringComparison.OrdinalIgnoreCase) ||
-            identity.Contains("sonos", StringComparison.OrdinalIgnoreCase) ||
-            identity.Contains("echo", StringComparison.OrdinalIgnoreCase) ||
-            identity.Contains("smart", StringComparison.OrdinalIgnoreCase)) return "\uE767";
-        if (identity.Contains("mini", StringComparison.OrdinalIgnoreCase) ||
-            identity.Contains("small", StringComparison.OrdinalIgnoreCase)) return "\uE767";
         return "\uE767";
     }
 
