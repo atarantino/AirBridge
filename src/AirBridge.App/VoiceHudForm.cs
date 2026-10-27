@@ -127,7 +127,6 @@ internal sealed class VoiceHudForm : Form
         _mic.ApplyTheme(palette);
         _status.ForeColor = palette.Text;
         _hint.ForeColor = palette.SecondaryText;
-        UpdateWindowRegion();
         if (IsHandleCreated)
         {
             WindowEffects.ApplyTheme(this, palette);
@@ -168,32 +167,18 @@ internal sealed class VoiceHudForm : Form
 
     public void SetToggleHint() => _hint.Text = "tap shortcut to send · Esc to cancel";
 
-    public void ShowTranscribing()
-    {
-        SetCompactLayout();
-        _responseTimer.Stop();
-        _levelProvider = null;
-        _level.Level = 0;
-        _status.Text = "Transcribing";
-        _hint.Text = "Turning speech into text…";
-        _mic.IsError = false;
-        _mic.IsWarning = false;
-        _mic.IsResponse = false;
-        _level.Indeterminate = true;
-        _level.Visible = true;
-        _cancel.Visible = true;
-        _errorTimer.Stop();
-        ShowHud();
-    }
+    public void ShowTranscribing() => ShowWorking("Transcribing", "Turning speech into text…");
 
-    public void ShowThinking()
+    public void ShowThinking() => ShowWorking("Thinking", "Working out what to do…");
+
+    private void ShowWorking(string status, string hint)
     {
         SetCompactLayout();
         _responseTimer.Stop();
         _levelProvider = null;
         _level.Level = 0;
-        _status.Text = "Thinking";
-        _hint.Text = "Working out what to do…";
+        _status.Text = status;
+        _hint.Text = hint;
         _mic.IsError = false;
         _mic.IsWarning = false;
         _mic.IsResponse = false;
@@ -343,13 +328,6 @@ internal sealed class VoiceHudForm : Form
         var ratio = args.Current / args.Previous;
         UiGeometry.RescaleText(this, args.Previous, args.Current);
         ClientSize = new(Math.Max(1, (int)Math.Ceiling(ClientSize.Width * ratio)), Math.Max(1, (int)Math.Ceiling(ClientSize.Height * ratio)));
-        UpdateWindowRegion();
-    }
-
-    protected override void OnResize(EventArgs e)
-    {
-        base.OnResize(e);
-        UpdateWindowRegion();
     }
 
     private void ShowHud()
@@ -388,15 +366,6 @@ internal sealed class VoiceHudForm : Form
             _dragging = false;
             PositionCommitted?.Invoke(this, EventArgs.Empty);
         };
-    }
-
-    private void UpdateWindowRegion()
-    {
-        // Windows 10's binary rounded regions produce visibly jagged outer
-        // edges. Keep the HUD rectangular there and let DWM round Windows 11.
-        var previousRegion = Region;
-        Region = null;
-        previousRegion?.Dispose();
     }
 
     private void SetCompactLayout()
