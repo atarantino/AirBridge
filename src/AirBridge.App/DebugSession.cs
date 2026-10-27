@@ -194,7 +194,6 @@ public sealed partial class MainForm
             form.Opacity = 1;
             if (form == _trayFlyout) _trayFlyout.AutoHide = false;
             form.Show();
-            foreach (var row in form.Controls.OfType<ReceiverRowControl>()) row.ApplyTextScale();
             form.PerformLayout();
             if (form == _trayFlyout) _trayFlyout.SettleSnapshotLayout();
             else SettleSnapshotLayout();

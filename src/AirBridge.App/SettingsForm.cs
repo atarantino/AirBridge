@@ -43,8 +43,8 @@ internal sealed class SettingsForm : Form
     private readonly ListBox _speakerGroupList = new() { Dock = DockStyle.Fill, DisplayMember = nameof(SpeakerGroup.Name), IntegralHeight = false };
     private readonly TextBox _speakerGroupName = new() { Dock = DockStyle.Top, PlaceholderText = "Group name" };
     private readonly CheckedListBox _speakerGroupMembers = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
-    private TabControl? _tabs;
-    private TabPage? _groupsPage;
+    private readonly TabControl _tabs;
+    private readonly TabPage _groupsPage;
     private bool _updatingSpeakerGroup;
     private bool _removeApiKeyRequested;
     private string _shortcutBeforeCapture = HotkeyGesture.Default.ToString();
@@ -567,7 +567,7 @@ internal sealed class SettingsForm : Form
         var duplicate = _speakerGroups.GroupBy(item => item.Name.Trim(), StringComparer.OrdinalIgnoreCase).FirstOrDefault(group => group.Count() > 1);
         if (invalidIndex < 0 && duplicate is null) return true;
         if (duplicate is not null) invalidIndex = _speakerGroups.FindIndex(item => item.Name.Equals(duplicate.Key, StringComparison.OrdinalIgnoreCase));
-        if (_tabs is not null && _groupsPage is not null) _tabs.SelectedTab = _groupsPage;
+        _tabs.SelectedTab = _groupsPage;
         if (invalidIndex >= 0) _speakerGroupList.SelectedIndex = invalidIndex;
         var message = duplicate is not null
             ? "Give every speaker group a unique name."

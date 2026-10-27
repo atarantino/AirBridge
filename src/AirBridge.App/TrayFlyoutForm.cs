@@ -39,8 +39,7 @@ public sealed class TrayFlyoutForm : Form
         SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
                  ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true);
         _themeMode = themeMode;
-        var requested = ThemePalette.Current(themeMode);
-        _palette = requested;
+        _palette = ThemePalette.Current(themeMode);
         var textWidthScale = TextWidthScale(SystemTextScale.Current);
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size((int)Math.Ceiling(420 * textWidthScale), 206);
@@ -140,7 +139,6 @@ public sealed class TrayFlyoutForm : Form
     public event EventHandler<ReceiverActionEventArgs>? ReceiverSleepRequested;
 
     internal bool AutoHide = true;
-    public IReadOnlyCollection<string> ReceiverIds => _rows.Keys;
 
     public void SetReceivers(
         IEnumerable<ReceiverInfo> receivers,
@@ -278,7 +276,6 @@ public sealed class TrayFlyoutForm : Form
         _browserDelay.ForeColor = _palette.Accent;
         foreach (var row in _rows.Values) row.ApplyTheme(_palette);
         _status.ForeColor = _palette.StateColor(_streamState);
-        UpdateRoundedRegion();
     }
 
     public void ShowNearTrayIcon()
@@ -298,8 +295,6 @@ public sealed class TrayFlyoutForm : Form
     }
 
     public void ReflowReceiverRows() { PerformLayout(); ResizeRows(); }
-
-    protected override void OnResize(EventArgs e) { base.OnResize(e); UpdateRoundedRegion(); }
 
     protected override void OnPaintBackground(PaintEventArgs e)
     {
@@ -321,8 +316,6 @@ public sealed class TrayFlyoutForm : Form
         var separatorY = ClientSize.Height - Padding.Bottom - UiGeometry.Scale(this, 49);
         e.Graphics.DrawLine(sidePen, Padding.Left, separatorY, ClientSize.Width - Padding.Right, separatorY);
     }
-
-    protected override bool ShowWithoutActivation => false;
 
     protected override void WndProc(ref Message message)
     {
@@ -351,15 +344,6 @@ public sealed class TrayFlyoutForm : Form
         var width = Math.Max(1, _receivers.ClientSize.Width - _receivers.Padding.Horizontal);
         if (_receiverLoading.Width != width) _receiverLoading.Width = width;
         foreach (var row in _rows.Values) if (row.Width != width) row.Width = width;
-    }
-
-    private void UpdateRoundedRegion()
-    {
-        // Windows 10's binary rounded regions produce visibly jagged outer
-        // edges. Keep the popup rectangular there and let DWM round Windows 11.
-        var previousRegion = Region;
-        Region = null;
-        previousRegion?.Dispose();
     }
 
     private bool IsGlobalStreamActive => _streamState is not StreamState.Idle and not StreamState.Failed;

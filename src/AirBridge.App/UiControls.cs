@@ -324,8 +324,6 @@ internal sealed class PillButton : Button, IThemeAware
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal string? IconGlyph { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal bool GrayscaleText { get; set; }
-    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal bool Primary { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal bool Quiet { get; set; }
@@ -373,13 +371,6 @@ internal sealed class PillButton : Button, IThemeAware
             e.Graphics.DrawPath(border, path);
         }
         var textColor = Primary ? _palette.OnAccent : _palette.Text;
-        if (GrayscaleText)
-        {
-            DrawGrayscaleContent(e.Graphics, bounds, textColor);
-            DrawFocus(e.Graphics, bounds);
-            return;
-        }
-
         var textBounds = bounds;
         if (!string.IsNullOrEmpty(IconGlyph))
         {
@@ -394,38 +385,6 @@ internal sealed class PillButton : Button, IThemeAware
         TextRenderer.DrawText(e.Graphics, Text, Font, textBounds, Enabled ? textColor : _palette.SecondaryText,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         DrawFocus(e.Graphics, bounds);
-    }
-
-    private void DrawGrayscaleContent(Graphics graphics, Rectangle bounds, Color color)
-    {
-        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-        using var brush = new SolidBrush(color);
-        using var centered = new StringFormat(StringFormat.GenericTypographic)
-        {
-            Alignment = StringAlignment.Center,
-            LineAlignment = StringAlignment.Center,
-            Trimming = StringTrimming.EllipsisCharacter,
-            FormatFlags = StringFormatFlags.NoWrap
-        };
-        if (string.IsNullOrEmpty(IconGlyph))
-        {
-            graphics.DrawString(Text, Font, brush, bounds, centered);
-            return;
-        }
-
-        using var iconFont = UiGeometry.IconFont(11F);
-        if (string.IsNullOrEmpty(Text))
-        {
-            graphics.DrawString(IconGlyph, iconFont, brush, bounds, centered);
-            return;
-        }
-
-        var iconWidth = UiGeometry.Scale(this, 22);
-        var textWidth = graphics.MeasureString(Text, Font, PointF.Empty, StringFormat.GenericTypographic).Width;
-        var left = bounds.Left + Math.Max(0, (bounds.Width - textWidth - iconWidth) / 2f);
-        using var leftFormat = new StringFormat(StringFormat.GenericTypographic) { LineAlignment = StringAlignment.Center };
-        graphics.DrawString(IconGlyph, iconFont, brush, new RectangleF(left, bounds.Top, iconWidth, bounds.Height), leftFormat);
-        graphics.DrawString(Text, Font, brush, new RectangleF(left + iconWidth, bounds.Top, bounds.Right - left - iconWidth, bounds.Height), leftFormat);
     }
 
     private void DrawFocus(Graphics graphics, Rectangle bounds)
@@ -525,9 +484,8 @@ internal sealed class OwnerDrawnSlider : Control, IThemeAware
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal bool Dimmed { get; set; }
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal int Value { get => _value; set { var next = Math.Clamp(value, 0, 100); if (_value == next) return; _value = next; Invalidate(); ValueChanged?.Invoke(this, EventArgs.Empty); } }
+    internal int Value { get => _value; set { var next = Math.Clamp(value, 0, 100); if (_value == next) return; _value = next; Invalidate(); } }
     internal bool IsDragging => _dragging;
-    internal event EventHandler? ValueChanged;
     internal event EventHandler? ValueCommitted;
 
     public OwnerDrawnSlider()
@@ -591,11 +549,6 @@ internal sealed class OwnerDrawnSlider : Control, IThemeAware
             e.Graphics.DrawString($"{Value}%", labelFont, labelBrush, label, centered);
         }
         if (Focused && ShowFocusCues) ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(ClientRectangle, -2, -2), _palette.Focus, Color.Transparent);
-    }
-
-    protected override void OnPaintBackground(PaintEventArgs pevent)
-    {
-        base.OnPaintBackground(pevent);
     }
 
     private void SetFromX(int x)
