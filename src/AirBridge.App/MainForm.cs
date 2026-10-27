@@ -34,12 +34,11 @@ public sealed partial class MainForm : Form
     private readonly HashSet<string> _selectedReceiverIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _receiverVolumes = new(StringComparer.Ordinal);
     private readonly Label _state = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
-    private readonly Label _route = new() { AutoSize = true };
-    private readonly Label _duration = new() { AutoSize = true };
-    private readonly Label _format = new() { AutoSize = true };
-    private readonly Label _latency = new() { AutoSize = true };
     private readonly Label _buffer = new() { AutoSize = true };
-    private readonly Label _transport = new() { AutoSize = true };
+    private string _routeMetric = string.Empty;
+    private string _durationMetric = string.Empty;
+    private string _latencyMetric = string.Empty;
+    private string _speakersMetric = string.Empty;
     private readonly Label _metricsSummary = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly Label _idleTelemetryHint = new() { Dock = DockStyle.Fill, Text = "Select one or more speakers, then start system audio or an application.", TextAlign = ContentAlignment.MiddleCenter };
     private readonly Label _recommendation = new() { AutoSize = true, MaximumSize = new Size(780, 0) };
@@ -277,8 +276,7 @@ public sealed partial class MainForm : Form
 
     private Control BuildDiagnosticsSection()
     {
-        var overflow = SecondaryButton("•••");
-        overflow.Width = 42;
+        var overflow = new PillButton { Text = "•••", Width = 42, Height = 34 };
         overflow.AccessibleName = "Diagnostics options";
         overflow.AccessibleDescription = "Open diagnostics actions including delay measurement.";
         _diagnosticsMenu.Items.Add("Measure delay", null, async (_, _) => await MeasureSelectedDelayAsync());
@@ -323,8 +321,7 @@ public sealed partial class MainForm : Form
 
     private Control BuildAssistantSection()
     {
-        var ask = PrimaryButton("Ask");
-        ask.Width = 58;
+        var ask = new PillButton { Text = "Ask", Width = 58, Height = 36, Primary = true, AccessibleName = "Ask" };
         ask.Click += async (_, _) => await AskAsync(_command.Text);
         _command.KeyDown += async (_, args) => { if (args.KeyCode == Keys.Enter) { args.SuppressKeyPress = true; await AskAsync(_command.Text); } };
         _command.BorderStyle = BorderStyle.None;
@@ -567,12 +564,17 @@ public sealed partial class MainForm : Form
         });
     }
 
-    private async Task<bool> EnsureReceiverPairedAsync(ReceiverInfo receiver, CancellationToken cancellationToken = default)
+    private Task<bool> EnsureReceiverPairedAsync(ReceiverInfo receiver, CancellationToken cancellationToken = default) =>
+        receiver.RequiresPairing ? PairWithCodeAsync(receiver, controlPairing: false, cancellationToken) : Task.FromResult(true);
+
+    private Task<bool> EnsureControlPairedAsync(ReceiverInfo receiver) =>
+        receiver.RequiresControlPairing ? PairWithCodeAsync(receiver, controlPairing: true, CancellationToken.None) : Task.FromResult(true);
+
+    private async Task<bool> PairWithCodeAsync(ReceiverInfo receiver, bool controlPairing, CancellationToken cancellationToken)
     {
-        if (!receiver.RequiresPairing) return true;
         try
         {
-            await _controller.BeginPairingAsync(receiver.Id, cancellationToken: cancellationToken);
+            await _controller.BeginPairingAsync(receiver.Id, controlPairing, cancellationToken);
             using var dialog = new PairingCodeDialog(receiver.Name, _palette);
             var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
             if (result != DialogResult.OK)
@@ -587,8 +589,11 @@ public sealed partial class MainForm : Form
         catch (Exception ex)
         {
             try { await _controller.CancelPairingAsync(receiver.Id); } catch { }
-            AppLog.Error("pairing", $"Could not pair receiver {receiver.Id}.", ex);
-            MessageBox.Show(this, "AirBridge could not complete pairing. Check the code shown on the TV and try again.",
+            if (controlPairing) AppLog.Error("control-pairing", $"Could not pair Apple TV control for receiver {receiver.Id}.", ex);
+            else AppLog.Error("pairing", $"Could not pair receiver {receiver.Id}.", ex);
+            MessageBox.Show(this, controlPairing
+                    ? "AirBridge could not authorize Apple TV controls. Check the code shown on the TV and try again."
+                    : "AirBridge could not complete pairing. Check the code shown on the TV and try again.",
                 "AirBridge pairing", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return false;
         }
@@ -626,33 +631,6 @@ public sealed partial class MainForm : Form
         finally
         {
             if (!_previewMode && !cancellationToken.IsCancellationRequested) _voiceHud.ShowThinking();
-        }
-    }
-
-    private async Task<bool> EnsureControlPairedAsync(ReceiverInfo receiver)
-    {
-        if (!receiver.RequiresControlPairing) return true;
-        try
-        {
-            await _controller.BeginPairingAsync(receiver.Id, controlPairing: true);
-            using var dialog = new PairingCodeDialog(receiver.Name, _palette);
-            var result = Visible ? dialog.ShowDialog(this) : dialog.ShowDialog();
-            if (result != DialogResult.OK)
-            {
-                await _controller.CancelPairingAsync(receiver.Id);
-                return false;
-            }
-            await _controller.PairReceiverAsync(receiver.Id, dialog.PairingCode);
-            RebuildReceiverRows(_controller.Receivers);
-            return true;
-        }
-        catch (Exception ex)
-        {
-            try { await _controller.CancelPairingAsync(receiver.Id); } catch { }
-            AppLog.Error("control-pairing", $"Could not pair Apple TV control for receiver {receiver.Id}.", ex);
-            MessageBox.Show(this, "AirBridge could not authorize Apple TV controls. Check the code shown on the TV and try again.",
-                "AirBridge pairing", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            return false;
         }
     }
 
@@ -743,8 +721,6 @@ public sealed partial class MainForm : Form
         if (IsDisposed) return;
         var route = _controller.Coordinator.Route;
         var health = _controller.Coordinator.Health();
-        var elapsed = route.StartedUtc is { } headerStarted ? $" · {FormatDuration(DateTimeOffset.UtcNow - headerStarted)}" : string.Empty;
-        var sourceLabel = route.Mode == CaptureMode.ProcessTreeInclude ? "app audio" : "system audio";
         var active = route.StreamId is not null;
         var activeSpeakerCount = _controller.ReceiverPlayback.Count(item => item.State is not StreamState.Idle and not StreamState.Failed);
         _state.Text = !active
@@ -754,15 +730,14 @@ public sealed partial class MainForm : Form
                 : $"{route.State} to {Math.Max(1, activeSpeakerCount)} speaker{(activeSpeakerCount == 1 ? "" : "s")} · 44.1 kHz";
         _state.ForeColor = _palette.StateColor(route.State);
         _state.BackColor = _palette.Window;
-        _route.Text = route.StreamId is null ? "Route: Idle" : $"Route: {route.ReceiverName}";
-        _duration.Text = route.StartedUtc is { } started ? $"Time: {FormatDuration(DateTimeOffset.UtcNow - started)}" : "Time: —";
-        _format.Text = "Format: 44.1k";
-        _latency.Text = _controller.LastGroupAlignment is { } aligned
+        _routeMetric = route.StreamId is null ? "Route: Idle" : $"Route: {route.ReceiverName}";
+        _durationMetric = route.StartedUtc is { } started ? $"Time: {FormatDuration(DateTimeOffset.UtcNow - started)}" : "Time: —";
+        _latencyMetric = _controller.LastGroupAlignment is { } aligned
             ? $"Align: {string.Join(" · ", aligned.Measurements.Select(item => $"{item.ReceiverName} {item.MedianMilliseconds}ms → +{aligned.ProposedTrimMilliseconds[item.ReceiverId]}ms"))}"
             : _controller.LastAcousticDelay is { } measured ? $"Delay: {measured.MedianMilliseconds}ms" : $"Delay: ≈{_settings.EstimatedAudioDelayMilliseconds}ms";
         _buffer.Text = $"Health · {health.Buffer.FillPercent}% buffer · {health.Buffer.Underruns} underruns · {health.Buffer.Overruns} overruns · {health.Buffer.StarvedWhileActivePaddingMilliseconds} ms starved";
         var playback = _controller.ReceiverPlayback;
-        _transport.Text = playback.Count == 0 ? "Speakers: 0" : $"Speakers: {playback.Count(item => item.State == StreamState.Streaming)}/{playback.Count}";
+        _speakersMetric = playback.Count == 0 ? "Speakers: 0" : $"Speakers: {playback.Count(item => item.State == StreamState.Streaming)}/{playback.Count}";
         UpdateMetricsSummary();
         _recommendation.Text = route.State switch
         {
@@ -994,7 +969,7 @@ public sealed partial class MainForm : Form
             _settings = _settings with { EstimatedAudioDelayMilliseconds = result.MedianMilliseconds };
             _settingsStore.Save(_settings);
             _trayFlyout.UpdateBrowserDelay(result.MedianMilliseconds);
-            _latency.Text = $"Delay: {result.MedianMilliseconds}ms";
+            _latencyMetric = $"Delay: {result.MedianMilliseconds}ms";
             UpdateMetricsSummary();
             _recommendation.Text = $"Measured {result.MedianMilliseconds} ms. Use this value in the browser extension.";
             AppendConversation("Delay", $"Median {result.MedianMilliseconds} ms ({string.Join(", ", result.DelaysMilliseconds)} ms). Use this value in the browser extension.");
@@ -1406,7 +1381,7 @@ public sealed partial class MainForm : Form
 
     private void UpdateMetricsSummary()
     {
-        _metricsSummary.Text = string.Join("   ·   ", _route.Text, _duration.Text, _format.Text, _latency.Text, _transport.Text);
+        _metricsSummary.Text = string.Join("   ·   ", _routeMetric, _durationMetric, "Format: 44.1k", _latencyMetric, _speakersMetric);
         _metricsSummary.AccessibleDescription = _metricsSummary.Text;
     }
 
@@ -1430,8 +1405,6 @@ public sealed partial class MainForm : Form
         foreach (var row in _receiverRows.Values) row.SetDashboardStreamActive(streamActive);
     }
 
-    private PillButton PrimaryButton(string text) => new() { Text = text, Width = 104, Height = 36, Primary = true, AccessibleName = text };
-    private PillButton SecondaryButton(string text) => new() { Text = text, Width = 92, Height = 34, AccessibleName = text };
     private static string FormatDuration(TimeSpan duration) => duration.TotalHours >= 1 ? duration.ToString(@"h\:mm\:ss") : duration.ToString(@"m\:ss");
     private static string TruncateTooltip(string text) => text.Length <= 63 ? text : text[..60] + "…";
     private static AppThemeMode ParseTheme(string value) => Enum.TryParse<AppThemeMode>(value, true, out var parsed) ? parsed : AppThemeMode.System;
@@ -1467,9 +1440,9 @@ public sealed partial class MainForm : Form
             _trayFlyout.UpdateStatus(StreamState.Degraded, "Streaming to 2 speakers · 12:48", string.Empty);
             _state.Text = "Streaming to 2 speakers · 44.1 kHz";
             _state.ForeColor = _palette.Warning;
-            _route.Text = "Route: Desk Speaker +1";
-            _duration.Text = "Time: 12:48";
-            _transport.Text = "Speakers: 1/2";
+            _routeMetric = "Route: Desk Speaker +1";
+            _durationMetric = "Time: 12:48";
+            _speakersMetric = "Speakers: 1/2";
             UpdateMetricsSummary();
             _recommendation.Text = "Recommended: retry Media Room; Desk Speaker will keep playing.";
             AppendConversation("AirBridge", "Desk Speaker is still streaming. Retry Media Room when it becomes available.");

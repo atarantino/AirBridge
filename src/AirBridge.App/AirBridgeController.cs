@@ -48,7 +48,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
     private volatile bool _measurementInProgress;
     private volatile bool _latestCaptureActive;
     private volatile bool _standbyWakeRequested;
-    private int _standbySuppressionCount;
     private int _standbyTransitionInProgress;
     private bool _voiceCaptureDucking;
 
@@ -200,9 +199,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
         finally { _routeGate.Release(); }
     }
-
-    public Task StartApplicationAsync(int processId, ReceiverInfo receiver, CancellationToken cancellationToken = default) =>
-        StartApplicationAsync(processId, [receiver], cancellationToken);
 
     public Task StartApplicationAsync(int processId, IReadOnlyCollection<ReceiverInfo> receivers, CancellationToken cancellationToken = default) =>
         StartApplicationAsync(processId, receivers, null, cancellationToken);
@@ -698,7 +694,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             containsSignal,
             route.StreamId is not null,
             _isStandby,
-            _measurementInProgress || Volatile.Read(ref _standbySuppressionCount) > 0);
+            _measurementInProgress);
         if (action == SilenceStandbyAction.None || Interlocked.CompareExchange(ref _standbyTransitionInProgress, 1, 0) != 0) return;
         if (action == SilenceStandbyAction.EnterStandby) _standbyWakeRequested = false;
         var expectedStreamId = route.StreamId;
@@ -786,25 +782,6 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         var snapshot = ReceiverPlayback;
         Coordinator.UpdateDestinations(snapshot);
         PlaybackChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private IDisposable SuppressStandby()
-    {
-        Interlocked.Increment(ref _standbySuppressionCount);
-        _standbyTracker.Reset();
-        return new StandbySuppression(this);
-    }
-
-    private sealed class StandbySuppression(AirBridgeController owner) : IDisposable
-    {
-        private AirBridgeController? _owner = owner;
-        public void Dispose()
-        {
-            var value = Interlocked.Exchange(ref _owner, null);
-            if (value is null) return;
-            Interlocked.Decrement(ref value._standbySuppressionCount);
-            value._standbyTracker.Reset();
-        }
     }
 
     private async Task<object> ConnectivityTestAsync(CancellationToken cancellationToken)
