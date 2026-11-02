@@ -7,7 +7,7 @@ public interface IAudioPipeEndpoint
     string PipeName { get; }
     bool IsConnected { get; }
     bool CanAcceptWrite { get; }
-    AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false);
+    AudioPipeWriteResult Write(byte[] pcm);
 }
 
 public enum AudioPipeWriteResult { Accepted, Dropped, Unavailable }
@@ -267,7 +267,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
         if (timedOut is not null) GateTimedOut?.Invoke(this, timedOut);
         foreach (var (leg, block) in writes)
         {
-            var result = leg.Endpoint.Write(block, tolerateBackpressure: !leg.Ready);
+            var result = leg.Endpoint.Write(block);
             if (result != AudioPipeWriteResult.Dropped) continue;
             lock (_gate)
             {

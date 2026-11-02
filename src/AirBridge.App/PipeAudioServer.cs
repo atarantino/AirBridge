@@ -96,7 +96,7 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
     /// behind the bounded queue drops the excess block so it cannot stall siblings.
     /// Transient scheduler jitter must not tear down the RAOP session.
     /// </summary>
-    public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
+    public AudioPipeWriteResult Write(byte[] pcm)
     {
         PipeConnection? connection;
         lock (_pipeGate) connection = _connection;
@@ -109,12 +109,6 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
         if (connection.Queue.Writer.TryWrite(pcm)) return AudioPipeWriteResult.Accepted;
         Interlocked.Decrement(ref connection.PendingWrites);
         return AudioPipeWriteResult.Dropped;
-    }
-
-    public bool TryWrite(byte[] pcm, bool tolerateBackpressure = false)
-    {
-        var result = Write(pcm, tolerateBackpressure);
-        return result == AudioPipeWriteResult.Accepted || tolerateBackpressure && result == AudioPipeWriteResult.Dropped;
     }
 
     public async ValueTask DisposeAsync()
@@ -134,16 +128,12 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
     public void DisconnectClient()
     {
         PipeConnection? connection;
-        lock (_pipeGate) connection = _connection;
-        if (connection is not null) DisconnectConnection(connection);
-    }
-
-    private void DisconnectConnection(PipeConnection connection)
-    {
         lock (_pipeGate)
         {
-            if (ReferenceEquals(_connection, connection)) _connection = null;
+            connection = _connection;
+            _connection = null;
         }
+        if (connection is null) return;
         connection.Queue.Writer.TryComplete();
         try { connection.Pipe.Dispose(); } catch { }
     }

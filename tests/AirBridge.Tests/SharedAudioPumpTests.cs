@@ -13,7 +13,7 @@ public sealed class SharedAudioPumpTests
         public List<byte[]> Writes { get; } = [];
         public Action<byte[]>? BeforeWrite { get; set; }
         public bool AcceptWrites { get; set; } = true;
-        public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
+        public AudioPipeWriteResult Write(byte[] pcm)
         {
             if (!AcceptWrites) return AudioPipeWriteResult.Unavailable;
             BeforeWrite?.Invoke(pcm);
