@@ -765,7 +765,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
             foreach (var setting in resumePlan)
                 _pump.SetAlignmentTrim(setting.ReceiverId, setting.AlignmentTrimMilliseconds);
 
-            _pump.BeginGroup(resumePlan.Select(setting => setting.ReceiverId), discardBufferedUntilGateOpen: true);
+            _pump.BeginGroup(resumePlan.Select(setting => setting.ReceiverId));
 
             await Task.WhenAll(resumePlan.Select(setting =>
             {

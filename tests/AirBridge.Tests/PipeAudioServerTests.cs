@@ -17,7 +17,7 @@ public sealed class PipeAudioServerTests
         var block = new byte[SharedAudioPump.BlockBytes];
         var stopwatch = Stopwatch.StartNew();
         var accepted = true;
-        for (var index = 0; index < 100 && accepted; index++) accepted = server.TryWrite(block);
+        for (var index = 0; index < 100 && accepted; index++) accepted = server.Write(block) == AudioPipeWriteResult.Accepted;
 
         stopwatch.Stop();
         Assert.False(accepted);
@@ -36,14 +36,14 @@ public sealed class PipeAudioServerTests
         var block = new byte[SharedAudioPump.BlockBytes];
         for (var index = 0; index < 100 && server.IsConnected; index++)
         {
-            server.TryWrite(block);
+            server.Write(block);
             await Task.Delay(5);
         }
 
         Assert.True(SpinWait.SpinUntil(() => !server.IsConnected, TimeSpan.FromSeconds(2)));
         await using var second = await ConnectAsync(server);
         var fresh = Enumerable.Repeat((byte)0x5C, SharedAudioPump.BlockBytes).ToArray();
-        Assert.True(server.TryWrite(fresh));
+        Assert.Equal(AudioPipeWriteResult.Accepted, server.Write(fresh));
         Assert.Equal(fresh, await ReadBlockAsync(second));
     }
 
@@ -60,7 +60,7 @@ public sealed class PipeAudioServerTests
         var observedDrop = false;
         for (var index = 0; index < 500; index++)
         {
-            var result = server.Write(silence, tolerateBackpressure: true);
+            var result = server.Write(silence);
             Assert.NotEqual(AudioPipeWriteResult.Unavailable, result);
             observedDrop |= result == AudioPipeWriteResult.Dropped;
         }
@@ -78,7 +78,7 @@ public sealed class PipeAudioServerTests
         await using (var first = await ConnectAsync(server))
         {
             var firstBlock = Enumerable.Repeat((byte)0x11, SharedAudioPump.BlockBytes).ToArray();
-            Assert.True(server.TryWrite(firstBlock));
+            Assert.Equal(AudioPipeWriteResult.Accepted, server.Write(firstBlock));
             Assert.Equal(firstBlock, await ReadBlockAsync(first));
             server.DisconnectClient();
         }
@@ -86,7 +86,7 @@ public sealed class PipeAudioServerTests
         Assert.True(SpinWait.SpinUntil(() => !server.IsConnected, TimeSpan.FromSeconds(2)));
         await using var second = await ConnectAsync(server);
         var freshBlock = Enumerable.Repeat((byte)0x22, SharedAudioPump.BlockBytes).ToArray();
-        Assert.True(server.TryWrite(freshBlock));
+        Assert.Equal(AudioPipeWriteResult.Accepted, server.Write(freshBlock));
         Assert.Equal(freshBlock, await ReadBlockAsync(second));
     }
 

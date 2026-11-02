@@ -54,11 +54,8 @@ internal static class Program
                 form.PerformLayout();
                 Application.DoEvents();
             }
-            using var bitmap = new Bitmap(form.Width, form.Height);
             form.SettleSnapshotLayout();
-            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.SavePng(form, path);
             SnapshotEvidence.WriteLayout(form, path);
             form.Close();
             return;
@@ -83,10 +80,7 @@ internal static class Program
             flyout.ReflowReceiverRows();
             Application.DoEvents();
             flyout.SettleSnapshotLayout();
-            using var bitmap = new Bitmap(flyout.Width, flyout.Height);
-            flyout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(flyoutPath))!);
-            bitmap.Save(flyoutPath, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.SavePng(flyout, flyoutPath);
             SnapshotEvidence.WriteLayout(flyout, flyoutPath);
             flyout.Close();
             return;
@@ -121,10 +115,7 @@ internal static class Program
                 tabs.SelectedIndex = Math.Clamp(tabIndex, 0, tabs.TabCount - 1);
                 if (tabIndex == 5) settings.SetUpdateStatus("AirBridge 1.0.4 is available.", busy: false, canInstall: true);
             }
-            using var bitmap = new Bitmap(settings.Width, settings.Height);
-            settings.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(settingsPath))!);
-            bitmap.Save(settingsPath, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.SavePng(settings, settingsPath);
             settings.Close();
             return;
         }
@@ -147,10 +138,7 @@ internal static class Program
             else
                 hud.ShowListening(() => 0.42f, holdHint: false);
             for (var frame = 0; frame < 4; frame++) Application.DoEvents();
-            using var bitmap = new Bitmap(hud.Width, hud.Height);
-            hud.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(hudPath))!);
-            bitmap.Save(hudPath, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.SavePng(hud, hudPath);
             hud.Close();
             return;
         }
@@ -172,10 +160,7 @@ internal static class Program
             using var activity = new ActivityInspectorForm(store, ThemePalette.Current(theme));
             activity.Show();
             Application.DoEvents();
-            using var bitmap = new Bitmap(activity.Width, activity.Height);
-            activity.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(activityPath))!);
-            bitmap.Save(activityPath, System.Drawing.Imaging.ImageFormat.Png);
+            SnapshotEvidence.SavePng(activity, activityPath);
             activity.Close();
             return;
         }

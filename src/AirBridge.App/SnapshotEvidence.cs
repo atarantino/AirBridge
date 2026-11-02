@@ -5,6 +5,16 @@ namespace AirBridge.App;
 /// <summary>Geometry accompanies pixels so clipping can be diagnosed from the same rendering run.</summary>
 internal static class SnapshotEvidence
 {
+    /// <summary>Renders the form to a PNG at <paramref name="path"/>, creating its directory.</summary>
+    internal static Size SavePng(Form form, string path)
+    {
+        using var bitmap = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+        return bitmap.Size;
+    }
+
     internal static void WriteLayout(Form form, string imagePath)
     {
         object Describe(Control control) => new

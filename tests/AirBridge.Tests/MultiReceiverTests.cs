@@ -16,7 +16,7 @@ public sealed class MultiReceiverTests
         public int DropsRemaining { get; set; }
         public List<byte[]> Writes { get; } = [];
 
-        public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
+        public AudioPipeWriteResult Write(byte[] pcm)
         {
             if (!IsConnected) return AudioPipeWriteResult.Unavailable;
             if (DropsRemaining > 0)
