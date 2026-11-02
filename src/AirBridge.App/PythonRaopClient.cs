@@ -136,7 +136,7 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         var values = JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(arguments))!;
         values["request_id"] = requestId;
         values["command"] = command;
-        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
         AppLog.Info("raop-command", $"Sending {command}; operation={requestId}; run={RuntimeProfile.RunId}.");
         try
         {
@@ -153,7 +153,6 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             _requests.TryRemove(requestId, out _);
             throw;
         }
-        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
         try
         {
             var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
@@ -162,7 +161,6 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         }
         catch (TimeoutException)
         {
-            _requests.TryRemove(requestId, out _);
             AppLog.Error("raop-command", $"Timed out waiting for {command}; operation={requestId}.");
             throw new TimeoutException($"RAOP host did not answer the {command} command within 15 seconds.");
         }
