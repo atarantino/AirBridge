@@ -57,7 +57,6 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private bool _groupGateOpen = true;
     private bool _standby;
     private bool _calibrationMode;
-    private bool _discardBufferedUntilGateOpen;
     private int _groupResyncCount;
 
     public SharedAudioPump(BoundedPcmBuffer? monitorBuffer = null, Func<DateTimeOffset>? utcNow = null, Action? advanceCalibration = null)
@@ -117,12 +116,11 @@ public sealed class SharedAudioPump : IAsyncDisposable
         }
     }
 
-    public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null, bool discardBufferedUntilGateOpen = true)
+    public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null)
     {
         lock (_gate)
         {
             _standby = false;
-            _discardBufferedUntilGateOpen = discardBufferedUntilGateOpen;
             _gateReceiverIds = receiverIds.Where(_legs.ContainsKey).ToHashSet(StringComparer.Ordinal);
             _groupGateOpen = _gateReceiverIds.Count == 0;
             _gateDeadlineUtc = _groupGateOpen ? null : _utcNow() + (timeout ?? TimeSpan.FromSeconds(10));
@@ -222,7 +220,7 @@ public sealed class SharedAudioPump : IAsyncDisposable
                     foreach (var id in _gateReceiverIds)
                         if (_legs.TryGetValue(id, out var leg) && leg.Ready && leg.Endpoint.CanAcceptWrite)
                         {
-                            if (_discardBufferedUntilGateOpen) leg.Buffer.DiscardToLiveEdge(BlockBytes);
+                            leg.Buffer.DiscardToLiveEdge(BlockBytes);
                             MakeLive(leg, EffectiveAlignmentTrim(leg));
                         }
                     foreach (var leg in _legs.Values.Where(item => item.Ready && !item.Live))
@@ -230,7 +228,6 @@ public sealed class SharedAudioPump : IAsyncDisposable
                         leg.Buffer.DiscardToLiveEdge(BlockBytes);
                         MakeLive(leg, EffectiveAlignmentTrim(leg));
                     }
-                    _discardBufferedUntilGateOpen = false;
                 }
             }
 

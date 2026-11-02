@@ -249,7 +249,7 @@ public sealed class SharedAudioPumpTests
         Assert.Equal(0, buffer.Snapshot().FillBytes);
         Assert.Single(endpoint.Writes);
 
-        pump.BeginGroup(["receiver"], discardBufferedUntilGateOpen: true);
+        pump.BeginGroup(["receiver"]);
         buffer.Write(Enumerable.Repeat((byte)0x44, SharedAudioPump.BlockBytes).ToArray());
         buffer.Write(Enumerable.Repeat((byte)0x77, SharedAudioPump.BlockBytes).ToArray());
         pump.MarkReady("receiver");
