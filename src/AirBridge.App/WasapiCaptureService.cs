@@ -24,16 +24,7 @@ public sealed class WasapiCaptureService : IAudioCaptureService
     public async Task StartSystemAsync(CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null)
     {
         Stop();
-        var builder = new WasapiRecorderBuilder()
-            .WithLoopbackCapture()
-            .WithBufferLength(20)
-            .WithMmcssThreadPriority("Pro Audio");
-        var build = Task.Run(() => builder.BuildAsync(), cancellationToken);
-        _capture = await AwaitRecorderAsync(build, activationTimeout ?? TimeSpan.FromSeconds(10), cancellationToken);
-        _normalizer = new PcmNormalizer(_capture.WaveFormat.SampleRate, _capture.WaveFormat.Channels);
-        _capture.DataAvailable += OnDataAvailable;
-        _capture.RecordingStopped += OnRecordingStopped;
-        _capture.StartRecording();
+        await StartAsync(new WasapiRecorderBuilder().WithLoopbackCapture(), cancellationToken, activationTimeout);
     }
 
     public async Task StartProcessTreeAsync(int processId, bool exclude = false, CancellationToken cancellationToken = default, TimeSpan? activationTimeout = null)
@@ -42,9 +33,13 @@ public sealed class WasapiCaptureService : IAudioCaptureService
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             throw new PlatformNotSupportedException("Application loopback requires Windows 10 2004 or later.");
         var builder = new WasapiRecorderBuilder()
-            .WithProcessLoopback((uint)processId, exclude ? ProcessLoopbackMode.ExcludeTargetProcessTree : ProcessLoopbackMode.IncludeTargetProcessTree)
-            .WithBufferLength(20)
-            .WithMmcssThreadPriority("Pro Audio");
+            .WithProcessLoopback((uint)processId, exclude ? ProcessLoopbackMode.ExcludeTargetProcessTree : ProcessLoopbackMode.IncludeTargetProcessTree);
+        await StartAsync(builder, cancellationToken, activationTimeout);
+    }
+
+    private async Task StartAsync(WasapiRecorderBuilder builder, CancellationToken cancellationToken, TimeSpan? activationTimeout)
+    {
+        builder = builder.WithBufferLength(20).WithMmcssThreadPriority("Pro Audio");
         // Some drivers block inside BuildAsync before returning its Task. Keep
         // that COM activation off the UI/test thread so our timeout can fire.
         var build = Task.Run(() => builder.BuildAsync(), cancellationToken);
