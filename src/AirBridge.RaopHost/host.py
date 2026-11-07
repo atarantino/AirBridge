@@ -9,7 +9,7 @@ import random
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import pyatv
 from pyatv.const import DeviceModel, OperatingSystem, PairingRequirement, Protocol
@@ -19,6 +19,7 @@ from live_stream import DiagnosticToneSource, LivePcmSource, install_pyatv_adapt
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 install_pyatv_adapter()
+QUICK_SCAN_SECONDS = 1
 
 
 @dataclass
@@ -54,18 +55,32 @@ class Host:
         self.pairings.clear()
         await asyncio.gather(*(pairing.close() for pairing in pending), return_exceptions=True)
 
-    async def discover(self, timeout: int = 5) -> list[dict]:
+    async def discover(self, timeout: int = 5, on_progress: Callable[[list[dict]], Awaitable[None]] | None = None) -> list[dict]:
+        found: dict[str, Any] = {}
+        if on_progress is not None and timeout > QUICK_SCAN_SECONDS:
+            # Receivers on the local network answer within a few hundred milliseconds.
+            # Report them after a short scan, then keep listening for slower ones.
+            await self._scan_into(found, QUICK_SCAN_SECONDS)
+            self.devices = dict(found)
+            await on_progress(self._describe())
+            timeout -= QUICK_SCAN_SECONDS
+        await self._scan_into(found, timeout)
+        self.devices = found
+        return self._describe()
+
+    async def _scan_into(self, found: dict[str, Any], timeout: int) -> None:
         # Scan all protocols so AirPlay 2/Companion properties are merged into the
         # configuration used by HomePods; filtering the scan to RAOP loses that context.
         configs = await pyatv.scan(asyncio.get_running_loop(), timeout=timeout, storage=self.storage)
-        receivers = []
-        self.devices.clear()
         for config in configs:
             service = config.get_service(Protocol.RAOP)
-            if service is None:
-                continue
-            stable_id = service.identifier or config.identifier or f"raop-{config.name.casefold()}"
-            self.devices[stable_id] = config
+            if service is not None:
+                found[service.identifier or config.identifier or f"raop-{config.name.casefold()}"] = config
+
+    def _describe(self) -> list[dict]:
+        receivers = []
+        for stable_id, config in self.devices.items():
+            service = config.get_service(Protocol.RAOP)
             pairing = getattr(service, "pairing", PairingRequirement.Unsupported)
             has_credentials = bool(getattr(service, "credentials", None))
             power_protocol = control_protocol(config)
@@ -377,7 +392,10 @@ async def main() -> None:
         try:
             command = request.get("command")
             if command == "discover":
-                result = await host.discover(int(request.get("timeout", 5)))
+                async def report_progress(receivers: list[dict], request_id=request_id) -> None:
+                    await emit({"event": "discovery", "request_id": request_id, "receivers": receivers})
+
+                result = await host.discover(int(request.get("timeout", 5)), report_progress if request.get("progress") else None)
             elif command == "start":
                 result = await host.start(request.get("receiver_id"), request.get("receiver_name"), request["pipe_name"], int(request.get("initial_volume", 30)))
             elif command == "begin_pairing":

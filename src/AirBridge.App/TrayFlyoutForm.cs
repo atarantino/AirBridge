@@ -144,13 +144,15 @@ public sealed class TrayFlyoutForm : Form
         IEnumerable<ReceiverInfo> receivers,
         IReadOnlySet<string>? selectedIds = null,
         IReadOnlyDictionary<string, int>? volumes = null,
-        IReadOnlyDictionary<string, int>? alignmentTrims = null)
+        IReadOnlyDictionary<string, int>? alignmentTrims = null,
+        bool showWhileLoading = false)
     {
         var redrawSuspended = SuspendFlyoutRedraw();
         _receivers.SuspendLayout();
         try
         {
-            _receiverRowsPending = _receiverLoadingActive;
+            // Rows stay hidden during a refresh unless they are early discovery results.
+            _receiverRowsPending = _receiverLoadingActive && !showWhileLoading;
             _receivers.Controls.Clear();
             foreach (var row in _rows.Values) row.Dispose();
             _rows.Clear();

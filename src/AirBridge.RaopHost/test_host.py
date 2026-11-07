@@ -246,5 +246,45 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({}, self.host.sessions)
 
 
+def raop_config(identifier: str, name: str):
+    raop = SimpleNamespace(identifier=identifier, pairing=PairingRequirement.NotNeeded, credentials=None, requires_password=False)
+    return SimpleNamespace(
+        identifier=identifier,
+        name=name,
+        address=f"192.0.2.{len(name)}",
+        device_info=SimpleNamespace(model=DeviceModel.Unknown, operating_system=OperatingSystem.Unknown, model_str="Speaker", raw_model="AudioAccessory5,1"),
+        get_service=lambda protocol: raop if protocol == Protocol.RAOP else None,
+    )
+
+
+class ProgressiveDiscoveryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.host = host_module.Host()
+        self.kitchen = raop_config("kitchen", "Kitchen")
+        self.office = raop_config("office", "Office")
+
+    async def test_progress_reports_a_quick_scan_then_returns_the_union(self):
+        scan = AsyncMock(side_effect=[[self.kitchen], [self.office]])
+        progress = AsyncMock()
+        with patch.object(host_module.pyatv, "scan", new=scan):
+            result = await self.host.discover(5, progress)
+
+        self.assertEqual([1, 4], [call.kwargs["timeout"] for call in scan.await_args_list])
+        progress.assert_awaited_once()
+        self.assertEqual(["Kitchen"], [item["name"] for item in progress.await_args.args[0]])
+        # A receiver seen only in the quick scan stays listed.
+        self.assertEqual(["Kitchen", "Office"], [item["name"] for item in result])
+        self.assertEqual({"kitchen", "office"}, set(self.host.devices))
+
+    async def test_without_progress_one_full_scan_runs(self):
+        scan = AsyncMock(return_value=[self.office])
+        with patch.object(host_module.pyatv, "scan", new=scan):
+            result = await self.host.discover(5)
+
+        self.assertEqual([5], [call.kwargs["timeout"] for call in scan.await_args_list])
+        self.assertEqual(["office"], [item["id"] for item in result])
+        self.assertFalse(result[0]["requires_pairing"])
+
+
 if __name__ == "__main__":
     unittest.main()
