@@ -13,11 +13,12 @@ public sealed class SharedAudioPumpTests
         public List<byte[]> Writes { get; } = [];
         public Action<byte[]>? BeforeWrite { get; set; }
         public bool AcceptWrites { get; set; } = true;
-        public AudioPipeWriteResult Write(byte[] pcm)
+        public AudioPipeWriteResult Write(ReadOnlySpan<byte> pcm)
         {
             if (!AcceptWrites) return AudioPipeWriteResult.Unavailable;
-            BeforeWrite?.Invoke(pcm);
-            Writes.Add(pcm.ToArray());
+            var copy = pcm.ToArray();
+            BeforeWrite?.Invoke(copy);
+            Writes.Add(copy);
             return AudioPipeWriteResult.Accepted;
         }
     }
