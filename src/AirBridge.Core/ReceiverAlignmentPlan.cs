@@ -16,22 +16,15 @@ public static class ReceiverAlignmentPlan
             : MinimumTrimMilliseconds;
 
     /// <summary>Returns a whole-frame byte count for the requested PCM duration.</summary>
-    public static int ToPcmByteCount(
-        int trimMilliseconds,
-        int sampleRate = CanonicalSampleRate,
-        int channels = CanonicalChannels,
-        int bytesPerSample = CanonicalBytesPerSample)
+    public static int ToPcmByteCount(int trimMilliseconds)
     {
         if (trimMilliseconds is < MinimumTrimMilliseconds or > MaximumTrimMilliseconds)
             throw new ArgumentOutOfRangeException(nameof(trimMilliseconds));
-        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
-        if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
-        if (bytesPerSample <= 0) throw new ArgumentOutOfRangeException(nameof(bytesPerSample));
 
         var frames = (long)Math.Round(
-            trimMilliseconds * sampleRate / 1000.0,
+            trimMilliseconds * CanonicalSampleRate / 1000.0,
             MidpointRounding.AwayFromZero);
-        return checked((int)(frames * channels * bytesPerSample));
+        return checked((int)(frames * CanonicalChannels * CanonicalBytesPerSample));
     }
 
     /// <summary>
@@ -59,15 +52,14 @@ public static class ReceiverAlignmentPlan
 
     public static IReadOnlyDictionary<string, int> MeasurementVolumePlan(
         string targetReceiverId,
-        IReadOnlyDictionary<string, int> currentVolumes,
-        int isolationFloor = 0)
+        IReadOnlyDictionary<string, int> currentVolumes)
     {
         ArgumentNullException.ThrowIfNull(currentVolumes);
         if (!currentVolumes.ContainsKey(targetReceiverId))
             throw new ArgumentException("Target receiver is not present in the volume plan.", nameof(targetReceiverId));
         return currentVolumes.ToDictionary(
             pair => pair.Key,
-            pair => pair.Key == targetReceiverId ? Math.Clamp(pair.Value, 0, 100) : Math.Clamp(isolationFloor, 0, 100),
+            pair => pair.Key == targetReceiverId ? Math.Clamp(pair.Value, 0, 100) : 0,
             StringComparer.Ordinal);
     }
 
