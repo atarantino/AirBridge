@@ -22,6 +22,7 @@ _source_patch_installed = False
 _volume_patch_installed = False
 _stream_volume_patch_installed = False
 _airplay2_alac_patch_installed = False
+_packet_backlog_patch_installed = False
 SENDER_NAME = "AirBridge"
 _ALAC_UNCOMPRESSED_STEREO_HEADER = 0x100001  # 23 bits
 _ALAC_END_TAG = 0b111
@@ -256,10 +257,11 @@ class DiagnosticToneSource(AudioSource):
 def install_pyatv_adapter() -> None:
     """Teach only RAOP's source-opening seam about our raw live source."""
     global _source_patch_installed, _volume_patch_installed, _stream_volume_patch_installed
-    global _airplay2_alac_patch_installed
+    global _airplay2_alac_patch_installed, _packet_backlog_patch_installed
     import pyatv.protocols.raop as raop
     from pyatv import exceptions
     from pyatv.protocols.airplay.auth import hap_transient
+    from pyatv.protocols.raop.fifo import PacketFifo
     from pyatv.protocols.raop.packets import AudioPacketHeader
     from pyatv.protocols.raop.protocols import airplayv2
     from pyatv.protocols.raop.stream_client import StreamClient
@@ -270,6 +272,24 @@ def install_pyatv_adapter() -> None:
     # macOS uses this header for the sender label in its first-use approval
     # prompt. pyatv 0.18 omits it, which produces an empty quoted device name.
     hap_transient._AIRPLAY_HEADERS["X-Apple-Client-Name"] = SENDER_NAME
+
+    if not _packet_backlog_patch_installed:
+        # pyatv keeps the last 1,000 sent packets for retransmission. Once full,
+        # its insert evicted the oldest by copying every key into a list, which
+        # was the costliest step of each ~8 ms packet. Dicts keep insertion
+        # order, so the first key from an iterator is the same oldest packet.
+        def add_packet(fifo, index: int, value) -> None:
+            if not isinstance(index, int):
+                raise TypeError("only int supported as key")
+            items = fifo._items
+            if index in items:
+                raise ValueError(f"{index} already in FIFO")
+            if len(items) >= fifo._upper_limit:
+                del items[next(iter(items))]
+            items[index] = value
+
+        PacketFifo.__setitem__ = add_packet
+        _packet_backlog_patch_installed = True
 
     if not _source_patch_installed:
         original_open_source = raop.open_source
