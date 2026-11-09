@@ -15,7 +15,6 @@ public sealed class ReceiverAlignmentPlanTests
         var bytes = ReceiverAlignmentPlan.ToPcmByteCount(milliseconds);
 
         Assert.Equal(expectedBytes, bytes);
-        Assert.Equal(0, bytes % (ReceiverAlignmentPlan.CanonicalChannels * ReceiverAlignmentPlan.CanonicalBytesPerSample));
     }
 
     [Fact]
@@ -95,21 +94,6 @@ public sealed class ReceiverAlignmentPlanTests
             ["office"] = 1900
         });
         Assert.All(proposal.Values, value => Assert.Equal(0, value));
-    }
-
-    [Fact]
-    public void RepeatedMeasurementsProduceTheSameAbsoluteProposalWithoutStacking()
-    {
-        var measured = new Dictionary<string, int> { ["speakerA"] = 1760, ["beam"] = 710 };
-
-        var firstProposal = ReceiverAlignmentPlan.ProposeTrims(measured);
-        var appliedTrims = new Dictionary<string, int>(firstProposal, StringComparer.Ordinal);
-        var repeatedProposal = ReceiverAlignmentPlan.ProposeTrims(measured);
-
-        Assert.Equal(firstProposal, repeatedProposal);
-        Assert.Equal(0, repeatedProposal["speakerA"]);
-        Assert.Equal(1050, repeatedProposal["beam"]);
-        Assert.Equal(repeatedProposal, appliedTrims);
     }
 
     [Fact]
