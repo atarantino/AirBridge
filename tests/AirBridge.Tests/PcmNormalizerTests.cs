@@ -34,25 +34,23 @@ public sealed class PcmNormalizerTests
         var normalizer = new PcmNormalizer(48000, 2);
         var packet = new float[480 * 2];
         Array.Fill(packet, 0.25f);
-        var one = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(packet.AsSpan()));
-        var two = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(packet.AsSpan()));
-        Assert.InRange(one.Length + two.Length, 440 * 4 * 2 - 8, 442 * 4 * 2 + 8);
+        var one = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(packet.AsSpan())).Length;
+        var two = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(packet.AsSpan())).Length;
+        Assert.InRange(one + two, 440 * 4 * 2 - 8, 442 * 4 * 2 + 8);
     }
 
     [Fact]
-    public void UpsamplingInterpolatesAcrossEmptyAndSmallerPacketsWithoutChangingPriorOutput()
+    public void UpsamplingInterpolatesAcrossEmptyAndSmallerPackets()
     {
         var normalizer = new PcmNormalizer(22050, 1);
         float[] first = [0f, 1f, 0f];
-        var output = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(first.AsSpan()));
-        short[] expected = [0, 0, 16384, 16384, 32767, 32767, 16384, 16384];
-        Assert.Equal(expected, MemoryMarshal.Cast<byte, short>(output).ToArray());
+        var output = MemoryMarshal.Cast<byte, short>(normalizer.ConvertFloat32(MemoryMarshal.AsBytes(first.AsSpan()))).ToArray();
+        Assert.Equal(new short[] { 0, 0, 16384, 16384, 32767, 32767, 16384, 16384 }, output);
 
-        Assert.Empty(normalizer.ConvertFloat32([]));
+        Assert.True(normalizer.ConvertFloat32([]).IsEmpty);
         float[] second = [-.5f];
-        var next = normalizer.ConvertFloat32(MemoryMarshal.AsBytes(second.AsSpan()));
-        Assert.Equal(new short[] { 0, 0, -8192, -8192 }, MemoryMarshal.Cast<byte, short>(next).ToArray());
-        Assert.Equal(expected, MemoryMarshal.Cast<byte, short>(output).ToArray());
+        var next = MemoryMarshal.Cast<byte, short>(normalizer.ConvertFloat32(MemoryMarshal.AsBytes(second.AsSpan()))).ToArray();
+        Assert.Equal(new short[] { 0, 0, -8192, -8192 }, next);
     }
 
     [Theory]
@@ -71,15 +69,15 @@ public sealed class PcmNormalizerTests
             for (var i = 0; i < input.Length; i++) input[i] = (short)random.Next(-32768, 32768);
             var floatInput = input.Select(value => value / 32768f).ToArray();
             Assert.Equal(
-                floats.ConvertFloat32(MemoryMarshal.AsBytes(floatInput.AsSpan())),
-                integers.ConvertInt16(MemoryMarshal.AsBytes(input.AsSpan())));
+                floats.ConvertFloat32(MemoryMarshal.AsBytes(floatInput.AsSpan())).ToArray(),
+                integers.ConvertInt16(MemoryMarshal.AsBytes(input.AsSpan())).ToArray());
         }
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void SteadyStateConversionAllocatesOnlyTheReturnedPcm(bool int16)
+    public void SteadyStateConversionDoesNotAllocate(bool int16)
     {
         long outputBytes = 0;
         long allocated = 0;
@@ -96,7 +94,7 @@ public sealed class PcmNormalizerTests
                 var before = GC.GetAllocatedBytesForCurrentThread();
                 for (var i = 0; i < 100; i++) outputBytes += Convert().Length;
                 allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-                byte[] Convert() => int16 ? normalizer.ConvertInt16(input) : normalizer.ConvertFloat32(input);
+                ReadOnlySpan<byte> Convert() => int16 ? normalizer.ConvertInt16(input) : normalizer.ConvertFloat32(input);
             }
             catch (Exception exception) { failure = exception; }
         }) { IsBackground = true };
@@ -104,8 +102,10 @@ public sealed class PcmNormalizerTests
         Assert.True(worker.Join(TimeSpan.FromSeconds(10)), "PCM allocation measurement did not finish.");
         Assert.Null(failure);
 
-        // Allow an array header and alignment per returned packet, but no scratch arrays.
-        Assert.InRange(allocated, outputBytes, outputBytes + 100 * 32);
+        Assert.InRange(outputBytes, 100 * 3520, 100 * 3536);
+        // Each packet used to allocate its 3.5 KB result. Leave slack for runtime
+        // bookkeeping on this thread, far below one packet per conversion.
+        Assert.InRange(allocated, 0, 1024);
     }
 
     [HardwareFact]
