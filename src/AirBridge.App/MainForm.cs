@@ -63,6 +63,8 @@ public sealed partial class MainForm : Form
     private bool _shutdownCompleted;
     private bool _uiResourcesDisposed;
     private bool _refreshingReceivers;
+    // Started from the constructor so the RAOP host loads while the UI is built.
+    private Task? _hostStart;
     private bool _previewStreamActive;
     private Control? _telemetryDetails;
     private System.Threading.Timer? _shutdownWatchdog;
@@ -90,6 +92,10 @@ public sealed partial class MainForm : Form
         _settings = previewMode ? new() : _settingsStore.Load();
         if (IsTestSession) _settings = _settings with { AiEnabled = false };
         _controller.ConfigureSettings(_settings);
+        // The RAOP host spends most of a second importing pyatv. Launch it off the
+        // UI thread now so that overlaps building the window and showing the tray
+        // icon; InitializeAsync awaits the same task.
+        if (!previewMode) _hostStart = Task.Run(() => _controller.InitializeAsync());
         _controller.AgentPairingHandler = EnsureAgentReceiversPairedAsync;
         foreach (var id in _settings.SelectedReceiverIds) _selectedReceiverIds.Add(id);
         foreach (var pair in _settings.ReceiverVolumes) _receiverVolumes[pair.Key] = pair.Value;
@@ -364,7 +370,9 @@ public sealed partial class MainForm : Form
     {
         await RunUiActionAsync(async () =>
         {
-            await _controller.InitializeAsync();
+            var hostStart = _hostStart ?? _controller.InitializeAsync();
+            _hostStart = null;
+            await hostStart;
             await RefreshReceiversAsync();
             RefreshSessions();
             RefreshGroups();
