@@ -10,6 +10,9 @@ public interface IRaopClient
     Task<JsonElement> PingAsync(CancellationToken cancellationToken = default) =>
         Task.FromException<JsonElement>(new NotSupportedException("This RAOP client does not support a liveness probe."));
     Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default);
+    /// <summary>Discovers receivers, reporting early results to <paramref name="onPartial"/> when the client can.</summary>
+    Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(Action<IReadOnlyList<ReceiverInfo>>? onPartial, CancellationToken cancellationToken = default) =>
+        DiscoverAsync(cancellationToken);
     Task<JsonElement> BeginPairingAsync(string receiverId, bool controlPairing = false, CancellationToken cancellationToken = default) =>
         Task.FromException<JsonElement>(new NotSupportedException("Pairing is not supported by this RAOP client."));
     Task<JsonElement> FinishPairingAsync(string receiverId, string pin, CancellationToken cancellationToken = default) =>

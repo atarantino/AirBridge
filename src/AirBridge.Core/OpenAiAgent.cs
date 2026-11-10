@@ -108,7 +108,6 @@ public sealed class OpenAiAgent
                 }
                 catch (Exception ex)
                 {
-                    toolTimer.Stop();
                     Publish(AgentActivityKind.Error, call.Name, "Local tool execution failed", ex.Message, toolTimer.ElapsedMilliseconds, AgentActivityTone.Error);
                     // The Responses API requires an output for every function call before
                     // the conversation can continue. Returning a sanitized failure keeps
@@ -120,7 +119,7 @@ public sealed class OpenAiAgent
                 Publish(AgentActivityKind.ToolResult, call.Name,
                     decision.Allowed ? "Local tool completed" : "Policy result returned to model", serializedResult,
                     toolTimer.ElapsedMilliseconds, decision.Allowed ? AgentActivityTone.Success : AgentActivityTone.Warning);
-                outputs.Add(new { type = "function_call_output", call_id = call.CallId, output = JsonSerializer.Serialize(result) });
+                outputs.Add(new { type = "function_call_output", call_id = call.CallId, output = serializedResult });
             }
             input = outputs;
         }

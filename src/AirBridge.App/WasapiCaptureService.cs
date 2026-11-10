@@ -12,6 +12,8 @@ public sealed class WasapiCaptureService : IAudioCaptureService
     private readonly StreamCoordinator _coordinator;
     private WasapiRecorder? _capture;
     private PcmNormalizer? _normalizer;
+    // Reused zero input for packets the engine flags silent; grows only with packet size.
+    private byte[] _silence = [];
 
     public WasapiCaptureService(IPcmSink sink, StreamCoordinator coordinator)
     {
@@ -56,11 +58,11 @@ public sealed class WasapiCaptureService : IAudioCaptureService
         try
         {
             var silent = (flags & AudioClientBufferFlags.Silent) != 0;
-            var silence = silent ? new byte[captured.Length] : null;
-            ReadOnlySpan<byte> data = silent ? silence! : captured;
+            if (silent && _silence.Length < captured.Length) _silence = new byte[captured.Length];
+            ReadOnlySpan<byte> data = silent ? _silence.AsSpan(0, captured.Length) : captured;
             var format = _capture.WaveFormat;
             var subFormat = (format as WaveFormatExtensible)?.SubFormat;
-            byte[] normalized;
+            ReadOnlySpan<byte> normalized;
             if ((format.Encoding == WaveFormatEncoding.IeeeFloat || subFormat == FloatSubFormat) && format.BitsPerSample == 32)
                 normalized = _normalizer.ConvertFloat32(data);
             else if ((format.Encoding == WaveFormatEncoding.Pcm || subFormat == PcmSubFormat) && format.BitsPerSample == 16)
