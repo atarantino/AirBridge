@@ -9,11 +9,11 @@ public sealed class PcmNormalizer
     private bool _hasPreviousFrame;
     private float _previousLeft;
     private float _previousRight;
-    // Capture uses one normalizer serially. Retain scratch storage across packets;
-    // only the returned PCM array belongs to the caller and must remain independent.
+    // Capture uses one normalizer serially, so every buffer, including the
+    // returned PCM, is reused across packets instead of allocated per packet.
     private float[] _inputSamples = [];
     private float[] _stereoSamples = [];
-    private short[] _outputSamples = [];
+    private byte[] _output = [];
 
     public PcmNormalizer(int inputRate, int channels)
     {
@@ -23,9 +23,11 @@ public sealed class PcmNormalizer
         _channels = channels;
     }
 
-    public byte[] ConvertFloat32(ReadOnlySpan<byte> input) => ConvertSamples(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(input));
+    /// <summary>Converts one packet. The result is valid only until the next conversion on this instance.</summary>
+    public ReadOnlySpan<byte> ConvertFloat32(ReadOnlySpan<byte> input) => ConvertSamples(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(input));
 
-    public byte[] ConvertInt16(ReadOnlySpan<byte> input)
+    /// <summary>Converts one packet. The result is valid only until the next conversion on this instance.</summary>
+    public ReadOnlySpan<byte> ConvertInt16(ReadOnlySpan<byte> input)
     {
         var values = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(input);
         var samples = Scratch(ref _inputSamples, values.Length);
@@ -33,7 +35,7 @@ public sealed class PcmNormalizer
         return ConvertSamples(samples);
     }
 
-    private byte[] ConvertSamples(ReadOnlySpan<float> samples)
+    private ReadOnlySpan<byte> ConvertSamples(ReadOnlySpan<float> samples)
     {
         var frames = samples.Length / _channels;
         if (frames == 0) return [];
@@ -55,7 +57,8 @@ public sealed class PcmNormalizer
 
         var totalFrames = frames + offset;
         var step = _inputRate / 44100d;
-        var output = Scratch(ref _outputSamples, (int)(frames / step + 2) * 2);
+        var outputBytes = Scratch(ref _output, (int)(frames / step + 2) * 2 * sizeof(short));
+        var output = System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(outputBytes);
         var outputCount = 0;
         while (_sourcePosition + 1 < totalFrames)
         {
@@ -70,9 +73,7 @@ public sealed class PcmNormalizer
             _sourcePosition += step;
         }
         _sourcePosition -= totalFrames - 1;
-        var bytes = new byte[outputCount * sizeof(short)];
-        output[..outputCount].CopyTo(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, short>(bytes));
-        return bytes;
+        return outputBytes[..(outputCount * sizeof(short))];
     }
 
     private static Span<T> Scratch<T>(ref T[] buffer, int length)
