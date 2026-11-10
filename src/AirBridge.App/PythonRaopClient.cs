@@ -8,7 +8,7 @@ namespace AirBridge.App;
 
 public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
 {
-    private sealed record PendingRequest(Process Process, TaskCompletionSource<JsonElement> Completion);
+    private sealed record PendingRequest(Process Process, TaskCompletionSource<JsonElement> Completion, Action<JsonElement>? OnEvent = null);
     private readonly ConcurrentDictionary<string, PendingRequest> _requests = new();
     private readonly ConcurrentDictionary<Process, byte> _closedResponseStreams = new();
     private readonly SemaphoreSlim _sendGate = new(1, 1);
@@ -86,10 +86,23 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             startInfo.Environment.Remove(name);
     }
 
-    public async Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) =>
+        DiscoverAsync(null, cancellationToken);
+
+    /// <summary>Runs the full scan; <paramref name="onPartial"/> gets the receivers that answered within the first second.</summary>
+    public async Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(Action<IReadOnlyList<ReceiverInfo>>? onPartial, CancellationToken cancellationToken = default)
     {
-        var result = await SendAsync("discover", new { timeout = 5 }, cancellationToken);
-        return result.EnumerateArray().Select(item => new ReceiverInfo(
+        Action<JsonElement>? onEvent = onPartial is null ? null : element =>
+        {
+            if (element.TryGetProperty("event", out var type) && type.GetString() == "discovery")
+                onPartial(ParseReceivers(element.GetProperty("receivers")));
+        };
+        var result = await SendAsync("discover", new { timeout = 5, progress = onPartial is not null }, cancellationToken, onEvent);
+        return ParseReceivers(result);
+    }
+
+    private static ReceiverInfo[] ParseReceivers(JsonElement receivers) =>
+        receivers.EnumerateArray().Select(item => new ReceiverInfo(
             item.GetProperty("id").GetString()!, item.GetProperty("name").GetString()!, "local-network-receiver",
             item.GetProperty("requires_password").GetBoolean(), DateTimeOffset.UtcNow,
             item.GetProperty("device_type").GetString() ?? "speaker",
@@ -100,7 +113,6 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             item.TryGetProperty("connection_issue", out var issue) && issue.ValueKind == JsonValueKind.String
                 ? issue.GetString()
                 : null)).ToArray();
-    }
 
     public Task<JsonElement> BeginPairingAsync(string receiverId, bool controlPairing = false, CancellationToken cancellationToken = default) =>
         SendAsync("begin_pairing", new { receiver_id = receiverId, pairing_kind = controlPairing ? "control" : "raop" }, cancellationToken);
@@ -121,13 +133,13 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
     public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) =>
         SendAsync("set_volume", new { receiver_id = receiverId, percent }, cancellationToken);
 
-    private async Task<JsonElement> SendAsync(string command, object arguments, CancellationToken cancellationToken)
+    private async Task<JsonElement> SendAsync(string command, object arguments, CancellationToken cancellationToken, Action<JsonElement>? onEvent = null)
     {
         var process = _process;
         if (process is not { HasExited: false }) throw new InvalidOperationException("RAOP host is not running.");
         var requestId = Guid.NewGuid().ToString("N");
         var completion = new TaskCompletionSource<JsonElement>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _requests[requestId] = new(process, completion);
+        _requests[requestId] = new(process, completion, onEvent);
         if (_closedResponseStreams.ContainsKey(process))
         {
             _requests.TryRemove(requestId, out _);
@@ -136,7 +148,7 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         var values = JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(arguments))!;
         values["request_id"] = requestId;
         values["command"] = command;
-        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
         AppLog.Info("raop-command", $"Sending {command}; operation={requestId}; run={RuntimeProfile.RunId}.");
         try
         {
@@ -153,7 +165,6 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
             _requests.TryRemove(requestId, out _);
             throw;
         }
-        using var registration = cancellationToken.Register(() => completion.TrySetCanceled(cancellationToken));
         try
         {
             var result = await completion.Task.WaitAsync(TimeSpan.FromSeconds(15), cancellationToken).ConfigureAwait(false);
@@ -162,7 +173,6 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
         }
         catch (TimeoutException)
         {
-            _requests.TryRemove(requestId, out _);
             AppLog.Error("raop-command", $"Timed out waiting for {command}; operation={requestId}.");
             throw new TimeoutException($"RAOP host did not answer the {command} command within 15 seconds.");
         }
@@ -187,6 +197,13 @@ public sealed class PythonRaopClient : IRaopClient, IAsyncDisposable
                 if (root.TryGetProperty("request_id", out var requestIdElement) && requestIdElement.GetString() is { } requestId &&
                     _requests.TryGetValue(requestId, out var pending) && ReferenceEquals(pending.Process, process))
                 {
+                    if (root.TryGetProperty("event", out _))
+                    {
+                        // Progress for an outstanding request; the final response follows.
+                        try { pending.OnEvent?.Invoke(root); }
+                        catch (Exception ex) { AppLog.Warning("raop-host", $"Ignored a progress event that could not be handled ({ex.GetType().Name})."); }
+                        continue;
+                    }
                     var accepted = root.GetProperty("ok").GetBoolean();
                     var result = accepted ? root.GetProperty("result").Clone() : default;
                     var error = accepted ? null : root.GetProperty("error").GetString() ?? "RAOP host command failed.";

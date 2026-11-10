@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO.Pipes;
 using System.Threading.Channels;
 
@@ -13,7 +14,8 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
     private sealed class PipeConnection(NamedPipeServerStream pipe)
     {
         public NamedPipeServerStream Pipe { get; } = pipe;
-        public Channel<byte[]> Queue { get; } = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(10)
+        // Blocks are rented from the shared pool and returned once written.
+        public Channel<PooledBlock> Queue { get; } = Channel.CreateBounded<PooledBlock>(new BoundedChannelOptions(10)
         {
             FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
@@ -21,6 +23,8 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
         });
         public int PendingWrites;
     }
+
+    private readonly record struct PooledBlock(byte[] Buffer, int Length);
 
     public PipeAudioServer() => PipeName = $"AirBridge.Pcm.{Environment.ProcessId}.{Guid.NewGuid():N}";
 
@@ -84,10 +88,14 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
         {
             try
             {
-                await connection.Pipe.WriteAsync(block, cancellationToken).ConfigureAwait(false);
+                await connection.Pipe.WriteAsync(block.Buffer.AsMemory(0, block.Length), cancellationToken).ConfigureAwait(false);
                 await connection.Pipe.FlushAsync(cancellationToken).ConfigureAwait(false);
             }
-            finally { Interlocked.Decrement(ref connection.PendingWrites); }
+            finally
+            {
+                Interlocked.Decrement(ref connection.PendingWrites);
+                ArrayPool<byte>.Shared.Return(block.Buffer);
+            }
         }
     }
 
@@ -96,7 +104,7 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
     /// behind the bounded queue drops the excess block so it cannot stall siblings.
     /// Transient scheduler jitter must not tear down the RAOP session.
     /// </summary>
-    public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
+    public AudioPipeWriteResult Write(ReadOnlySpan<byte> pcm)
     {
         PipeConnection? connection;
         lock (_pipeGate) connection = _connection;
@@ -105,16 +113,13 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
             if (connection?.Pipe.IsConnected != true) return AudioPipeWriteResult.Unavailable;
         }
         catch (ObjectDisposedException) { return AudioPipeWriteResult.Unavailable; }
+        var buffer = ArrayPool<byte>.Shared.Rent(pcm.Length);
+        pcm.CopyTo(buffer);
         Interlocked.Increment(ref connection.PendingWrites);
-        if (connection.Queue.Writer.TryWrite(pcm)) return AudioPipeWriteResult.Accepted;
+        if (connection.Queue.Writer.TryWrite(new(buffer, pcm.Length))) return AudioPipeWriteResult.Accepted;
         Interlocked.Decrement(ref connection.PendingWrites);
+        ArrayPool<byte>.Shared.Return(buffer);
         return AudioPipeWriteResult.Dropped;
-    }
-
-    public bool TryWrite(byte[] pcm, bool tolerateBackpressure = false)
-    {
-        var result = Write(pcm, tolerateBackpressure);
-        return result == AudioPipeWriteResult.Accepted || tolerateBackpressure && result == AudioPipeWriteResult.Dropped;
     }
 
     public async ValueTask DisposeAsync()
@@ -134,16 +139,12 @@ public sealed class PipeAudioServer : IAudioPipeEndpoint, IAsyncDisposable
     public void DisconnectClient()
     {
         PipeConnection? connection;
-        lock (_pipeGate) connection = _connection;
-        if (connection is not null) DisconnectConnection(connection);
-    }
-
-    private void DisconnectConnection(PipeConnection connection)
-    {
         lock (_pipeGate)
         {
-            if (ReferenceEquals(_connection, connection)) _connection = null;
+            connection = _connection;
+            _connection = null;
         }
+        if (connection is null) return;
         connection.Queue.Writer.TryComplete();
         try { connection.Pipe.Dispose(); } catch { }
     }

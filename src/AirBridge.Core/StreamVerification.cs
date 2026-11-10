@@ -57,7 +57,6 @@ public sealed class StreamVerificationWindow
     private long _lastObserved;
     private readonly StreamVerificationObservation _baseline;
     private StreamVerificationObservation _previous;
-    private StreamVerificationObservation _latest;
     private bool _routeStable = true;
     private bool _streaming;
     private bool _continuous = true;
@@ -75,7 +74,7 @@ public sealed class StreamVerificationWindow
         _maximumGap = maximumObservationGap ?? TimeSpan.FromSeconds(1);
         if (_window <= TimeSpan.Zero || _maximumGap <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(window));
         _started = _lastObserved = _time.GetTimestamp();
-        _baseline = _previous = _latest = baseline;
+        _baseline = _previous = baseline;
         _streaming = IsStreaming(baseline);
         _epochs = baseline.Receivers.Keys.ToDictionary(id => id, _ => true, StringComparer.Ordinal);
     }
@@ -112,7 +111,7 @@ public sealed class StreamVerificationWindow
                         current.Buffer.BytesRead - previous.Buffer.BytesRead) / 176.4);
         }
         if (activeProgress && interval <= _maximumGap) _activeMilliseconds += Math.Max(0, advancedMilliseconds);
-        _latest = _previous = observation;
+        _previous = observation;
         _lastObserved = now;
         _samples++;
     }
@@ -131,7 +130,7 @@ public sealed class StreamVerificationWindow
         var metrics = _baseline.Receivers.ToDictionary(pair => pair.Key, pair =>
         {
             var initial = pair.Value.Buffer;
-            var current = _latest.Receivers.TryGetValue(pair.Key, out var receiver) ? receiver.Buffer : initial;
+            var current = _previous.Receivers.TryGetValue(pair.Key, out var receiver) ? receiver.Buffer : initial;
             return new ReceiverVerificationMetrics(
                 Math.Max(0, current.ActiveBytesWritten - initial.ActiveBytesWritten),
                 Math.Max(0, current.BytesRead - initial.BytesRead),

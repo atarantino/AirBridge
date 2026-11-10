@@ -197,12 +197,9 @@ public sealed partial class MainForm
             form.PerformLayout();
             if (form == _trayFlyout) _trayFlyout.SettleSnapshotLayout();
             else SettleSnapshotLayout();
-            using var bitmap = new Bitmap(form.Width, form.Height);
-            form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
-            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            bitmap.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+            var size = SnapshotEvidence.SavePng(form, path);
             SnapshotEvidence.WriteLayout(form, path);
-            return new { surface, path, bitmap.Width, bitmap.Height };
+            return new { surface, path, size.Width, size.Height };
         }
         finally
         {

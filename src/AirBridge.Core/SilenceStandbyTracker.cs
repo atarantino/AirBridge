@@ -4,13 +4,12 @@ public enum SilenceStandbyAction { None, EnterStandby, Resume }
 
 public static class PcmSignalDetector
 {
-    public const int DefaultPeakThreshold = 10;
+    public const int PeakThreshold = 10;
 
-    public static bool ContainsSignal(ReadOnlySpan<byte> s16LePcm, int peakThreshold = DefaultPeakThreshold)
+    public static bool ContainsSignal(ReadOnlySpan<byte> s16LePcm)
     {
-        if (peakThreshold < 0) throw new ArgumentOutOfRangeException(nameof(peakThreshold));
         for (var index = 0; index + 1 < s16LePcm.Length; index += sizeof(short))
-            if (Math.Abs((int)BitConverter.ToInt16(s16LePcm.Slice(index, sizeof(short)))) >= peakThreshold) return true;
+            if (Math.Abs((int)BitConverter.ToInt16(s16LePcm.Slice(index, sizeof(short)))) >= PeakThreshold) return true;
         return false;
     }
 }

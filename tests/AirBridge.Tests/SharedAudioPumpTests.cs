@@ -13,11 +13,12 @@ public sealed class SharedAudioPumpTests
         public List<byte[]> Writes { get; } = [];
         public Action<byte[]>? BeforeWrite { get; set; }
         public bool AcceptWrites { get; set; } = true;
-        public AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false)
+        public AudioPipeWriteResult Write(ReadOnlySpan<byte> pcm)
         {
             if (!AcceptWrites) return AudioPipeWriteResult.Unavailable;
-            BeforeWrite?.Invoke(pcm);
-            Writes.Add(pcm.ToArray());
+            var copy = pcm.ToArray();
+            BeforeWrite?.Invoke(copy);
+            Writes.Add(copy);
             return AudioPipeWriteResult.Accepted;
         }
     }
@@ -249,7 +250,7 @@ public sealed class SharedAudioPumpTests
         Assert.Equal(0, buffer.Snapshot().FillBytes);
         Assert.Single(endpoint.Writes);
 
-        pump.BeginGroup(["receiver"], discardBufferedUntilGateOpen: true);
+        pump.BeginGroup(["receiver"]);
         buffer.Write(Enumerable.Repeat((byte)0x44, SharedAudioPump.BlockBytes).ToArray());
         buffer.Write(Enumerable.Repeat((byte)0x77, SharedAudioPump.BlockBytes).ToArray());
         pump.MarkReady("receiver");

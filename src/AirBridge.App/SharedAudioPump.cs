@@ -7,7 +7,8 @@ public interface IAudioPipeEndpoint
     string PipeName { get; }
     bool IsConnected { get; }
     bool CanAcceptWrite { get; }
-    AudioPipeWriteResult Write(byte[] pcm, bool tolerateBackpressure = false);
+    /// <summary>Queues one block. The caller reuses <paramref name="pcm"/> after this returns, so an endpoint that keeps it must copy it.</summary>
+    AudioPipeWriteResult Write(ReadOnlySpan<byte> pcm);
 }
 
 public enum AudioPipeWriteResult { Accepted, Dropped, Unavailable }
@@ -40,6 +41,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
         public int PendingInsertBytes { get; set; }
         public int PendingDropBytes { get; set; }
         public int CorrectionDebtBytes { get; set; }
+        // One block per leg, rewritten every tick. Iterations never overlap.
+        public byte[] Block { get; } = new byte[BlockBytes];
     }
 
     private readonly object _gate = new();
@@ -50,6 +53,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private readonly SemaphoreSlim _iterationGate = new(1, 1);
     // Released (under _gate) when the clock has work again; it never exceeds one.
     private readonly SemaphoreSlim _workAvailable = new(0, 1);
+    // Reused by every iteration; _iterationGate keeps iterations serial.
+    private readonly List<Leg> _writes = [];
     private CancellationTokenSource? _cancellation;
     private Task? _pumpTask;
     private HashSet<string> _gateReceiverIds = new(StringComparer.Ordinal);
@@ -57,7 +62,6 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private bool _groupGateOpen = true;
     private bool _standby;
     private bool _calibrationMode;
-    private bool _discardBufferedUntilGateOpen;
     private int _groupResyncCount;
 
     public SharedAudioPump(BoundedPcmBuffer? monitorBuffer = null, Func<DateTimeOffset>? utcNow = null, Action? advanceCalibration = null)
@@ -117,12 +121,11 @@ public sealed class SharedAudioPump : IAsyncDisposable
         }
     }
 
-    public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null, bool discardBufferedUntilGateOpen = true)
+    public void BeginGroup(IEnumerable<string> receiverIds, TimeSpan? timeout = null)
     {
         lock (_gate)
         {
             _standby = false;
-            _discardBufferedUntilGateOpen = discardBufferedUntilGateOpen;
             _gateReceiverIds = receiverIds.Where(_legs.ContainsKey).ToHashSet(StringComparer.Ordinal);
             _groupGateOpen = _gateReceiverIds.Count == 0;
             _gateDeadlineUtc = _groupGateOpen ? null : _utcNow() + (timeout ?? TimeSpan.FromSeconds(10));
@@ -199,7 +202,8 @@ public sealed class SharedAudioPump : IAsyncDisposable
             var read = _monitorBuffer.Read(monitorBlock, padWithSilence: false);
             containsSignal = read > 0 && PcmSignalDetector.ContainsSignal(monitorBlock[..read]);
         }
-        List<(Leg Leg, byte[] Block)> writes;
+        var writes = _writes;
+        writes.Clear();
         GroupGateTimeoutEventArgs? timedOut = null;
         var drainingReadyGate = false;
         lock (_gate)
@@ -222,26 +226,26 @@ public sealed class SharedAudioPump : IAsyncDisposable
                     foreach (var id in _gateReceiverIds)
                         if (_legs.TryGetValue(id, out var leg) && leg.Ready && leg.Endpoint.CanAcceptWrite)
                         {
-                            if (_discardBufferedUntilGateOpen) leg.Buffer.DiscardToLiveEdge(BlockBytes);
+                            leg.Buffer.DiscardToLiveEdge(BlockBytes);
                             MakeLive(leg, EffectiveAlignmentTrim(leg));
                         }
-                    foreach (var leg in _legs.Values.Where(item => item.Ready && !item.Live))
+                    foreach (var leg in _legs.Values)
                     {
+                        if (!leg.Ready || leg.Live) continue;
                         leg.Buffer.DiscardToLiveEdge(BlockBytes);
                         MakeLive(leg, EffectiveAlignmentTrim(leg));
                     }
-                    _discardBufferedUntilGateOpen = false;
                 }
             }
 
             if (_groupGateOpen)
-                foreach (var leg in _legs.Values.Where(item => item.Ready && !item.Live && item.Endpoint.CanAcceptWrite))
+                foreach (var leg in _legs.Values)
                 {
+                    if (!leg.Ready || leg.Live || !leg.Endpoint.CanAcceptWrite) continue;
                     leg.Buffer.DiscardToLiveEdge(BlockBytes);
                     MakeLive(leg, EffectiveAlignmentTrim(leg));
                 }
 
-            writes = [];
             foreach (var leg in _legs.Values)
             {
                 if (_standby)
@@ -251,23 +255,25 @@ public sealed class SharedAudioPump : IAsyncDisposable
                 }
                 if (drainingReadyGate) continue;
                 if (!leg.Endpoint.IsConnected) continue;
-                var block = new byte[BlockBytes];
-                if (leg.Live) FillLiveBlock(leg, block);
-                writes.Add((leg, block));
+                // FillLiveBlock leaves inserted silence untouched, so start from zeros.
+                leg.Block.AsSpan().Clear();
+                if (leg.Live) FillLiveBlock(leg, leg.Block);
+                writes.Add(leg);
             }
 
             if (NeedsGroupResync())
             {
                 ResyncGroupCore();
-                foreach (var (_, block) in writes) block.AsSpan().Clear();
+                foreach (var leg in writes) leg.Block.AsSpan().Clear();
             }
         }
 
         if (containsSignal is bool activity) CaptureActivityObserved?.Invoke(this, activity);
         if (timedOut is not null) GateTimedOut?.Invoke(this, timedOut);
-        foreach (var (leg, block) in writes)
+        foreach (var leg in writes)
         {
-            var result = leg.Endpoint.Write(block, tolerateBackpressure: !leg.Ready);
+            var block = leg.Block;
+            var result = leg.Endpoint.Write(block);
             if (result != AudioPipeWriteResult.Dropped) continue;
             lock (_gate)
             {
@@ -383,7 +389,9 @@ public sealed class SharedAudioPump : IAsyncDisposable
     private bool NeedsGroupResync()
     {
         var thresholdBytes = ReceiverAlignmentPlan.ToPcmByteCount(CorrectionDebtResyncMilliseconds);
-        return _legs.Values.Any(leg => Math.Abs((long)leg.CorrectionDebtBytes) > thresholdBytes);
+        foreach (var leg in _legs.Values)
+            if (Math.Abs((long)leg.CorrectionDebtBytes) > thresholdBytes) return true;
+        return false;
     }
 
     private void ResyncGroupCore()

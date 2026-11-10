@@ -153,7 +153,8 @@ internal sealed class FixtureRaopClient(string scenario) : IRaopClient
         return Task.FromResult(JsonSerializer.SerializeToElement(new { paired = true }));
     }
 
-    public Task<JsonElement> CancelPairingAsync(string receiverId, CancellationToken cancellationToken = default) => Completed();
+    public Task<JsonElement> CancelPairingAsync(string receiverId, CancellationToken cancellationToken = default) =>
+        Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
 
     public async Task<JsonElement> StartStreamAsync(ReceiverInfo receiver, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default)
     {
@@ -287,6 +288,4 @@ internal sealed class FixtureRaopClient(string scenario) : IRaopClient
         }
         _started = false;
     }
-
-    private static Task<JsonElement> Completed() => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
 }

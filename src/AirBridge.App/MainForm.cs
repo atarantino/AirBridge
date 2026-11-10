@@ -63,6 +63,9 @@ public sealed partial class MainForm : Form
     private bool _shutdownCompleted;
     private bool _uiResourcesDisposed;
     private bool _refreshingReceivers;
+    private IReadOnlyList<ReceiverInfo> _shownReceivers = [];
+    // Started from the constructor so the RAOP host loads while the UI is built.
+    private Task? _hostStart;
     private bool _previewStreamActive;
     private Control? _telemetryDetails;
     private System.Threading.Timer? _shutdownWatchdog;
@@ -90,6 +93,10 @@ public sealed partial class MainForm : Form
         _settings = previewMode ? new() : _settingsStore.Load();
         if (IsTestSession) _settings = _settings with { AiEnabled = false };
         _controller.ConfigureSettings(_settings);
+        // The RAOP host spends most of a second importing pyatv. Launch it off the
+        // UI thread now so that overlaps building the window and showing the tray
+        // icon; InitializeAsync awaits the same task.
+        if (!previewMode) _hostStart = Task.Run(() => _controller.InitializeAsync());
         _controller.AgentPairingHandler = EnsureAgentReceiversPairedAsync;
         foreach (var id in _settings.SelectedReceiverIds) _selectedReceiverIds.Add(id);
         foreach (var pair in _settings.ReceiverVolumes) _receiverVolumes[pair.Key] = pair.Value;
@@ -364,7 +371,9 @@ public sealed partial class MainForm : Form
     {
         await RunUiActionAsync(async () =>
         {
-            await _controller.InitializeAsync();
+            var hostStart = _hostStart ?? _controller.InitializeAsync();
+            _hostStart = null;
+            await hostStart;
             await RefreshReceiversAsync();
             RefreshSessions();
             RefreshGroups();
@@ -385,16 +394,12 @@ public sealed partial class MainForm : Form
         SetReceiverLoading(true);
         try
         {
-            var discovered = await _controller.DiscoverAsync();
-            if (_selectedReceiverIds.Count == 0)
-            {
-                var preferred = discovered.FirstOrDefault(item => item.Id == _settings.DefaultReceiverId)
-                    ?? discovered.FirstOrDefault(item => item.Name.Equals(_settings.DefaultReceiverName, StringComparison.OrdinalIgnoreCase));
-                if (preferred?.CanConnect == true) _selectedReceiverIds.Add(preferred.Id);
-            }
+            var discovered = await _controller.DiscoverAsync(ShowEarlyReceivers);
+            SelectPreferredReceiver(discovered);
             foreach (var unavailable in discovered.Where(item => !item.CanConnect))
                 _selectedReceiverIds.Remove(unavailable.Id);
             RebuildReceiverRows(discovered);
+            _debugServer?.Events.Add("receivers", $"Discovery finished with {discovered.Count} receivers.");
             if (discovered.Count == 0) AppendConversation("System", "No AirPlay receivers found. Confirm Windows and the speakers share the same private local network.");
             PersistUiSettings();
         }
@@ -403,6 +408,28 @@ public sealed partial class MainForm : Form
             _refreshingReceivers = false;
             SetReceiverLoading(false);
         }
+    }
+
+    /// <summary>Shows receivers that answered the quick scan while discovery keeps listening.</summary>
+    private void ShowEarlyReceivers(IReadOnlyList<ReceiverInfo> early)
+    {
+        if (!_refreshingReceivers || IsDisposed) return;
+        // Keep rows from the previous refresh until the full scan decides; only add new ones.
+        if (early.All(item => _receiverRows.ContainsKey(item.Id))) return;
+        var earlyIds = early.Select(item => item.Id).ToHashSet(StringComparer.Ordinal);
+        var shown = early.Concat(_shownReceivers.Where(item => !earlyIds.Contains(item.Id)))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase).ToArray();
+        SelectPreferredReceiver(shown);
+        RebuildReceiverRows(shown, scanContinuing: true);
+        _debugServer?.Events.Add("receivers", $"Showing {early.Count} receivers while discovery continues.");
+    }
+
+    private void SelectPreferredReceiver(IReadOnlyList<ReceiverInfo> receivers)
+    {
+        if (_selectedReceiverIds.Count != 0) return;
+        var preferred = receivers.FirstOrDefault(item => item.Id == _settings.DefaultReceiverId)
+            ?? receivers.FirstOrDefault(item => item.Name.Equals(_settings.DefaultReceiverName, StringComparison.OrdinalIgnoreCase));
+        if (preferred?.CanConnect == true) _selectedReceiverIds.Add(preferred.Id);
     }
 
     private void SetReceiverLoading(bool loading)
@@ -428,12 +455,15 @@ public sealed partial class MainForm : Form
         }
     }
 
-    private void RebuildReceiverRows(IReadOnlyList<ReceiverInfo> receivers)
+    private void RebuildReceiverRows(IReadOnlyList<ReceiverInfo> receivers, bool scanContinuing = false)
     {
+        _shownReceivers = receivers;
         _receiverPanel.SuspendLayout();
         try
         {
             _receiverPanel.Controls.Clear();
+            // Clear() also removed the loading indicator; keep it while the scan continues.
+            if (scanContinuing) _receiverPanel.Controls.Add(_receiverLoading);
             foreach (var row in _receiverRows.Values) row.Dispose();
             _receiverRows.Clear();
             var playback = _controller.ReceiverPlayback.ToDictionary(item => item.Receiver.Id, StringComparer.Ordinal);
@@ -458,7 +488,7 @@ public sealed partial class MainForm : Form
                 row.ApplyTextScale();
             }
             ResizeReceiverRows();
-            _trayFlyout.SetReceivers(receivers, _selectedReceiverIds, _receiverVolumes, _settings.ReceiverAlignmentTrimMs);
+            _trayFlyout.SetReceivers(receivers, _selectedReceiverIds, _receiverVolumes, _settings.ReceiverAlignmentTrimMs, showWhileLoading: scanContinuing);
             UpdateDashboardPresentation(IsDashboardStreamActive);
         }
         finally { _receiverPanel.ResumeLayout(true); }

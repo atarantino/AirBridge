@@ -13,7 +13,8 @@ public static class CalibrationChirp
 {
     public const int DurationMilliseconds = 90;
     public const int IntervalMilliseconds = 800;
-    private static readonly double[] Frequencies = [900, 1400, 2100];
+    // The detector listens for these same tones.
+    internal static readonly double[] Frequencies = [900, 1400, 2100];
 
     public static short[] Generate(int sampleRate)
     {
@@ -62,7 +63,7 @@ public static class CalibrationChirp
 
 public static class AcousticDelayDetector
 {
-    private static readonly double[] Frequencies = [900, 1400, 2100];
+    private static readonly double[] Frequencies = CalibrationChirp.Frequencies;
 
     public static (int MedianMilliseconds, IReadOnlyList<int> DelaysMilliseconds, IReadOnlyList<int> OnsetsMilliseconds) Detect(
         ReadOnlySpan<short> samples,
