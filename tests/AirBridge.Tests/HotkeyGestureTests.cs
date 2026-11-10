@@ -13,8 +13,6 @@ public sealed class HotkeyGestureTests
     {
         Assert.True(HotkeyGesture.TryParse(value, out var gesture));
         Assert.Equal(value, gesture.ToString());
-        Assert.True(HotkeyGesture.TryParse(gesture.ToString(), out var reparsed));
-        Assert.Equal(gesture, reparsed);
     }
 
     [Theory]

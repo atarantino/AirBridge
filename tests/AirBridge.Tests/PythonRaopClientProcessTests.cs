@@ -119,6 +119,40 @@ public sealed class PythonRaopClientProcessTests
     }
 
     [Fact]
+    public async Task DiscoveryProgressReportsEarlyReceiversBeforeTheFinalList()
+    {
+        const string source = """
+            import json, sys
+            def receiver(identifier, name):
+                return {"id": identifier, "name": name, "address": "192.0.2.1", "requires_password": False, "device_type": "speaker",
+                        "requires_pairing": False, "supports_pairing": False, "supports_power_control": False,
+                        "requires_control_pairing": False, "connection_issue": None}
+            for line in sys.stdin:
+                request = json.loads(line)
+                rid = request["request_id"]
+                if request["command"] == "discover" and request.get("progress"):
+                    print(json.dumps({"event": "discovery", "request_id": rid, "receivers": [receiver("kitchen", "Kitchen")]}), flush=True)
+                    print(json.dumps({"event": "discovery", "request_id": rid, "receivers": "malformed"}), flush=True)
+                    result = [receiver("kitchen", "Kitchen"), receiver("office", "Office")]
+                elif request["command"] == "discover":
+                    result = [receiver("office", "Office")]
+                else:
+                    result = {"ok": True}
+                print(json.dumps({"request_id": rid, "ok": True, "result": result}), flush=True)
+            """;
+        using var fixture = new HostFixture(source);
+        await using var client = fixture.CreateClient();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await client.StartAsync(deadline.Token);
+        var partials = new List<string[]>();
+        var final = await client.DiscoverAsync(partial => partials.Add(partial.Select(item => item.Id).ToArray()), deadline.Token);
+        Assert.Equal(["kitchen"], Assert.Single(partials));
+        Assert.Equal(["kitchen", "office"], final.Select(item => item.Id));
+        // Without a callback the host is not asked for progress.
+        Assert.Equal(["office"], (await client.DiscoverAsync(deadline.Token)).Select(item => item.Id));
+    }
+
+    [Fact]
     public async Task EofResolvesAnOutstandingRequestBeforeTheFifteenSecondCommandDeadline()
     {
         const string source = """
