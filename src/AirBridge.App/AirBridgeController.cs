@@ -146,14 +146,35 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
 
     public async Task InitializeAsync(CancellationToken cancellationToken = default) => await _raop.StartAsync(cancellationToken);
 
-    public async Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) =>
+        DiscoverAsync(null, cancellationToken);
+
+    /// <summary>
+    /// Discovers receivers. <paramref name="onPartial"/> receives early results while the scan
+    /// continues, on the caller's synchronization context when it has one.
+    /// </summary>
+    public async Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(Action<IReadOnlyList<ReceiverInfo>>? onPartial, CancellationToken cancellationToken = default)
     {
         var previousState = Coordinator.Route.State;
         var hadActiveRoute = Coordinator.Route.StreamId is not null;
         Coordinator.Transition(StreamState.Discovering);
+        var context = SynchronizationContext.Current;
+        var completed = false;
+        void ApplyPartial(IReadOnlyList<ReceiverInfo> partial)
+        {
+            if (completed) return;
+            // Early receivers can be connected before the scan finishes.
+            _receivers = partial;
+            foreach (var receiver in partial) GetToolReceiverAlias(receiver.Id);
+            onPartial!(partial);
+        }
+        Action<IReadOnlyList<ReceiverInfo>>? report = onPartial is null ? null
+            : context is null ? ApplyPartial
+            : partial => context.Post(_ => ApplyPartial(partial), null);
         try
         {
-            _receivers = await _raop.DiscoverAsync(cancellationToken);
+            _receivers = await _raop.DiscoverAsync(report, cancellationToken);
+            completed = true;
             foreach (var receiver in _receivers) GetToolReceiverAlias(receiver.Id);
             Coordinator.Transition(hadActiveRoute ? previousState : StreamState.Idle);
             PlaybackChanged?.Invoke(this, EventArgs.Empty);
@@ -161,6 +182,7 @@ public sealed class AirBridgeController : IAgentToolRuntime, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            completed = true;
             AppLog.Error("discovery", "Receiver discovery failed.", ex);
             Coordinator.Transition(StreamState.Failed, ex.Message);
             throw;

@@ -57,6 +57,22 @@ class LivePcmSourceTests(unittest.TestCase):
         install_pyatv_adapter()
         self.assertEqual("AirBridge", hap_transient._AIRPLAY_HEADERS["X-Apple-Client-Name"])
 
+    def test_packet_backlog_keeps_pyatv_eviction_and_errors(self):
+        from pyatv.protocols.raop.fifo import PacketFifo
+
+        install_pyatv_adapter()
+        backlog = PacketFifo(3)
+        for seq in (65534, 65535, 0, 1):  # RTP sequence numbers wrap
+            backlog[seq] = bytes([seq % 256])
+        self.assertEqual([65535, 0, 1], list(backlog))
+        self.assertEqual(b"", backlog[1])
+        self.assertNotIn(65534, backlog)
+        with self.assertRaises(ValueError):
+            backlog[0] = b"again"
+        with self.assertRaises(TypeError):
+            backlog["0"] = b"bad"
+        self.assertEqual(3, len(backlog))
+
     def test_s16le_is_converted_to_raop_byte_order(self):
         # -32768, -1, 0, 1, 32767 encoded as little-endian signed 16-bit.
         little_endian = bytes.fromhex("0080 ffff 0000 0100 ff7f")
