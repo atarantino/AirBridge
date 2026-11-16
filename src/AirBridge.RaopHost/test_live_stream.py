@@ -84,14 +84,9 @@ class LivePcmSourceTests(unittest.TestCase):
             s16le_to_airplay(b"\x01")
 
     def test_uncompressed_alac_wrapper_matches_reference_bitstream(self):
-        pcm = bytes.fromhex("0000 7fff 8000 ffff 1234 abcd")
-        encoded = pcm_s16be_to_uncompressed_alac(pcm)
-        self.assertEqual(len(pcm) + 4, len(encoded))
-        self.assertEqual(self._reference_uncompressed_alac(pcm), encoded)
-
-    def test_uncompressed_alac_wrapper_matches_reference_for_full_packets(self):
         rng = random.Random(1408)
-        for pcm in (b"", bytes(1408), b"\xff" * 1408, rng.randbytes(1408), rng.randbytes(4)):
+        edge_samples = bytes.fromhex("0000 7fff 8000 ffff 1234 abcd")
+        for pcm in (b"", edge_samples, bytes(1408), b"\xff" * 1408, rng.randbytes(1408), rng.randbytes(4)):
             with self.subTest(length=len(pcm), first=pcm[:4].hex()):
                 self.assertEqual(self._reference_uncompressed_alac(pcm), pcm_s16be_to_uncompressed_alac(pcm))
 

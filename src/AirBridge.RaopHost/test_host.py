@@ -43,6 +43,27 @@ class FakeAtv:
         self.closed = True
 
 
+APPLE_TV_4K_INFO = SimpleNamespace(
+    model=DeviceModel.AppleTV4KGen3,
+    operating_system=OperatingSystem.TvOS,
+    model_str="Apple TV 4K (gen 3)",
+    raw_model="AppleTV14,1",
+)
+
+
+def mac_config(airplay_access: str):
+    airplay = SimpleNamespace(properties={"act": airplay_access})
+    return SimpleNamespace(
+        device_info=SimpleNamespace(
+            model=DeviceModel.Unknown,
+            operating_system=OperatingSystem.MacOS,
+            model_str="MacBook Pro",
+            raw_model="MacBookPro18,3",
+        ),
+        get_service=lambda protocol: airplay if protocol == Protocol.AirPlay else None,
+    )
+
+
 class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.host = host_module.Host()
@@ -98,55 +119,22 @@ class ConcurrentHostTests(unittest.IsolatedAsyncioTestCase):
         self.host.storage.save.assert_awaited_once()
 
     def test_apple_tv_model_is_classified_without_room_name_hint(self):
-        config = SimpleNamespace(device_info=SimpleNamespace(
-            model=DeviceModel.AppleTV4KGen3,
-            operating_system=OperatingSystem.TvOS,
-            model_str="Apple TV 4K (gen 3)",
-            raw_model="AppleTV14,1",
-        ))
+        config = SimpleNamespace(device_info=APPLE_TV_4K_INFO)
 
         self.assertEqual("apple-tv", host_module.device_type(config))
 
     def test_current_user_only_mac_explains_unsupported_streaming(self):
-        airplay = SimpleNamespace(properties={"act": "2"})
-        config = SimpleNamespace(
-            device_info=SimpleNamespace(
-                model=DeviceModel.Unknown,
-                operating_system=OperatingSystem.MacOS,
-                model_str="MacBook Pro",
-                raw_model="MacBookPro18,3",
-            ),
-            get_service=lambda protocol: airplay if protocol == Protocol.AirPlay else None,
-        )
-
-        issue = host_module.streaming_connection_issue(config)
+        issue = host_module.streaming_connection_issue(mac_config(airplay_access="2"))
 
         self.assertIn("Anyone on the Same Network", issue)
 
     def test_network_access_mac_remains_connectable(self):
-        airplay = SimpleNamespace(properties={"act": "0"})
-        config = SimpleNamespace(
-            device_info=SimpleNamespace(
-                model=DeviceModel.Unknown,
-                operating_system=OperatingSystem.MacOS,
-                model_str="MacBook Pro",
-                raw_model="MacBookPro18,3",
-            ),
-            get_service=lambda protocol: airplay if protocol == Protocol.AirPlay else None,
-        )
-
-        self.assertIsNone(host_module.streaming_connection_issue(config))
+        self.assertIsNone(host_module.streaming_connection_issue(mac_config(airplay_access="0")))
 
     async def test_sleep_uses_companion_power_control(self):
         companion = SimpleNamespace(pairing=PairingRequirement.Mandatory, credentials="saved")
-        info = SimpleNamespace(
-            model=DeviceModel.AppleTV4KGen3,
-            operating_system=OperatingSystem.TvOS,
-            model_str="Apple TV 4K (gen 3)",
-            raw_model="AppleTV14,1",
-        )
         config = SimpleNamespace(
-            device_info=info,
+            device_info=APPLE_TV_4K_INFO,
             get_service=lambda protocol: companion if protocol == Protocol.Companion else None,
         )
         power = SimpleNamespace(turn_off=AsyncMock())
