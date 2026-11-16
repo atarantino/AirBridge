@@ -1,5 +1,6 @@
 using AirBridge.App;
 using AirBridge.Core;
+using static AirBridge.Tests.PumpPcm;
 
 namespace AirBridge.Tests;
 
@@ -7,27 +8,6 @@ public sealed class MultiReceiverTests
 {
     private static readonly ReceiverInfo SpeakerA = new("speakerA", "Speaker A", "local", false, DateTimeOffset.UtcNow);
     private static readonly ReceiverInfo Office = new("office", "Office", "local", false, DateTimeOffset.UtcNow);
-
-    private sealed class PumpEndpoint(string name) : IAudioPipeEndpoint
-    {
-        public string PipeName { get; } = name;
-        public bool IsConnected { get; set; } = true;
-        public bool CanAcceptWrite { get; set; } = true;
-        public int DropsRemaining { get; set; }
-        public List<byte[]> Writes { get; } = [];
-
-        public AudioPipeWriteResult Write(ReadOnlySpan<byte> pcm)
-        {
-            if (!IsConnected) return AudioPipeWriteResult.Unavailable;
-            if (DropsRemaining > 0)
-            {
-                DropsRemaining--;
-                return AudioPipeWriteResult.Dropped;
-            }
-            Writes.Add(pcm.ToArray());
-            return AudioPipeWriteResult.Accepted;
-        }
-    }
 
     [Fact]
     public void FanoutDeliversIdenticalOrderedPcmToEveryReceiver()
@@ -146,7 +126,7 @@ public sealed class MultiReceiverTests
     {
         var hub = new PcmBroadcastHub();
         var receiver = hub.Subscribe(SpeakerA.Id);
-        var pcm = Enumerable.Repeat((byte)0x2A, SharedAudioPump.BlockBytes * 2).ToArray();
+        var pcm = Block(0x2A, 2);
         var sequence = new ChirpSequence(pcm, [0, SharedAudioPump.BlockBytes], SharedAudioPump.SampleRate, SharedAudioPump.Channels);
         var pump = new SharedAudioPump(
             hub.MonitorBuffer,
@@ -167,10 +147,10 @@ public sealed class MultiReceiverTests
     public async Task GoLivePrefillsEveryLegWithBaseTargetPlusTrimAndKeepsZeroTrimCushion()
     {
         var pump = new SharedAudioPump();
-        var trimmedBuffer = PumpBuffer(0x41, 40);
-        var zeroTrimBuffer = PumpBuffer(0x52, 40);
-        var trimmed = new PumpEndpoint("trimmed");
-        var zeroTrim = new PumpEndpoint("zero");
+        var trimmedBuffer = PumpBuffer(0x41, targetMilliseconds: 40);
+        var zeroTrimBuffer = PumpBuffer(0x52, targetMilliseconds: 40);
+        var trimmed = new FakePipeEndpoint("trimmed");
+        var zeroTrim = new FakePipeEndpoint("zero");
         pump.AddLeg("trimmed", trimmedBuffer, trimmed, 10);
         pump.AddLeg("zero", zeroTrimBuffer, zeroTrim, 0);
         pump.BeginGroup(["trimmed", "zero"]);
@@ -204,10 +184,10 @@ public sealed class MultiReceiverTests
     public async Task ActiveStarvationDropsExactlyThePaddedBytesWhenDataResumes()
     {
         var pump = new SharedAudioPump();
-        var delayedBuffer = PumpBuffer(0x11, 0);
-        var siblingBuffer = PumpBuffer(0x11, 0);
-        var delayed = new PumpEndpoint("delayed");
-        var sibling = new PumpEndpoint("sibling");
+        var delayedBuffer = PumpBuffer(0x11);
+        var siblingBuffer = PumpBuffer(0x11);
+        var delayed = new FakePipeEndpoint("delayed");
+        var sibling = new FakePipeEndpoint("sibling");
         pump.AddLeg("delayed", delayedBuffer, delayed, 0);
         pump.AddLeg("sibling", siblingBuffer, sibling, 0);
         pump.BeginGroup(["delayed", "sibling"]);
@@ -234,11 +214,11 @@ public sealed class MultiReceiverTests
     public async Task ProducerIdlePaddingDoesNotDropAudioAfterResume()
     {
         var pump = new SharedAudioPump();
-        var pausedBuffer = PumpBuffer(0x18, 0);
-        var siblingBuffer = PumpBuffer(0x18, 0);
-        var paused = new PumpEndpoint("paused");
+        var pausedBuffer = PumpBuffer(0x18);
+        var siblingBuffer = PumpBuffer(0x18);
+        var paused = new FakePipeEndpoint("paused");
         pump.AddLeg("paused", pausedBuffer, paused, 0);
-        pump.AddLeg("sibling", siblingBuffer, new PumpEndpoint("sibling"), 0);
+        pump.AddLeg("sibling", siblingBuffer, new FakePipeEndpoint("sibling"), 0);
         pump.BeginGroup(["paused", "sibling"]);
         pump.MarkReady("paused");
         pump.MarkReady("sibling");
@@ -261,10 +241,10 @@ public sealed class MultiReceiverTests
     public async Task BackpressureDropInsertsEquivalentSilenceBeforeContinuingAudio()
     {
         var pump = new SharedAudioPump();
-        var delayedBuffer = PumpBuffer(0x14, 0);
-        var siblingBuffer = PumpBuffer(0x14, 0);
-        var delayed = new PumpEndpoint("delayed") { DropsRemaining = 1 };
-        var sibling = new PumpEndpoint("sibling");
+        var delayedBuffer = PumpBuffer(0x14);
+        var siblingBuffer = PumpBuffer(0x14);
+        var delayed = new FakePipeEndpoint("delayed") { DropsRemaining = 1 };
+        var sibling = new FakePipeEndpoint("sibling");
         pump.AddLeg("delayed", delayedBuffer, delayed, 0);
         pump.AddLeg("sibling", siblingBuffer, sibling, 0);
         pump.BeginGroup(["delayed", "sibling"]);
@@ -290,10 +270,10 @@ public sealed class MultiReceiverTests
     public async Task ExcessCorrectionDebtResyncsEveryLegAndReappliesPrefillAndTrim()
     {
         var pump = new SharedAudioPump();
-        var starvedBuffer = PumpBuffer(0x47, 20, 64);
-        var siblingBuffer = PumpBuffer(0x47, 20, 64);
-        var starved = new PumpEndpoint("starved");
-        var sibling = new PumpEndpoint("sibling");
+        var starvedBuffer = PumpBuffer(0x47, targetMilliseconds: 20, capacityBlocks: 64);
+        var siblingBuffer = PumpBuffer(0x47, targetMilliseconds: 20, capacityBlocks: 64);
+        var starved = new FakePipeEndpoint("starved");
+        var sibling = new FakePipeEndpoint("sibling");
         pump.AddLeg("starved", starvedBuffer, starved, 0);
         pump.AddLeg("sibling", siblingBuffer, sibling, 10);
         pump.BeginGroup(["starved", "sibling"]);
@@ -336,10 +316,10 @@ public sealed class MultiReceiverTests
     public async Task ReadyLateJoinResyncsLiveGroupOnceWithoutChangingConfiguredTrims()
     {
         var pump = new SharedAudioPump();
-        var firstBuffer = PumpBuffer(0x12, 0);
-        var secondBuffer = PumpBuffer(0x23, 0);
-        var first = new PumpEndpoint("first");
-        var second = new PumpEndpoint("second");
+        var firstBuffer = PumpBuffer(0x12);
+        var secondBuffer = PumpBuffer(0x23);
+        var first = new FakePipeEndpoint("first");
+        var second = new FakePipeEndpoint("second");
         pump.AddLeg("first", firstBuffer, first, 10);
         pump.AddLeg("second", secondBuffer, second, 0);
         pump.BeginGroup(["first", "second"]);
@@ -349,8 +329,8 @@ public sealed class MultiReceiverTests
 
         firstBuffer.Write(Block(0x12));
         secondBuffer.Write(Block(0x23));
-        var thirdBuffer = PumpBuffer(0x34, 0);
-        var third = new PumpEndpoint("third");
+        var thirdBuffer = PumpBuffer(0x34);
+        var third = new FakePipeEndpoint("third");
         pump.AddLeg("third", thirdBuffer, third, 20);
         pump.MarkReady("third", resyncGroup: true);
         await pump.PumpOnceAsync();
@@ -369,11 +349,11 @@ public sealed class MultiReceiverTests
     public async Task CalibrationModeSuppressesPrefillAndAllCorrectionDebt()
     {
         var pump = new SharedAudioPump();
-        var measuredBuffer = PumpBuffer(0x45, 40);
-        var siblingBuffer = PumpBuffer(0x45, 40);
-        var measured = new PumpEndpoint("measured") { DropsRemaining = 1 };
+        var measuredBuffer = PumpBuffer(0x45, targetMilliseconds: 40);
+        var siblingBuffer = PumpBuffer(0x45, targetMilliseconds: 40);
+        var measured = new FakePipeEndpoint("measured") { DropsRemaining = 1 };
         pump.AddLeg("measured", measuredBuffer, measured, 10);
-        pump.AddLeg("sibling", siblingBuffer, new PumpEndpoint("sibling"), 0);
+        pump.AddLeg("sibling", siblingBuffer, new FakePipeEndpoint("sibling"), 0);
         pump.SetCalibrationMode(true);
         pump.BeginGroup(["measured", "sibling"]);
         pump.MarkReady("measured");
@@ -523,13 +503,4 @@ public sealed class MultiReceiverTests
             if (Directory.Exists(directory)) Directory.Delete(directory, true);
         }
     }
-
-    private static BoundedPcmBuffer PumpBuffer(byte value, int targetMilliseconds, int capacityBlocks = 8)
-    {
-        var buffer = new BoundedPcmBuffer(SharedAudioPump.BlockBytes * capacityBlocks, targetMilliseconds);
-        buffer.Write(Block(value));
-        return buffer;
-    }
-
-    private static byte[] Block(byte value) => Enumerable.Repeat(value, SharedAudioPump.BlockBytes).ToArray();
 }
