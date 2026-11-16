@@ -6,24 +6,6 @@ namespace AirBridge.Tests;
 
 public sealed class ToolPrivacyTests
 {
-    private sealed class FakeRaop(ReceiverInfo receiver) : IRaopClient
-    {
-        private static readonly JsonElement Empty = JsonDocument.Parse("{}").RootElement.Clone();
-        public event EventHandler<(string? ReceiverId, StreamState State, string? Error)>? StateChanged;
-        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ReceiverInfo>>([receiver]);
-        public Task<JsonElement> StartStreamAsync(ReceiverInfo target, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default)
-        {
-            StateChanged?.Invoke(this, (target.Id, StreamState.Streaming, null));
-            return Task.FromResult(Empty);
-        }
-        public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
-        public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) => Task.FromResult(Empty);
-        public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) => Task.FromResult(Empty);
-        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public void ForceTerminate() { }
-    }
-
     [Fact]
     public async Task AlignmentToolsUseOpaqueAliasesAndNeverExposeStoredRaopIdentifier()
     {
@@ -51,7 +33,7 @@ public sealed class ToolPrivacyTests
     {
         const string privateReceiverId = "48A6B845CCEE";
         var receiver = new ReceiverInfo(privateReceiverId, "Family Room", "192.0.2.10", false, DateTimeOffset.UtcNow);
-        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCaptureService());
+        await using var controller = new AirBridgeController(new FakeRaopClient(receiver), new FakeCaptureService());
         await controller.InitializeAsync();
         await controller.DiscoverAsync();
         using var empty = JsonDocument.Parse("{}");
@@ -78,7 +60,7 @@ public sealed class ToolPrivacyTests
     {
         var receiver = new ReceiverInfo("private-id", "Bedroom", "local", false, DateTimeOffset.UtcNow,
             RequiresPairing: true, SupportsPairing: true);
-        await using var controller = new AirBridgeController(new FakeRaop(receiver), new FakeCaptureService());
+        await using var controller = new AirBridgeController(new FakeRaopClient(receiver), new FakeCaptureService());
         await controller.InitializeAsync();
         await controller.DiscoverAsync();
         using var start = JsonDocument.Parse("""{"receiver_ids":["receiver-1"],"quality_profile":"balanced"}""");
