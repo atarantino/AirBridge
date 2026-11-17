@@ -32,8 +32,7 @@ public sealed class AgentActivityTests
     [InlineData("I explicitly authorize it")]
     public async Task PendingToolAcceptsNaturalExplicitApprovalPhrases(string approval)
     {
-        var responses = new Queue<string>(
-        [
+        using var http = OpenAiHttp(
             """
             {"id":"resp_request_123456789","output":[{"type":"function_call","name":"measure_acoustic_delay","call_id":"call_request","arguments":"{\"receiver_id\":\"speaker-a\"}"}]}
             """,
@@ -45,10 +44,8 @@ public sealed class AgentActivityTests
             """,
             """
             {"id":"resp_approved_result_123456789","output_text":"Measurement completed.","output":[]}
-            """
-        ]);
+            """);
         var runtime = new CountingRuntime();
-        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http);
 
         Assert.Equal("Please confirm.", await agent.AskAsync("Measure the delay", diagnostic: false));
@@ -61,21 +58,15 @@ public sealed class AgentActivityTests
     {
         var confirmationStore = new ToolConfirmationStore();
         var runtime = new CountingRuntime();
-        var firstResponses = new Queue<string>(
-        [
+        using var firstHttp = OpenAiHttp(
             """{"id":"resp_request_recreated","output":[{"type":"function_call","name":"align_group","call_id":"call_request","arguments":"{\"receiver_ids\":[\"speaker-a\",\"speaker-b\"]}"}]}""",
-            """{"id":"resp_prompt_recreated","output_text":"Please confirm.","output":[]}"""
-        ]);
-        using var firstHttp = new HttpClient(new StubHandler(() => firstResponses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+            """{"id":"resp_prompt_recreated","output_text":"Please confirm.","output":[]}""");
         var firstAgent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, firstHttp, confirmationStore: confirmationStore);
         Assert.Equal("Please confirm.", await firstAgent.AskAsync("Should these speakers be aligned?", diagnostic: false));
 
-        var secondResponses = new Queue<string>(
-        [
+        using var secondHttp = OpenAiHttp(
             """{"id":"resp_approved_recreated","output":[{"type":"function_call","name":"align_group","call_id":"call_approved","arguments":"{\"receiver_ids\":[\"speaker-b\",\"speaker-a\"]}"}]}""",
-            """{"id":"resp_complete_recreated","output_text":"Alignment completed.","output":[]}"""
-        ]);
-        using var secondHttp = new HttpClient(new StubHandler(() => secondResponses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+            """{"id":"resp_complete_recreated","output_text":"Alignment completed.","output":[]}""");
         var secondAgent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, secondHttp, confirmationStore: confirmationStore);
 
         Assert.Equal("Alignment completed.", await secondAgent.AskAsync("Sure, go ahead.", diagnostic: false));
@@ -85,14 +76,11 @@ public sealed class AgentActivityTests
     [Fact]
     public async Task LocalConfirmationPromptExecutesExactToolCallWithoutTypedApprovalRoundTrip()
     {
-        var responses = new Queue<string>(
-        [
+        using var http = OpenAiHttp(
             """{"id":"resp_local_prompt","output":[{"type":"function_call","name":"align_group","call_id":"call_local_prompt","arguments":"{\"receiver_ids\":[\"speaker-a\",\"speaker-b\"]}"}]}""",
-            """{"id":"resp_local_complete","output_text":"Alignment completed.","output":[]}"""
-        ]);
+            """{"id":"resp_local_complete","output_text":"Alignment completed.","output":[]}""");
         var promptedTools = new List<string>();
         var runtime = new CountingRuntime();
-        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
             confirmationPrompt: (request, _) =>
             {
@@ -108,14 +96,11 @@ public sealed class AgentActivityTests
     [Fact]
     public async Task RuntimePairingConfirmationIsApprovedBeforeStreamToolExecutes()
     {
-        var responses = new Queue<string>(
-        [
+        using var http = OpenAiHttp(
             """{"id":"resp_pairing_prompt","output":[{"type":"function_call","name":"start_system_stream","call_id":"call_pairing","arguments":"{\"receiver_ids\":[\"receiver-1\"],\"quality_profile\":\"balanced\"}"}]}""",
-            """{"id":"resp_pairing_complete","output_text":"Paired and streaming.","output":[]}"""
-        ]);
+            """{"id":"resp_pairing_complete","output_text":"Paired and streaming.","output":[]}""");
         ToolConfirmationRequest? shown = null;
         var runtime = new PairingConfirmationRuntime();
-        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
             confirmationPrompt: (request, _) =>
             {
@@ -132,13 +117,10 @@ public sealed class AgentActivityTests
     [Fact]
     public async Task DeniedPairingConfirmationDoesNotExecuteStreamTool()
     {
-        var responses = new Queue<string>(
-        [
+        using var http = OpenAiHttp(
             """{"id":"resp_pairing_denied","output":[{"type":"function_call","name":"start_system_stream","call_id":"call_pairing_denied","arguments":"{\"receiver_ids\":[\"receiver-1\"],\"quality_profile\":\"balanced\"}"}]}""",
-            """{"id":"resp_pairing_cancelled","output_text":"Pairing was not started.","output":[]}"""
-        ]);
+            """{"id":"resp_pairing_cancelled","output_text":"Pairing was not started.","output":[]}""");
         var runtime = new PairingConfirmationRuntime();
-        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), runtime, http,
             confirmationPrompt: (_, _) => Task.FromResult(false));
 
@@ -272,18 +254,15 @@ public sealed class AgentActivityTests
     [Fact]
     public async Task AgentPublishesRequestPolicyToolResultAndFinalResponse()
     {
-        var responses = new Queue<string>(
-        [
+        using var http = OpenAiHttp(
             """
             {"id":"resp_first_123456789","model":"gpt-5.6","usage":{"input_tokens":12,"output_tokens":4},"output":[{"type":"function_call","name":"get_stream_health","call_id":"call_1","arguments":"{}"}]}
             """,
             """
             {"id":"resp_second_123456789","model":"gpt-5.6","usage":{"input_tokens":21,"output_tokens":7},"output_text":"The stream is healthy.","output":[]}
-            """
-        ]);
-        using var http = new HttpClient(new StubHandler(() => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+            """);
         var store = new AgentActivityStore();
-        var agent = new OpenAiAgent("test-key", new AgentPolicy(), new StubRuntime(), http, store);
+        var agent = new OpenAiAgent("test-key", new AgentPolicy(), new CountingRuntime(), http, store);
 
         var result = await agent.AskAsync("Check the stream", diagnostic: true);
 
@@ -301,32 +280,23 @@ public sealed class AgentActivityTests
     [Fact]
     public async Task AgentReturnsToolFailureOutputAndKeepsResponseChainValid()
     {
-        var requests = new List<string>();
-        var responses = new Queue<string>(
-        [
+        var handler = new StubHandler(
             """
             {"id":"resp_failure_123456789","output":[{"type":"function_call","name":"get_stream_health","call_id":"call_failed","arguments":"{}"}]}
             """,
             """
             {"id":"resp_recovery_123456789","output_text":"The local check failed safely.","output":[]}
-            """
-        ]);
-        using var http = new HttpClient(new RecordingStubHandler(requests, () => responses.Dequeue())) { BaseAddress = new Uri("https://api.openai.com/") };
+            """);
+        using var http = OpenAiHttp(handler);
         var agent = new OpenAiAgent("test-key", new AgentPolicy(), new FailingRuntime(), http);
 
         var result = await agent.AskAsync("Check the stream", diagnostic: true);
 
         Assert.Equal("The local check failed safely.", result);
-        Assert.Equal(2, requests.Count);
-        Assert.Contains("function_call_output", requests[1], StringComparison.Ordinal);
-        Assert.Contains("tool_failed", requests[1], StringComparison.Ordinal);
-        Assert.Contains("call_failed", requests[1], StringComparison.Ordinal);
-    }
-
-    private sealed class StubRuntime : IAgentToolRuntime
-    {
-        public Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken) =>
-            Task.FromResult<object?>(new { state = "Streaming", buffer_fill_percent = 72 });
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("function_call_output", handler.Requests[1], StringComparison.Ordinal);
+        Assert.Contains("tool_failed", handler.Requests[1], StringComparison.Ordinal);
+        Assert.Contains("call_failed", handler.Requests[1], StringComparison.Ordinal);
     }
 
     private static byte[] BuildPcmWav(short[] samples)
@@ -354,26 +324,9 @@ public sealed class AgentActivityTests
             Task.FromException<object?>(new InvalidOperationException("Local measurement failed."));
     }
 
-    private sealed class CountingRuntime : IAgentToolRuntime
+    private class CountingRuntime : IAgentToolRuntime
     {
         public int ExecutionCount { get; private set; }
-
-        public Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
-        {
-            ExecutionCount++;
-            return Task.FromResult<object?>(new { median_ms = 1200 });
-        }
-    }
-
-    private sealed class PairingConfirmationRuntime : IAgentToolRuntime
-    {
-        public int ExecutionCount { get; private set; }
-
-        public ToolConfirmationRequest? GetConfirmationRequest(string name, JsonElement arguments) =>
-            name == "start_system_stream"
-                ? new(name, "Receiver pairing requires explicit user confirmation.", "Pair with Bedroom?",
-                    "Approve once, then enter the code shown by the receiver.")
-                : null;
 
         public Task<object?> ExecuteAsync(string name, JsonElement arguments, CancellationToken cancellationToken)
         {
@@ -382,23 +335,30 @@ public sealed class AgentActivityTests
         }
     }
 
-    private sealed class StubHandler(Func<string> nextResponse) : HttpMessageHandler
+    private sealed class PairingConfirmationRuntime : CountingRuntime, IAgentToolRuntime
     {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent(nextResponse(), Encoding.UTF8, "application/json")
-            });
+        public ToolConfirmationRequest? GetConfirmationRequest(string name, JsonElement arguments) =>
+            name == "start_system_stream"
+                ? new(name, "Receiver pairing requires explicit user confirmation.", "Pair with Bedroom?",
+                    "Approve once, then enter the code shown by the receiver.")
+                : null;
     }
 
-    private sealed class RecordingStubHandler(List<string> requests, Func<string> nextResponse) : HttpMessageHandler
+    private static HttpClient OpenAiHttp(params string[] responses) => OpenAiHttp(new StubHandler(responses));
+
+    private static HttpClient OpenAiHttp(StubHandler handler) => new(handler) { BaseAddress = new Uri("https://api.openai.com/") };
+
+    private sealed class StubHandler(params string[] responses) : HttpMessageHandler
     {
+        private readonly Queue<string> _responses = new(responses);
+        public List<string> Requests { get; } = [];
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            requests.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
+            Requests.Add(await request.Content!.ReadAsStringAsync(cancellationToken));
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent(nextResponse(), Encoding.UTF8, "application/json")
+                Content = new StringContent(_responses.Dequeue(), Encoding.UTF8, "application/json")
             };
         }
     }

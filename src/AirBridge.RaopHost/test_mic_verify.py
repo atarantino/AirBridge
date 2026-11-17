@@ -26,30 +26,28 @@ class MicrophoneVerifierTests(unittest.TestCase):
         self.assertEqual("clean_tone", result["classification"])
         self.assertAlmostEqual(EXPECTED_FREQUENCY, result["dominant_frequency_hz"], delta=0.5)
 
-    def test_non_clean_acoustic_result_returns_failure_exit_status(self):
-        with patch("mic_verify.verify", AsyncMock(return_value={"classification": "not_clean_tone"})), \
+    def run_main(self, recorder, classification, *extra_args):
+        with patch(f"mic_verify.{recorder}", AsyncMock(return_value={"classification": classification})), \
              patch("mic_verify.hardware_lease", return_value=nullcontext()), \
              patch("sys.stdout", new_callable=io.StringIO) as output:
-            self.assertEqual(1, main(["--device", "synthetic", "--target", "fixture"]))
-            report = json.loads(output.getvalue())
+            exit_code = main(["--device", "synthetic", "--target", "fixture", *extra_args])
+        return exit_code, json.loads(output.getvalue())
+
+    def test_non_clean_acoustic_result_returns_failure_exit_status(self):
+        exit_code, report = self.run_main("verify", "not_clean_tone")
+        self.assertEqual(1, exit_code)
         self.assertEqual("failed", report["status"])
         self.assertFalse(report["acoustic_output_proven"])
 
     def test_clean_tone_returns_success_and_explicit_acoustic_criterion(self):
-        with patch("mic_verify.verify", AsyncMock(return_value={"classification": "clean_tone"})), \
-             patch("mic_verify.hardware_lease", return_value=nullcontext()), \
-             patch("sys.stdout", new_callable=io.StringIO) as output:
-            self.assertEqual(0, main(["--device", "synthetic", "--target", "fixture"]))
-            report = json.loads(output.getvalue())
+        exit_code, report = self.run_main("verify", "clean_tone")
+        self.assertEqual(0, exit_code)
         self.assertTrue(report["acoustic_output_proven"])
         self.assertEqual(0.25, report["criteria"]["minimum_tone_energy_fraction"])
 
     def test_ambient_baseline_does_not_claim_audible_receiver_output(self):
-        with patch("mic_verify.baseline", AsyncMock(return_value={"classification": "not_clean_tone"})), \
-             patch("mic_verify.hardware_lease", return_value=nullcontext()), \
-             patch("sys.stdout", new_callable=io.StringIO) as output:
-            self.assertEqual(0, main(["--device", "synthetic", "--target", "fixture", "--baseline"]))
-            report = json.loads(output.getvalue())
+        exit_code, report = self.run_main("baseline", "not_clean_tone", "--baseline")
+        self.assertEqual(0, exit_code)
         self.assertEqual("ambient_baseline", report["mode"])
         self.assertFalse(report["acoustic_output_proven"])
 

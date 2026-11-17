@@ -180,23 +180,14 @@ public sealed class StreamVerificationTests
         Assert.True(StreamVerificationWindow.AppliesToCurrentStream(completed, Observation(1768000)));
     }
 
-    private sealed class PingRaop(bool acknowledged = true, bool fail = false) : IRaopClient
+    private sealed class PingRaop(bool acknowledged = true, bool fail = false) : FakeRaopClient, IRaopClient
     {
         public int PingCount { get; private set; }
-        public event EventHandler<(string? ReceiverId, StreamState State, string? Error)>? StateChanged { add { } remove { } }
-        public Task StartAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<JsonElement> PingAsync(CancellationToken cancellationToken = default)
         {
             PingCount++;
             return fail ? Task.FromException<JsonElement>(new IOException("Host exited")) : Task.FromResult(JsonSerializer.SerializeToElement(new { ok = acknowledged }));
         }
-        public Task<IReadOnlyList<ReceiverInfo>> DiscoverAsync(CancellationToken cancellationToken = default) => Task.FromResult<IReadOnlyList<ReceiverInfo>>([]);
-        public Task<JsonElement> StartStreamAsync(ReceiverInfo receiver, string pipeName, int initialVolume = 30, CancellationToken cancellationToken = default) => Task.FromResult(default(JsonElement));
-        public Task<JsonElement> StopStreamAsync(string receiverId, CancellationToken cancellationToken = default) => Task.FromResult(default(JsonElement));
-        public Task<JsonElement> StopAllStreamsAsync(CancellationToken cancellationToken = default) => Task.FromResult(default(JsonElement));
-        public Task<JsonElement> SetVolumeAsync(string receiverId, int percent, CancellationToken cancellationToken = default) => Task.FromResult(default(JsonElement));
-        public Task ShutdownAsync(CancellationToken cancellationToken) => Task.CompletedTask;
-        public void ForceTerminate() { }
     }
 
     [Fact]
