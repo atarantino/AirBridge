@@ -34,9 +34,7 @@ try {
     $env:AIRBRIDGE_DATA_DIR = $run.profile
     $env:AIRBRIDGE_RUN_ID = $run.runId
     $env:AIRBRIDGE_BUILD_COMMIT = $run.commit
-    Remove-Item Env:OPENAI_API_KEY -ErrorAction SilentlyContinue
-    Remove-Item Env:AIRBRIDGE_RUN_HARDWARE_TESTS -ErrorAction SilentlyContinue
-    Remove-Item Env:AIRBRIDGE_MODEL_EVALS -ErrorAction SilentlyContinue
+    Remove-Item Env:OPENAI_API_KEY, Env:AIRBRIDGE_RUN_HARDWARE_TESTS, Env:AIRBRIDGE_MODEL_EVALS -ErrorAction SilentlyContinue
     $process = Start-Process -FilePath $executable -ArgumentList (($arguments | ForEach-Object { ConvertTo-AirBridgeArgument $_ }) -join ' ') -WorkingDirectory $script:AirBridgeRoot -WindowStyle Hidden -RedirectStandardOutput (Join-Path $run.outputDirectory 'app.stdout.log') -RedirectStandardError (Join-Path $run.outputDirectory 'app.stderr.log') -PassThru
 }
 finally { foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process') } }
