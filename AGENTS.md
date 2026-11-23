@@ -24,7 +24,7 @@ dotnet test tests\AirBridge.Tests -c Release --no-build --filter 'Category!=Hard
 dotnet test tests\AirBridge.Tests -c Release --no-build --filter 'FullyQualifiedName~PcmNormalizer'
 dotnet test tests\AirBridge.Evals -c Release --no-build                                  # ~2 s, offline policy evals
 .\.venv\Scripts\python.exe -m unittest discover -s src\AirBridge.RaopHost -p 'test_*.py'  # ~4 s
-.\.venv\Scripts\python.exe -m unittest discover -s src\AirBridge.RaopHost -p 'test_host.py' -k Volume
+.\.venv\Scripts\python.exe -m unittest discover -s src\AirBridge.RaopHost -p 'test_host.py' -k volume   # -k is a case-sensitive substring
 node --test tests\browser-extension.test.js tests\firefox-extension.test.js               # <1 s
 .\scripts\fixture-qa.ps1                                                                 # ~20 s, process + UI actions
 .\scripts\snapshots.ps1                                                                  # ~17 s, then inspect PNGs
