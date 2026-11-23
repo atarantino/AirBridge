@@ -13,6 +13,8 @@ import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parent.parent
 INSTALLERS = ("AirBridge.msi", "AirBridge-Setup.exe")
+LIFECYCLE_REPORT = "installer-lifecycle-validation.json"
+RELEASE_ASSETS = (*INSTALLERS, "release-validation.json", LIFECYCLE_REPORT)
 REQUIRED_LIFECYCLE = {"clean-msi-install", "installed-host-ping", "clean-start-menu-launch",
                       "bootstrapper-ui-install", "bundle-start-menu-launch", "prior-version-upgrade",
                       "upgrade-settings-preservation", "downgrade-rejection", "repair", "final-uninstall"}
@@ -201,8 +203,7 @@ def verify_uploaded_draft(directory, manifest, repository):
     if not api_url.startswith(prefix) or not api_url[len(prefix):].isdigit():
         raise ValueError("Unexpected draft release API URL")
     uploaded = json.loads(gh("api", api_url))
-    names = [*INSTALLERS, "release-validation.json", "installer-lifecycle-validation.json", "SHA256SUMS.txt"]
-    expected = {name: "sha256:" + sha256(directory / name) for name in names}
+    expected = {name: "sha256:" + sha256(directory / name) for name in (*RELEASE_ASSETS, "SHA256SUMS.txt")}
     if not uploaded["draft"] or uploaded["tag_name"] != manifest["tag"] or \
             uploaded["target_commitish"] != manifest["sourceCommit"] or \
             {asset["name"]: asset.get("digest") for asset in uploaded["assets"]} != expected:
@@ -211,7 +212,8 @@ def verify_uploaded_draft(directory, manifest, repository):
 
 def publish(directory, lifecycle_path, repository, expected_commit):
     directory = Path(directory)
-    manifest = validate_candidate(directory, read_json(lifecycle_path))
+    lifecycle = read_json(lifecycle_path)
+    manifest = validate_candidate(directory, lifecycle)
     if manifest["sourceCommit"] != expected_commit:
         raise ValueError("Candidate differs from the successful CI commit")
     decision = plan_release(manifest["version"], releases(repository))
@@ -228,14 +230,12 @@ def publish(directory, lifecycle_path, repository, expected_commit):
             obj = json.loads(gh("api", f"repos/{repository}/git/tags/{obj['sha']}"))["object"]
         if obj["type"] != "commit" or obj["sha"] != expected_commit:
             raise ValueError("Release tag already points to a different commit")
-    report_name = "installer-lifecycle-validation.json"
-    write_json(directory / report_name, read_json(lifecycle_path))
-    names = [*INSTALLERS, "release-validation.json", report_name]
+    write_json(directory / LIFECYCLE_REPORT, lifecycle)
     (directory / "SHA256SUMS.txt").write_text(
-        "".join(f"{sha256(directory / name)}  {name}\n" for name in names), encoding="utf-8")
+        "".join(f"{sha256(directory / name)}  {name}\n" for name in RELEASE_ASSETS), encoding="utf-8")
     gh("release", "create", manifest["tag"], "--repo", repository, "--target", expected_commit,
        "--title", "AirBridge for Windows " + manifest["tag"], "--generate-notes", "--draft",
-       *(str(directory / name) for name in [*names, "SHA256SUMS.txt"]))
+       *(str(directory / name) for name in (*RELEASE_ASSETS, "SHA256SUMS.txt")))
     # A failed upload stays private; only a complete, verified upload becomes an update.
     verify_uploaded_draft(directory, manifest, repository)
     gh("release", "edit", manifest["tag"], "--repo", repository, "--draft=false", "--latest")
