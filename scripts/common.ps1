@@ -181,6 +181,7 @@ function Write-AirBridgeRunSummary($Run) {
     foreach ($check in $notable) {
         $message = if ($check['error']) { $check['error'] } else { $check['reason'] }
         Write-Host ("{0}: {1} - {2}" -f $check['status'].ToUpperInvariant(), $check['name'], $message)
+        if ($check['status'] -ne 'failed') { continue }
         foreach ($stream in @('stderr', 'stdout')) {
             $log = $check[$stream]
             if (-not $log -or -not (Test-Path -LiteralPath $log)) { continue }
