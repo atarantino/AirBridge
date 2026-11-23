@@ -5,13 +5,38 @@ using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 
+if (args.FirstOrDefault() is "--help" or "-h" or "help")
+{
+    // Usage is printed before the hardware opt-in so agents can read it safely.
+    Console.WriteLine("""
+        AirBridge.Diagnostics: one JSON report on stdout; exit 0 passed, 1 failed, 2 inconclusive.
+
+        Safe without hardware (no opt-in):
+          --help                         This text.
+          --ping                         Start the source Python RAOP host and check the JSON-line ping.
+
+        Need AIRBRIDGE_RUN_HARDWARE_TESTS=1 and take the machine-wide hardware lease:
+          --devices                      List active capture devices. Records nothing.
+          --full-pipeline NAME [S] [V]   DEFAULT when no command is given. Streams system audio to receiver NAME
+                                         and plays a 523 Hz tone through the default Windows output for S
+                                         seconds (2-30, default 8) at receiver volume V (default safe level).
+          --start-volume NAME [N]        Starts and stops streaming to NAME N times (1-20, default 10).
+          --measure-delay NAME           Streams to NAME and plays acoustic chirps recorded by the microphone.
+          --volume-live NAME             Streams to NAME and changes its volume.
+
+        Everything that takes NAME makes a real receiver audible. Reserve the speaker first.
+        The report's log_directory field holds the isolated profile's airbridge.log, including
+        raop-stderr lines from the Python host.
+        """);
+    return 0;
+}
 RuntimeProfile.Configure(null, requireIsolatedProfile: true);
 AppLog.Initialize();
 var command = args.FirstOrDefault() ?? "--full-pipeline";
 var report = new Dictionary<string, object?>
 {
     ["command"] = command, ["status"] = "failed", ["acoustic_output_proven"] = false,
-    ["started_utc"] = DateTimeOffset.UtcNow
+    ["started_utc"] = DateTimeOffset.UtcNow, ["log_directory"] = AppLog.DirectoryPath
 };
 AirBridgeController? controller = null;
 PythonRaopClient? host = null;

@@ -169,8 +169,59 @@ function Complete-AirBridgeRun($Run) {
     $Run.status = if ($failed.Count -gt 0) { 'failed' } else { 'passed' }
     $path = Join-Path $Run.outputDirectory 'report.json'
     [IO.File]::WriteAllText($path, ($Run | ConvertTo-Json -Depth 20))
+    Write-AirBridgeRunSummary $Run
     Write-Host "Report: $path"
     return $failed.Count -eq 0
+}
+
+function Write-AirBridgeRunSummary($Run) {
+    # Checks can be re-graded after their progress line was printed, so the
+    # summary is the authoritative console view of the report.
+    $notable = @($Run.checks | Where-Object { $_['status'] -eq 'failed' -or $_['status'] -eq 'warning' })
+    foreach ($check in $notable) {
+        $message = if ($check['error']) { $check['error'] } else { $check['reason'] }
+        Write-Host ("{0}: {1} - {2}" -f $check['status'].ToUpperInvariant(), $check['name'], $message)
+        foreach ($stream in @('stderr', 'stdout')) {
+            $log = $check[$stream]
+            if (-not $log -or -not (Test-Path -LiteralPath $log)) { continue }
+            $tail = @([IO.File]::ReadAllLines($log) | Where-Object { $_.Trim() } | Select-Object -Last 5)
+            if ($tail.Count -eq 0) { continue }
+            Write-Host "  $stream ($log):"
+            foreach ($line in $tail) { Write-Host "    $line" }
+            break
+        }
+    }
+    $counts = @('passed', 'warning', 'failed', 'skipped') | ForEach-Object { $status = $_; "$(@($Run.checks | Where-Object { $_['status'] -eq $status }).Count) $status" }
+    Write-Host ("Result: {0} ({1})" -f $Run.status.ToUpperInvariant(), ($counts -join ', '))
+}
+
+function Test-AirBridgeNodeVersion($Run) {
+    # CI pins .node-version exactly. Locally, a different minor/patch of the
+    # same major is a recorded warning so global version switching is not
+    # needed; a different major still fails.
+    $check = Invoke-AirBridgeCheck $Run 'node-version' 'node' @('--version') 15 -Quiet
+    if ($check.status -eq 'passed') {
+        $expected = ([IO.File]::ReadAllText((Join-Path $script:AirBridgeRoot '.node-version'))).Trim()
+        $actual = ([IO.File]::ReadAllText($check.stdout)).Trim().TrimStart('v')
+        $check.expected = $expected
+        if ($actual -ne $expected) {
+            $sameMajor = $actual.Split('.')[0] -eq $expected.Split('.')[0]
+            $check.status = if ($sameMajor) { 'warning' } else { 'failed' }
+            $check.error = "Node $actual differs from .node-version $expected (CI uses $expected)."
+        }
+    }
+    Write-Host ("node-version: {0} ({1} ms)" -f $check.status, $check.durationMs)
+    return $check
+}
+
+function Test-AirBridgePythonVersion($Run, [string]$Python) {
+    $check = Invoke-AirBridgeCheck $Run 'python-version' $Python @('-c', 'import sys; print(sys.version); sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)') 15 -Quiet
+    if ($check.status -ne 'passed') {
+        $found = if ($check.exitCode -eq 1 -and (Test-Path -LiteralPath $check.stdout)) { ([IO.File]::ReadAllText($check.stdout)).Trim().Split(' ')[0] } else { 'missing or unusable' }
+        $check.error = "Checkout .venv must be Python 3.12 (found: $found). Run scripts\bootstrap.ps1 -RecreateVenv, which uses 'py -3.12'."
+    }
+    Write-Host ("python-version: {0} ({1} ms)" -f $check.status, $check.durationMs)
+    return $check
 }
 
 function Test-AirBridgeHostPing($Run, [string]$Executable = '', [string]$Name = 'python-host-ping') {

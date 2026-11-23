@@ -130,7 +130,8 @@ Machine-level WASAPI tests are opt-in so ordinary CI cannot hang on a driver COM
 
 ```powershell
 $env:AIRBRIDGE_RUN_HARDWARE_TESTS = "1"
-dotnet test AirBridge.sln -c Release --filter "Category=Hardware"
+try { dotnet test AirBridge.sln -c Release --filter "Category=Hardware" }
+finally { Remove-Item Env:AIRBRIDGE_RUN_HARDWARE_TESTS }
 ```
 
 Verification saves run-scoped JSON reports, logs, distinct TRX files, and fixture evidence under `artifacts\qa`. Hardware, acoustic output, paid model evals, native UI interaction, and installer lifecycle checks are reported separately. CI runs the same verification command and retains evidence on failure.
