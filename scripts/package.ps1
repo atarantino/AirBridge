@@ -47,7 +47,14 @@ try {
     if ($appVersion -ne $productVersion) { throw "Published app version $appVersion differs from planned version $productVersion." }
     $run.checks.Add([ordered]@{ name = 'packaged-app-version'; status = 'passed'; productVersion = $appVersion }) | Out-Null
     New-Item -ItemType Directory -Force -Path $raopPublish | Out-Null
-    Invoke-PackageCheck 'raop-publish' $python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--name', 'AirBridge.RaopHost', '--collect-all', 'pyatv', '--collect-all', 'miniaudio', '--distpath', $raopPublish, '--workpath', (Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-work'), '--specpath', (Join-Path $script:AirBridgeRoot 'artifacts'), (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\host.py')) 360
+    # One-directory, not --onefile: a one-file host unpacks its whole ~50 MB
+    # bundle to %TEMP% on every launch, which made it ~1.5 s slower to answer
+    # its first command and ~0.4 s slower to exit.
+    $raopDist = Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-dist'
+    if (Test-Path -LiteralPath $raopDist) { Remove-Item -LiteralPath $raopDist -Recurse -Force }
+    Invoke-PackageCheck 'raop-publish' $python @('-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', 'AirBridge.RaopHost', '--collect-all', 'pyatv', '--collect-all', 'miniaudio', '--distpath', $raopDist, '--workpath', (Join-Path $script:AirBridgeRoot 'artifacts\pyinstaller-work'), '--specpath', (Join-Path $script:AirBridgeRoot 'artifacts'), (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\host.py')) 360
+    # The executable and its _internal runtime sit beside the bundled host sources.
+    Get-ChildItem -LiteralPath (Join-Path $raopDist 'AirBridge.RaopHost') | Move-Item -Destination $raopPublish
     $ping = Test-AirBridgeHostPing $run (Join-Path $raopPublish 'AirBridge.RaopHost.exe') 'packaged-host-ping'
     if ($ping.status -ne 'passed') { throw 'Packaged RAOP host failed its protocol handshake.' }
     Invoke-PackageCheck 'wix-restore' 'dotnet' @('tool', 'restore', '--tool-manifest', $toolManifest)
