@@ -14,6 +14,8 @@ Install the SDK selected by `global.json` (9.0.101, allowing 9.0.1xx patches), P
 
 Bootstrap creates a checkout-local `.venv`, restores the pinned Python dependency closure from `requirements.lock.txt`, restores NuGet packages, and runs `npm ci` against `package-lock.json`. `-Offline` uses already available Python packages and NuGet/npm caches; missing dependencies fail with command logs. Download caches can be shared between worktrees. Virtualenvs, `node_modules`, `bin`/`obj`, profiles, and publish outputs must stay checkout-local.
 
+`-RecreateVenv` deletes and rebuilds only the checkout-local `.venv`; use it when doctor reports a non-3.12 interpreter. A local Node with the same major as `.node-version` but a different minor/patch is recorded as a `warning`, not a failure; CI still installs the exact version. Every script ends with a summary of failed and warning checks, including log tails, before the `report.json` path.
+
 Doctor records the exact SDK, installed SDKs, Node, Python, dependency consistency, and an actual JSON-line ping through the source Python host. It does not scan the network or capture audio. Keep the `.node-version` and Python lock aligned with CI; refresh locks deliberately after verification.
 
 Each invocation saves `report.json` and command stdout/stderr under `artifacts\qa\<kind>-<UTC timestamp>-<id>`. Reports include git SHA, dirty working-tree status, a dirty diff hash including untracked file contents, individual untracked file hashes, tracked diff hash, repository path, run ID, exact executable paths, deadlines, exit codes, and **passed**, **failed**, or **skipped** checks. Use `-OutputDirectory` to choose a destination. Test reports use distinct `AirBridge.Tests.trx` and `AirBridge.Evals.trx` filenames.

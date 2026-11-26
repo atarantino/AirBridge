@@ -1,19 +1,21 @@
-param([switch]$Offline, [switch]$BrowserQA, [string]$OutputDirectory = '')
+param([switch]$Offline, [switch]$BrowserQA, [switch]$RecreateVenv, [string]$OutputDirectory = '')
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1')
 $run = New-AirBridgeRun 'bootstrap' $OutputDirectory
 Add-AirBridgeProvenance $run
 Invoke-AirBridgeCheck $run 'dotnet-version' 'dotnet' @('--version') 15 | Out-Null
-$node = Invoke-AirBridgeCheck $run 'node-version' 'node' @('--version') 15
-if ($node.status -eq 'passed') {
-    $expected = ([IO.File]::ReadAllText((Join-Path $script:AirBridgeRoot '.node-version'))).Trim()
-    if (([IO.File]::ReadAllText($node.stdout)).Trim().TrimStart('v') -ne $expected) { $node.status = 'failed'; $node.error = "Use Node $expected (see .node-version)." }
+Test-AirBridgeNodeVersion $run | Out-Null
+$venv = Join-Path $script:AirBridgeRoot '.venv'
+$python = Join-Path $venv 'Scripts\python.exe'
+if ($RecreateVenv -and (Test-Path -LiteralPath $venv)) {
+    # Only the checkout-local virtualenv is removed; it is rebuilt from the lock below.
+    Remove-Item -LiteralPath $venv -Recurse -Force
+    Write-Host "Removed $venv"
 }
-$python = Join-Path $script:AirBridgeRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $python)) {
     Invoke-AirBridgeCheck $run 'create-venv' 'py' @('-3.12', '-m', 'venv', (Join-Path $script:AirBridgeRoot '.venv')) 120 | Out-Null
 }
-$version = Invoke-AirBridgeCheck $run 'python-version' $python @('-c', 'import sys; print(sys.version); sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)') 15
+$version = Test-AirBridgePythonVersion $run $python
 $pipArgs = @('-m', 'pip', 'install', '--disable-pip-version-check', '--requirement', (Join-Path $script:AirBridgeRoot 'src\AirBridge.RaopHost\requirements.lock.txt'))
 if ($Offline) { $pipArgs += '--no-index' }
 if ($version.status -eq 'passed') { Invoke-AirBridgeCheck $run 'python-restore' $python $pipArgs 240 | Out-Null }
