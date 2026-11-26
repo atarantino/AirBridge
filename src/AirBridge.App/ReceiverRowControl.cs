@@ -186,10 +186,20 @@ public sealed class ReceiverRowControl : UserControl
         _selected = selected;
         _volume.Value = volume;
         SetAlignmentTrim(alignmentTrimMilliseconds);
-        SetPlaybackState(state, detail);
+        ApplyPlaybackState(state, detail);
     }
 
+    /// <summary>
+    /// Telemetry pushes every row's state once a second, so an unchanged state
+    /// returns without the relayout and owner-drawn repaint a change needs.
+    /// </summary>
     public void SetPlaybackState(StreamState state, string? detail = null)
+    {
+        if (state == _streamState && detail == _detail) return;
+        ApplyPlaybackState(state, detail);
+    }
+
+    private void ApplyPlaybackState(StreamState state, string? detail)
     {
         _streamState = state;
         _detail = detail;
@@ -204,6 +214,7 @@ public sealed class ReceiverRowControl : UserControl
 
     public void SetSelected(bool selected)
     {
+        if (selected == _selected) return;
         _selected = selected;
         UpdateVolumePresentation();
         UpdateAccessibility();
@@ -213,8 +224,10 @@ public sealed class ReceiverRowControl : UserControl
 
     public void SetVolume(int volume)
     {
-        if (_volume.IsDragging) return;
+        if (_volume.IsDragging || _volume.Value == volume) return;
         _volume.Value = volume;
+        // The accessible description includes the volume.
+        UpdateAccessibility();
     }
 
     public void ApplyTheme(ThemePalette palette)
@@ -520,6 +533,7 @@ public sealed class ReceiverRowControl : UserControl
 
     private void CommitVolume()
     {
+        UpdateAccessibility();
         if (_receiver is not null) VolumeCommitted?.Invoke(this, new(_receiver.Id, _volume.Value));
     }
 
