@@ -25,14 +25,10 @@ public sealed class RuntimeProfileTests
     [Fact]
     public void ExplicitSettingsPathsStayIndependentOfProfiles()
     {
-        var firstPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "settings.json");
-        try
-        {
-            var store = new SettingsStore(firstPath);
-            store.Save(new AirBridgeSettings { DefaultReceiverName = "Fixture speaker" });
-            Assert.Equal(firstPath, store.Path);
-            Assert.Equal("Fixture speaker", store.Load().DefaultReceiverName);
-        }
-        finally { Directory.Delete(Path.GetDirectoryName(firstPath)!, true); }
+        using var file = new TempSettingsFile();
+        var store = new SettingsStore(file.FilePath);
+        store.Save(new AirBridgeSettings { DefaultReceiverName = "Fixture speaker" });
+        Assert.Equal(file.FilePath, store.Path);
+        Assert.Equal("Fixture speaker", store.Load().DefaultReceiverName);
     }
 }

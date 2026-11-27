@@ -11,36 +11,29 @@ $app = Join-Path $script:AirBridgeRoot ("src\AirBridge.App\bin\$Configuration\ne
 $images = Join-Path $run.outputDirectory 'images'
 New-Item -ItemType Directory -Path $images -Force | Out-Null
 $environment = @{ AIRBRIDGE_DATA_DIR = (Join-Path $run.outputDirectory 'profile'); AIRBRIDGE_RUN_ID = $run.runId }
+function Save-Snapshot([string]$Name, [string]$Surface, [string[]]$Options) {
+    $path = Join-Path $images ($Name + '.png')
+    $check = Invoke-AirBridgeCheck $run $Name $app (@($Surface, $path) + $Options) 20 -Environment $environment
+    if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+}
 foreach ($theme in @('Dark', 'Light')) {
     foreach ($scale in @('1', '1.5', '2')) {
         foreach ($text in @('100', '150')) {
-            $name = "flyout-$theme-scale$scale-text$text"
             $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = $text
-            $path = Join-Path $images ($name + '.png')
-            $check = Invoke-AirBridgeCheck $run $name $app @('--snapshot-flyout', $path, $theme, $scale) 20 -Environment $environment
-            if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+            Save-Snapshot "flyout-$theme-scale$scale-text$text" '--snapshot-flyout' @($theme, $scale)
         }
     }
     $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = '100'
     foreach ($surface in @('snapshot', 'snapshot-settings', 'snapshot-activity')) {
-        $name = "$surface-$theme"
-        $path = Join-Path $images ($name + '.png')
-        $check = Invoke-AirBridgeCheck $run $name $app @("--$surface", $path, $theme) 20 -Environment $environment
-        if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+        Save-Snapshot "$surface-$theme" "--$surface" @($theme)
     }
     foreach ($text in @('100', '150')) {
         $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = $text
-        $name = "settings-updates-$theme-text$text"
-        $path = Join-Path $images ($name + '.png')
-        $check = Invoke-AirBridgeCheck $run $name $app @('--snapshot-settings', $path, $theme, '5') 20 -Environment $environment
-        if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+        Save-Snapshot "settings-updates-$theme-text$text" '--snapshot-settings' @($theme, '5')
     }
     $environment.AIRBRIDGE_TEXT_SCALE_PERCENT = '100'
     foreach ($state in @('listening', 'thinking', 'silence', 'response', 'pairing', 'confirmation')) {
-        $name = "hud-$theme-$state"
-        $path = Join-Path $images ($name + '.png')
-        $check = Invoke-AirBridgeCheck $run $name $app @('--snapshot-hud', $path, $theme, $state) 20 -Environment $environment
-        if ($check.status -eq 'passed' -and -not (Test-Path -LiteralPath $path)) { $check.status = 'failed'; $check.error = 'Snapshot command did not create its image.' }
+        Save-Snapshot "hud-$theme-$state" '--snapshot-hud' @($theme, $state)
     }
 }
 Add-AirBridgeSkippedCheck $run 'visual-review' 'Image generation is not visual acceptance. Inspect the PNG matrix for clipping, overlap, contrast and text-size behavior.'
